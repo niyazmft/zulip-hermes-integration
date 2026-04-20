@@ -196,16 +196,6 @@ See the `examples/` directory for:
 | Cron delivery fails | Verify stream ID is numeric |
 | Authorization failed | Add user email to `ZULIP_ALLOWED_USERS` |
 
-## Testing Checklist
-
-- [ ] Bot created in Zulip organization
-- [ ] API key copied to `.env`
-- [ ] Bot subscribed to target streams
-- [ ] Test message sent to bot
-- [ ] Bot responds correctly
-- [ ] Cron delivery tested
-- [ ] Send message tool tested
-
 ## License
 
 MIT License - See LICENSE file for details.
