@@ -1,0 +1,451 @@
+"""
+Zulip Platform Adapter for Hermes Gateway (Plugin)
+
+Bi-directional integration with Zulip chat platform.
+Supports stream messages (with topics) and private messages.
+"""
+
+import asyncio
+import logging
+import os
+import re
+from typing import Optional, Any
+
+try:
+    import zulip
+
+    ZULIP_AVAILABLE = True
+except ImportError:
+    zulip = None  # type: ignore
+    ZULIP_AVAILABLE = False
+
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
+from gateway.config import Platform, PlatformConfig
+
+logger = logging.getLogger(__name__)
+
+
+class ZulipAdapter(BasePlatformAdapter):
+    """Zulip platform adapter for Hermes Gateway."""
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform("zulip"))
+        extra = config.extra or {}
+
+        self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
+        self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
+        self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
+        self.home_topic = (
+            os.getenv("ZULIP_HOME_CHANNEL_NAME")
+            or extra.get("home_topic", "general")
+        )
+
+        if not ZULIP_AVAILABLE:
+            raise ImportError("zulip package not installed. Run: pip install zulip")
+
+        self.client = zulip.Client(
+            email=self.email,
+            api_key=self.api_key,
+            site=self.site,
+        )
+
+        # Track latest topic per stream so replies stay threaded
+        self._topic_cache: dict[str, str] = {}
+
+        self._listening = False
+        self._event_task: Optional[asyncio.Task] = None
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Initialize connection and start listening."""
+        logger.info("Zulip adapter connecting...")
+        try:
+            result = await asyncio.to_thread(self.client.get_members)
+            if result.get("result") != "success":
+                raise ConnectionError(f"Zulip connection failed: {result}")
+            logger.info("Zulip connection established")
+        except Exception as e:
+            logger.error(f"Zulip connection error: {e}")
+            raise
+
+        self._listening = True
+        self._event_task = asyncio.create_task(self._listen_for_events())
+        self._mark_connected()
+        return True
+
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+        """Get information about a chat/channel."""
+        if chat_id.startswith("dm:"):
+            return {"name": chat_id, "type": "dm"}
+        return {"name": chat_id, "type": "stream"}
+
+    async def disconnect(self) -> None:
+        """Stop listening and close connection."""
+        self._listening = False
+        if self._event_task:
+            self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                pass
+        self._mark_disconnected()
+        logger.info("Zulip adapter disconnected")
+
+    async def _listen_for_events(self):
+        """Listen for incoming Zulip messages via event queue."""
+        logger.info("Zulip adapter listening for messages...")
+        queue_id: Optional[str] = None
+        last_event_id: Optional[int] = None
+
+        while self._listening:
+            try:
+                if queue_id is None:
+                    register_result = await asyncio.to_thread(
+                        self.client.register,
+                        event_types=["message"],
+                        fetch_event_id=0,
+                    )
+                    if register_result.get("result") != "success":
+                        raise ConnectionError(
+                            f"Zulip register failed: {register_result}"
+                        )
+                    queue_id = register_result["queue_id"]
+                    last_event_id = register_result["last_event_id"]
+
+                events = await asyncio.to_thread(
+                    self.client.get_events,
+                    queue_id=queue_id,
+                    last_event_id=last_event_id,
+                )
+
+                if events.get("result") == "error":
+                    logger.warning(
+                        f"Zulip event queue error: {events.get('msg')}"
+                    )
+                    queue_id = None
+                    await asyncio.sleep(1)
+                    continue
+
+                for event in events.get("events", []):
+                    last_event_id = event["id"]
+                    if event.get("type") == "message":
+                        await self._handle_message(event["message"])
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Zulip event polling error: {e}")
+                queue_id = None
+                await asyncio.sleep(5)
+
+    async def _handle_message(self, message: dict):
+        """Process incoming Zulip message."""
+        # Filter self-messages to prevent loops
+        if message.get("sender_email") == self.email:
+            return
+
+        msg_type = message.get("type")  # "stream" or "private"
+        content = message.get("content", "")
+        message_id = message.get("id")
+        sender_email = message.get("sender_email", "")
+        sender_full_name = message.get("sender_full_name", "Unknown")
+
+        # Strip Zulip @-mention syntax: **user** → user
+        content = re.sub(r"\*\*([^*]+)\*\*", r"\1", content)
+
+        if msg_type == "stream":
+            stream_id = message.get("stream_id")
+            topic = message.get("subject", "")
+            stream_name = message.get("display_recipient", str(stream_id))
+
+            # Cache topic for reply threading
+            chat_id = str(stream_id)
+            self._topic_cache[chat_id] = topic
+
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=stream_name,
+                chat_type="stream",
+                user_id=sender_email,
+                user_name=sender_full_name,
+            )
+            extra_meta = {"topic": topic, "stream_id": stream_id}
+        else:
+            sender_id = message.get("sender_id")
+            chat_id = f"dm:{sender_id}"
+
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=sender_full_name,
+                chat_type="dm",
+                user_id=sender_email,
+                user_name=sender_full_name,
+            )
+            extra_meta = {"user_id": sender_id, "user_email": sender_email}
+
+        event = MessageEvent(
+            text=content,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=str(message_id),
+            metadata=extra_meta,
+        )
+        await self.handle_message(event)
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to=None,
+        metadata=None,
+    ) -> SendResult:
+        """Send message to a Zulip stream or DM."""
+        metadata = metadata or {}
+
+        try:
+            if chat_id.startswith("dm:"):
+                # Private message
+                user_id = int(chat_id[3:])
+                result = await asyncio.to_thread(
+                    self.client.send_message,
+                    {
+                        "type": "private",
+                        "to": [user_id],
+                        "content": content,
+                    },
+                )
+            else:
+                # Stream message
+                stream_id = int(chat_id)
+                topic = metadata.get("topic")
+                if not topic:
+                    topic = self._topic_cache.get(chat_id, self.home_topic)
+
+                result = await asyncio.to_thread(
+                    self.client.send_message,
+                    {
+                        "type": "stream",
+                        "to": stream_id,
+                        "topic": topic,
+                        "content": content,
+                    },
+                )
+
+            if result.get("result") == "success":
+                logger.debug(f"Zulip message sent to {chat_id}")
+                return SendResult(
+                    success=True, message_id=str(result.get("id", ""))
+                )
+            else:
+                logger.error(f"Zulip send failed: {result}")
+                return SendResult(success=False, message_id="")
+
+        except Exception as e:
+            logger.error(f"Zulip send error: {e}")
+            return SendResult(success=False, message_id="")
+
+
+def check_requirements() -> bool:
+    """Return True if the zulip SDK is installed."""
+    return ZULIP_AVAILABLE
+
+
+def validate_config(config) -> bool:
+    """Validate that required credentials are present."""
+    extra = getattr(config, "extra", {}) or {}
+    return bool(
+        (os.getenv("ZULIP_API_KEY") or extra.get("api_key"))
+        and (os.getenv("ZULIP_EMAIL") or extra.get("email"))
+        and (os.getenv("ZULIP_SITE") or extra.get("site"))
+    )
+
+
+def _env_enablement() -> dict | None:
+    """Seed PlatformConfig.extra from environment variables."""
+    key = os.getenv("ZULIP_API_KEY", "").strip()
+    email = os.getenv("ZULIP_EMAIL", "").strip()
+    site = os.getenv("ZULIP_SITE", "").strip()
+    if not (key and email and site):
+        return None
+
+    seed = {"api_key": key, "email": email, "site": site}
+    home = os.getenv("ZULIP_HOME_CHANNEL", "").strip()
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("ZULIP_HOME_CHANNEL_NAME", "general"),
+        }
+    return seed
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Send from cron without a live gateway adapter."""
+    if not ZULIP_AVAILABLE:
+        return {"error": "zulip package not installed"}
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    email = extra.get("email")
+    api_key = extra.get("api_key")
+    site = extra.get("site")
+    home_topic = extra.get("home_topic", "general")
+
+    if not (email and api_key and site):
+        return {"error": "Zulip credentials missing in platform config"}
+
+    try:
+        client = zulip.Client(email=email, api_key=api_key, site=site)
+
+        if chat_id.startswith("dm:"):
+            user_id = int(chat_id[3:])
+            result = await asyncio.to_thread(
+                client.send_message,
+                {
+                    "type": "private",
+                    "to": [user_id],
+                    "content": message,
+                },
+            )
+        else:
+            topic = thread_id or home_topic
+            stream_id = int(chat_id)
+            result = await asyncio.to_thread(
+                client.send_message,
+                {
+                    "type": "stream",
+                    "to": stream_id,
+                    "topic": topic,
+                    "content": message,
+                },
+            )
+
+        if result.get("result") == "success":
+            return {"success": True, "message_id": str(result.get("id", ""))}
+        else:
+            return {"error": f"Zulip send failed: {result}"}
+
+    except Exception as e:
+        return {"error": f"Zulip standalone send error: {e}"}
+
+
+def interactive_setup() -> None:
+    """Interactive `hermes gateway setup` flow for the Zulip platform.
+
+    Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
+    in non-CLI contexts (gateway runtime, tests).
+    """
+    from hermes_cli.setup import (
+        prompt,
+        prompt_yes_no,
+        save_env_value,
+        get_env_value,
+        print_header,
+        print_info,
+        print_warning,
+        print_success,
+    )
+
+    print_header("Zulip")
+    existing_email = get_env_value("ZULIP_EMAIL")
+    if existing_email:
+        print_info(f"Zulip: already configured ({existing_email})")
+        if not prompt_yes_no("Reconfigure Zulip?", False):
+            return
+
+    print_info("Connect Hermes to Zulip via a bot account.")
+    print_info("   Create a bot at: Settings → Bots → Add a new bot (Generic bot)")
+    print()
+
+    site = prompt(
+        "Zulip site URL (e.g. https://your-org.zulipchat.com)",
+        default=get_env_value("ZULIP_SITE") or "",
+    )
+    if not site:
+        print_warning("Site URL is required — skipping Zulip setup")
+        return
+    save_env_value("ZULIP_SITE", site.rstrip("/").strip())
+
+    email = prompt(
+        "Bot email address (e.g. hermes-bot@your-org.zulipchat.com)",
+        default=get_env_value("ZULIP_EMAIL") or "",
+    )
+    if not email:
+        print_warning("Bot email is required — skipping Zulip setup")
+        return
+    save_env_value("ZULIP_EMAIL", email.strip())
+
+    api_key = prompt(
+        "Bot API key",
+        default=get_env_value("ZULIP_API_KEY") or "",
+        password=True,
+    )
+    if not api_key:
+        print_warning("API key is required — skipping Zulip setup")
+        return
+    save_env_value("ZULIP_API_KEY", api_key.strip())
+
+    # Authorization (optional but recommended)
+    allowed = prompt(
+        "Allowed user emails (comma-separated, or empty for none yet)",
+        default=get_env_value("ZULIP_ALLOWED_USERS") or "",
+    )
+    if allowed:
+        save_env_value("ZULIP_ALLOWED_USERS", allowed.strip())
+
+    # Home channel for cron deliveries (optional)
+    home = prompt(
+        "Home stream ID for cron deliveries (numeric, or empty to set later)",
+        default=get_env_value("ZULIP_HOME_CHANNEL") or "",
+    )
+    if home:
+        try:
+            int(home)
+            save_env_value("ZULIP_HOME_CHANNEL", home.strip())
+        except ValueError:
+            print_warning(f"Invalid stream ID '{home}' — must be numeric")
+
+    home_topic = prompt(
+        "Default topic for cron deliveries (default: general)",
+        default=get_env_value("ZULIP_HOME_CHANNEL_NAME") or "general",
+    )
+    if home_topic:
+        save_env_value("ZULIP_HOME_CHANNEL_NAME", home_topic.strip())
+
+    print_success("Zulip configured.")
+    print_info("Tip: Subscribe your bot to streams via Stream settings → Subscribers")
+
+
+def register(ctx):
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="zulip",
+        label="Zulip",
+        adapter_factory=lambda cfg: ZulipAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        required_env=["ZULIP_API_KEY", "ZULIP_EMAIL", "ZULIP_SITE"],
+        install_hint="pip install zulip",
+        env_enablement_fn=_env_enablement,
+        cron_deliver_env_var="ZULIP_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        allowed_users_env="ZULIP_ALLOWED_USERS",
+        allow_all_env="ZULIP_ALLOW_ALL_USERS",
+        max_message_length=10000,
+        platform_hint=(
+            "You are chatting via Zulip. Messages are organized into streams and topics. "
+            "When replying to a stream message, preserve the original topic unless asked to change it."
+        ),
+        emoji="📬",
+        setup_fn=interactive_setup,
+    )

@@ -1,0 +1,28 @@
+name: zulip
+label: Zulip
+kind: platform
+version: 1.0.0
+description: Zulip gateway adapter for Hermes Agent. Supports streams with topics and private messages.
+author: Niyaz
+requires_env:
+  - name: ZULIP_API_KEY
+    description: "Bot API key from Zulip Settings → Bots"
+    prompt: "Zulip bot API key"
+    url: "https://zulipchat.com/help/add-a-bot"
+    password: true
+  - name: ZULIP_EMAIL
+    description: "Bot email address (e.g. hermes-bot@your-org.zulipchat.com)"
+    prompt: "Zulip bot email"
+  - name: ZULIP_SITE
+    description: "Zulip organization URL (e.g. https://your-org.zulipchat.com)"
+    prompt: "Zulip site URL"
+optional_env:
+  - name: ZULIP_HOME_CHANNEL
+    description: "Default stream ID for cron deliveries"
+    prompt: "Home stream ID"
+  - name: ZULIP_HOME_CHANNEL_NAME
+    description: "Default topic for cron deliveries"
+    prompt: "Home topic"
+  - name: ZULIP_ALLOWED_USERS
+    description: "Comma-separated emails allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"

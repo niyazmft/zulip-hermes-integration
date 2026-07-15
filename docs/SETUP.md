@@ -1,166 +1,87 @@
-# Zulip Integration Setup Guide
-
-This guide walks you through setting up Zulip integration for Hermes Agent.
+# Zulip Plugin Setup Guide
 
 ## Prerequisites
 
 - Python 3.8+
+- Hermes Agent installed
 - Zulip organization (self-hosted or zulipchat.com)
 - Admin access to create bots in your Zulip organization
-- Hermes Agent installed
 
-## Step 1: Install Dependencies
+## Step 1: Create a Zulip Bot
 
-```bash
-cd zulip-hermes-integration
-pip install -r requirements.txt
-```
+1. Log in to Zulip as an admin
+2. Go to **Settings → Bots** in the left sidebar
+3. Click **Add a new bot**
+4. Choose **Generic bot**
+5. Copy the API key and note the bot's email address
 
-## Step 2: Create Zulip Bot
+## Step 2: Install the Plugin
 
-1. **Log in to Zulip** as an admin
-2. **Go to Settings** (gear icon in top right)
-3. **Navigate to "Bots"** in the left sidebar
-4. **Click "Add a new bot"**
-5. **Fill in the form:**
-   - Bot type: **Generic bot**
-   - Bot name: `Hermes Agent` (or your preferred name)
-   - Bot email: auto-generated (e.g., `hermes-bot@niyaz.zulipchat.com`)
-6. **Click "Create bot"**
-7. **Copy the API key** shown (you won't see it again!)
-
-## Step 3: Configure Environment
-
-1. **Copy the example env file:**
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Edit `.env` with your credentials:**
-   ```bash
-   ZULIP_API_KEY=<paste-your-api-key>
-   ZULIP_EMAIL=hermes-bot@niyaz.zulipchat.com
-   ZULIP_SITE=https://niyaz.zulipchat.com
-   ZULIP_ALLOWED_USERS=your-email@domain.com
-   ```
-
-3. **Find your Stream ID (for cron deliveries):**
-   - Go to the stream in Zulip
-   - Click the stream name → "Stream settings"
-   - The URL will show the stream ID: `#narrow/stream/573423-general`
-   - The number (573423) is your stream ID
-
-## Step 4: Test Connection
-
-Run the test script:
+### Option A: User plugin (recommended for most installs)
 
 ```bash
-python examples/basic_bot.py
+mkdir -p ~/.hermes/plugins/zulip
+cp zulip/__init__.py zulip/adapter.py zulip/plugin.yaml ~/.hermes/plugins/zulip/
+hermes plugins enable zulip
 ```
 
-You should see:
-```
-Zulip adapter connecting...
-Zulip connection established
-Zulip adapter listening for messages...
-Bot is running. Press Ctrl+C to stop.
-```
-
-Send a message to the bot in Zulip. It should respond (once you've integrated it with Hermes Gateway).
-
-## Step 5: Integrate with Hermes Gateway
-
-### Option A: Manual Integration
-
-Copy the adapter file to your Hermes installation:
+### Option B: Bundled plugin (for containers / system-wide installs)
 
 ```bash
-cp src/zulip_adapter.py /path/to/hermes/gateway/platforms/
+HERMES_PATH=$(python3 -c "import hermes_cli; print(hermes_cli.__path__[0])")
+mkdir -p "$HERMES_PATH/../plugins/platforms/zulip"
+cp zulip/__init__.py zulip/adapter.py zulip/plugin.yaml "$HERMES_PATH/../plugins/platforms/zulip/"
 ```
 
-Update the following Hermes files:
+## Step 3: Interactive Onboarding
 
-1. **`gateway/config.py`** - Add Platform.ZULIP enum
-2. **`gateway/run.py`** - Register Zulip adapter in factory
-3. **`tools/send_message_tool.py`** - Add Zulip to platform map
-4. **`cron/scheduler.py`** - Add Zulip to delivery platform map
-5. **`toolsets.py`** - Create hermes-zulip toolset
-
-### Option B: Use the Skill (Recommended)
-
-If you're using Hermes with skills:
+Run the setup wizard. No manual `.env` editing required — it reads the plugin's `requires_env`/`optional_env` declarations and prompts interactively:
 
 ```bash
-# The skill is already in your Hermes installation
-# Just ensure the environment variables are set
+hermes gateway setup
 ```
 
-The skill location is: `~/.hermes/skills/zulip-integration/`
+Follow the prompts for:
+- **Zulip API key** (password-masked)
+- **Bot email**
+- **Site URL**
+- **Allowed users** (optional)
+- **Home channel** & **topic** (optional)
 
-## Step 6: Configure Authorization
+The wizard saves everything to `~/.hermes/.env` and offers to start the gateway.
 
-### Restrict to Specific Users
+### Updating credentials later
 
 ```bash
-ZULIP_ALLOWED_USERS=user1@domain.com,user2@domain.com
+hermes config
 ```
 
-### Allow All Users (Development Only)
+## Step 4: Subscribe Bot to Streams
 
-```bash
-ZULIP_ALLOW_ALL_USERS=true
-```
-
-⚠️ **Warning:** Only use `ZULIP_ALLOW_ALL_USERS` in development. In production, always specify allowed users.
-
-## Step 7: Set Up Cron Deliveries
-
-See `examples/cron_delivery.py` for examples of:
-- Daily project pulses
-- Weekly security scans
-- PR notifications
-- One-time reports
-
-## Step 8: Subscribe Bot to Streams
-
-By default, the bot only sees messages where it's mentioned or in DMs.
-
+By default, the bot only sees DMs and @-mentions.
 To receive all messages in a stream:
 
-1. **Go to stream settings**
-2. **Click "Subscribers"**
-3. **Add your bot** to the subscriber list
+1. Go to **Stream settings → Subscribers**
+2. Add your bot
+
+## Step 5: Start Gateway
+
+If the wizard didn't already start it:
+
+```bash
+hermes gateway
+```
 
 ## Troubleshooting
 
-### Bot Not Receiving Messages
+| Problem | Fix |
+|---------|-----|
+| Bot not responding | Check `ZULIP_ALLOWED_USERS` includes your email; verify bot is subscribed to the stream |
+| Cron delivery fails | Verify `ZULIP_HOME_CHANNEL` is a numeric stream ID |
+| Connection errors | Verify API key, email, and site URL (no trailing slash) |
+| "zulip package not installed" | Run `pip install zulip` |
 
-- ✅ Check bot is subscribed to the stream
-- ✅ Verify `ZULIP_ALLOWED_USERS` includes your email
-- ✅ Ensure bot has permission to read the stream
+## See Also
 
-### Connection Failed
-
-- ✅ Verify `ZULIP_API_KEY` is correct
-- ✅ Check `ZULIP_SITE` URL (no trailing slash)
-- ✅ Test with the connection test script
-
-### Cron Delivery Fails
-
-- ✅ Stream ID must be numeric (string format in config)
-- ✅ Bot must have send permission in the stream
-- ✅ Topic is optional but recommended for organization
-
-## Next Steps
-
-- Set up automated notifications
-- Configure RBAC policies
-- Create custom integrations with other tools
-- Monitor bot activity and logs
-
-## Support
-
-For issues or questions:
-- Check the main README.md
-- Review examples in `examples/` directory
-- Consult Hermes Agent documentation
+- [Hermes Plugin Docs](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters)
+- [Zulip API Documentation](https://zulip.com/api/)
