@@ -32,8 +32,10 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds
 
 - Python 3.8+
 - Hermes Agent ≥ v0.18.2
-- Zulip SDK: `pip install zulip`
+- **Zulip SDK** (`zulip`): must be installed in the same Python environment as Hermes
 - A Zulip bot account ([create one here](https://zulipchat.com/help/add-a-bot))
+
+> ⚠️ **Runtime Dependency:** The `zulip` Python package is a runtime dependency of this plugin. If you are running Hermes inside a Docker container, ensure `zulip` is either baked into the image (e.g. `RUN pip install zulip` in the Dockerfile) or auto-installed on container startup. Manual `pip install` inside a running container will be lost on restart.
 
 ### Option A: User Plugin (Recommended)
 

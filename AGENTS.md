@@ -61,6 +61,30 @@ The plugin is discovered by Hermes' `PluginManager._scan_directory()` which look
 
 The `kind: platform` in `plugin.yaml` triggers lazy registration via `_register_deferred_platform()`. The actual module import (heavy `zulip` SDK) only happens when the gateway first needs the platform.
 
+## Dependencies
+
+| Package | Required | Where declared |
+|---------|----------|----------------|
+| `zulip` | ✅ Runtime | `requirements.txt` (not enforced by Hermes plugin loader) |
+
+The plugin uses a lazy import guard in `adapter.py`:
+
+```python
+try:
+    import zulip
+    ZULIP_AVAILABLE = True
+except ImportError:
+    zulip = None
+    ZULIP_AVAILABLE = False
+```
+
+`__init__.py` must NOT import `zulip` at module load time — the gateway defers platform module loading until first use, so a missing `zulip` package only fails when the adapter is instantiated, not at gateway startup.
+
+**Container gotcha:** If Hermes runs inside Docker, `pip install zulip` inside a running container is ephemeral (overlay filesystem). Either:
+1. Bake `zulip` into the image (`RUN pip install zulip` in Dockerfile)
+2. Auto-install in `docker-entrypoint.sh` before starting Hermes
+3. Mount a persistent volume for site-packages
+
 ## Environment Variables
 
 | Variable | Required | Purpose |

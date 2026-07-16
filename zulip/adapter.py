@@ -46,7 +46,12 @@ class ZulipAdapter(BasePlatformAdapter):
         )
 
         if not ZULIP_AVAILABLE:
-            raise ImportError("zulip package not installed. Run: pip install zulip")
+            logger.error(
+                "zulip package not installed. Run: pip install zulip"
+            )
+            raise ImportError(
+                "zulip package not installed. Run: pip install zulip"
+            )
 
         self.client = zulip.Client(
             email=self.email,
