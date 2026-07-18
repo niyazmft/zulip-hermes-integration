@@ -26,3 +26,18 @@ optional_env:
   - name: ZULIP_ALLOWED_USERS
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
+  - name: ZULIP_REACTIONS_ENABLED
+    description: "Enable emoji reaction status indicators (default: true)"
+    prompt: "Enable reactions"
+  - name: ZULIP_REACTION_CLEAR_ON_FINISH
+    description: "Remove 'working' reaction when done (default: true)"
+    prompt: "Clear reactions on finish"
+  - name: ZULIP_REACTION_START
+    description: "Emoji while processing (default: eyes)"
+    prompt: "Start reaction emoji"
+  - name: ZULIP_REACTION_SUCCESS
+    description: "Emoji on success (default: check_mark)"
+    prompt: "Success reaction emoji"
+  - name: ZULIP_REACTION_ERROR
+    description: "Emoji on error (default: warning)"
+    prompt: "Error reaction emoji"
