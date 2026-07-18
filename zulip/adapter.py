@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Optional, Any
 
 try:
@@ -28,6 +29,7 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 
 from zulip.text_utils import chunk_text, extract_topic_directive
+from zulip.media import upload_file_to_zulip
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +226,32 @@ class ZulipAdapter(BasePlatformAdapter):
         content: str,
         reply_to=None,
         metadata=None,
+        media_files=None,
     ) -> SendResult:
-        """Send message to a Zulip stream or DM, with chunking and topic directives."""
+        """Send message to a Zulip stream or DM, with chunking, topic directives, and files."""
         metadata = metadata or {}
+        media_files = media_files or []
+
+        # Upload files first
+        uploaded_urls = []
+        if media_files:
+            data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+            for file_path in media_files:
+                try:
+                    url = await upload_file_to_zulip(
+                        self.client, file_path, data_dir
+                    )
+                    uploaded_urls.append(url)
+                except Exception as e:
+                    logger.error("zulip upload failed [file=%s]: %s", file_path, e)
+
+        # Append uploaded file links to content
+        if uploaded_urls:
+            file_links = "\n".join(f"[{Path(u).name}]({u})" for u in uploaded_urls)
+            if content:
+                content = f"{content}\n\n{file_links}"
+            else:
+                content = file_links
 
         # Extract inline topic directive if present
         content, topic_override = extract_topic_directive(content)
@@ -249,7 +274,6 @@ class ZulipAdapter(BasePlatformAdapter):
                     len(chunks),
                     chat_id,
                 )
-                # Continue sending remaining chunks despite error
 
         return last_result or SendResult(success=False, message_id="")
 
