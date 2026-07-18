@@ -47,3 +47,6 @@ optional_env:
   - name: ZULIP_CHUNK_MODE
     description: 'Chunking mode: "length" or "newline" (default: length)'
     prompt: "Chunk mode"
+  - name: ZULIP_MEDIA_MAX_MB
+    description: "Max inbound attachment size in MB (default: 5)"
+    prompt: "Media max size (MB)"
