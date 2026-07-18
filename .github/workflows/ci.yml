@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  zulip-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (3.11)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check adapter.py
+        run: python -m py_compile zulip/adapter.py
+
+      - name: Syntax check __init__.py
+        run: python -m py_compile zulip/__init__.py
+
+      - name: Validate plugin.yaml
+        run: python -c "import yaml; yaml.safe_load(open('zulip/plugin.yaml'))"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (3.12)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests (3.12)
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Enforce pristine working directory
+        run: |
+          git diff --exit-code || {
+            echo "Working directory is not clean. Generated files might be out of sync."
+            false
+          }
