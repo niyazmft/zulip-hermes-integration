@@ -39,6 +39,9 @@ from zulip.text_utils import (
     strip_html_to_text,
 )
 from zulip.media import upload_file_to_zulip
+from zulip.queue_manager import ZulipQueueManager
+from zulip.dedupe_store import ZulipDedupeStore
+from zulip.reactions import ReactionConfig, ReactionLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +103,27 @@ class ZulipAdapter(BasePlatformAdapter):
         # Track latest topic per stream so replies stay threaded
         self._topic_cache: dict[str, str] = {}
 
+        self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+
+        # Persistent queue and dedupe
+        self._queue_mgr = ZulipQueueManager(
+            account_id=self.email or "default",
+            data_dir=self._data_dir,
+            register_fn=lambda: self.client.register(
+                event_types=["message"], fetch_event_id=0
+            ),
+        )
+        self._dedupe = ZulipDedupeStore(
+            account_id=self.email or "default",
+            data_dir=self._data_dir,
+            ttl_ms=300_000,
+            max_size=2000,
+        )
+        self._dedupe.load()
+
+        # Reaction config
+        self._reaction_cfg = ReactionConfig.from_env()
+
         self._listening = False
         self._event_task: Optional[asyncio.Task] = None
 
@@ -120,6 +144,9 @@ class ZulipAdapter(BasePlatformAdapter):
                 site=mask_pii(self.site),
             )
         )
+
+        # Ensure queue is registered before starting listener
+        await self._queue_mgr.ensure_queue()
 
         self._listening = True
         self._event_task = asyncio.create_task(self._listen_for_events())
@@ -145,50 +172,65 @@ class ZulipAdapter(BasePlatformAdapter):
         logger.info("Zulip adapter disconnected")
 
     async def _listen_for_events(self):
-        """Listen for incoming Zulip messages via event queue."""
-        logger.info("Zulip adapter listening for messages...")
-        queue_id: Optional[str] = None
-        last_event_id: Optional[int] = None
+        """Listen for incoming Zulip messages via persistent event queue."""
+        logger.info("zulip adapter listening [account=%s]", mask_pii(self.email))
 
         while self._listening:
             try:
-                if queue_id is None:
-                    register_result = await asyncio.to_thread(
-                        self.client.register,
-                        event_types=["message"],
-                        fetch_event_id=0,
-                    )
-                    if register_result.get("result") != "success":
-                        raise ConnectionError(
-                            f"Zulip register failed: {register_result}"
-                        )
-                    queue_id = register_result["queue_id"]
-                    last_event_id = register_result["last_event_id"]
+                queue = await self._queue_mgr.ensure_queue()
 
                 events = await asyncio.to_thread(
                     self.client.get_events,
-                    queue_id=queue_id,
-                    last_event_id=last_event_id,
+                    queue_id=queue.queue_id,
+                    last_event_id=queue.last_event_id,
                 )
 
                 if events.get("result") == "error":
-                    logger.warning(
-                        f"Zulip event queue error: {events.get('msg')}"
+                    msg = events.get("msg", "")
+                    is_bad_queue = (
+                        events.get("code") == "BAD_EVENT_QUEUE_ID"
+                        or "bad event queue" in msg.lower()
                     )
-                    queue_id = None
+                    if is_bad_queue:
+                        logger.warning("zulip queue expired, re-registering")
+                        self._queue_mgr.mark_queue_expired()
+                        continue
+                    logger.warning(
+                        format_zulip_log(
+                            "zulip event queue error",
+                            error=mask_pii(msg),
+                        )
+                    )
                     await asyncio.sleep(1)
                     continue
 
+                batch_max_event_id = queue.last_event_id
                 for event in events.get("events", []):
-                    last_event_id = event["id"]
+                    event_id = event["id"]
+                    if event_id > batch_max_event_id:
+                        batch_max_event_id = event_id
                     if event.get("type") == "message":
-                        await self._handle_message(event["message"])
+                        msg = event["message"]
+                        msg_id = str(msg.get("id", ""))
+                        # Dedupe check
+                        if self._dedupe.check(msg_id):
+                            logger.debug("zulip dedupe hit [msg=%s]", msg_id)
+                            continue
+                        await self._handle_message(msg)
+
+                # Batch update event ID
+                if batch_max_event_id > queue.last_event_id:
+                    self._queue_mgr.update_last_event_id(batch_max_event_id)
 
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Zulip event polling error: {e}")
-                queue_id = None
+                logger.error(
+                    format_zulip_log(
+                        "zulip event polling error",
+                        error=mask_pii(str(e)),
+                    )
+                )
                 await asyncio.sleep(5)
 
     async def _handle_message(self, message: dict):
@@ -203,8 +245,41 @@ class ZulipAdapter(BasePlatformAdapter):
         sender_email = message.get("sender_email", "")
         sender_full_name = message.get("sender_full_name", "Unknown")
 
-        # Strip Zulip @-mention syntax: **user** → user
-        content = re.sub(r"\*\*([^*]+)\*\*", r"\1", content)
+        # Strip Zulip @-mention syntax and HTML
+        content = strip_html_to_text(content)
+
+        # --- Reactions ---
+        reactions = ReactionLifecycle(
+            self.client, str(message_id), self._reaction_cfg
+        )
+        await reactions.start()
+
+        # --- Typing indicator ---
+        typing_params = None
+        if msg_type == "private":
+            typing_params = {
+                "op": "start",
+                "type": "direct",
+                "to": [message.get("sender_id")],
+            }
+        elif msg_type == "stream":
+            stream_id = message.get("stream_id")
+            topic = message.get("subject", "")
+            if stream_id:
+                typing_params = {
+                    "op": "start",
+                    "type": "stream",
+                    "stream_id": stream_id,
+                    "topic": topic,
+                }
+
+        if typing_params:
+            try:
+                await asyncio.to_thread(
+                    self.client.set_typing_status, typing_params
+                )
+            except Exception:
+                pass  # typing is best-effort
 
         # --- Stream trigger gating ---
         if msg_type == "stream":
@@ -278,7 +353,22 @@ class ZulipAdapter(BasePlatformAdapter):
             message_id=str(message_id),
             metadata=extra_meta,
         )
-        await self.handle_message(event)
+
+        try:
+            await self.handle_message(event)
+            await reactions.success()
+        except Exception:
+            await reactions.error()
+            raise
+        finally:
+            if typing_params:
+                typing_params["op"] = "stop"
+                try:
+                    await asyncio.to_thread(
+                        self.client.set_typing_status, typing_params
+                    )
+                except Exception:
+                    pass
 
     async def send(
         self,
