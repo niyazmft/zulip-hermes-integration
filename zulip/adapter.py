@@ -28,6 +28,7 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
+from zulip.logger import format_zulip_log, mask_pii
 from zulip.text_utils import (
     chunk_text,
     extract_topic_directive,
@@ -109,10 +110,16 @@ class ZulipAdapter(BasePlatformAdapter):
             result = await asyncio.to_thread(self.client.get_members)
             if result.get("result") != "success":
                 raise ConnectionError(f"Zulip connection failed: {result}")
-            logger.info("Zulip connection established")
         except Exception as e:
             logger.error(f"Zulip connection error: {e}")
             raise
+
+        logger.info(
+            format_zulip_log(
+                "zulip connection established",
+                site=mask_pii(self.site),
+            )
+        )
 
         self._listening = True
         self._event_task = asyncio.create_task(self._listen_for_events())
@@ -371,11 +378,23 @@ class ZulipAdapter(BasePlatformAdapter):
                     success=True, message_id=str(result.get("id", ""))
                 )
             else:
-                logger.error("zulip send failed: %s", result)
+                logger.error(
+                    format_zulip_log(
+                        "zulip send failed",
+                        chat_id=mask_pii(chat_id),
+                        error=mask_pii(str(result)),
+                    )
+                )
                 return SendResult(success=False, message_id="")
 
         except Exception as e:
-            logger.error("zulip send error [chat=%s]: %s", chat_id, e)
+            logger.error(
+                format_zulip_log(
+                    "zulip send error",
+                    chat_id=mask_pii(chat_id),
+                    error=mask_pii(str(e)),
+                )
+            )
             return SendResult(success=False, message_id="")
 
 
