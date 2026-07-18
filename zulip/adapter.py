@@ -28,7 +28,15 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
-from zulip.text_utils import chunk_text, extract_topic_directive
+from zulip.text_utils import (
+    chunk_text,
+    extract_topic_directive,
+    strip_onchar_prefix,
+    resolve_onchar_prefixes,
+    create_mention_regex,
+    normalize_mention,
+    strip_html_to_text,
+)
 from zulip.media import upload_file_to_zulip
 
 logger = logging.getLogger(__name__)
@@ -47,6 +55,16 @@ def _resolve_chunk_config() -> tuple[int, str]:
     if mode not in ("length", "newline"):
         mode = DEFAULT_CHUNK_MODE
     return limit, mode
+
+
+def _resolve_chatmode() -> tuple[str, list[str], bool]:
+    """Read stream trigger mode config from environment."""
+    mode = os.getenv("ZULIP_CHATMODE", "onmessage").strip().lower()
+    if mode not in ("onmessage", "oncall", "onchar"):
+        mode = "onmessage"
+    prefixes = resolve_onchar_prefixes(os.getenv("ZULIP_ONCHAR_PREFIXES", ""))
+    require_mention = os.getenv("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
+    return mode, prefixes, require_mention
 
 
 class ZulipAdapter(BasePlatformAdapter):
@@ -180,6 +198,41 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Strip Zulip @-mention syntax: **user** → user
         content = re.sub(r"\*\*([^*]+)\*\*", r"\1", content)
+
+        # --- Stream trigger gating ---
+        if msg_type == "stream":
+            chatmode, onchar_prefixes, require_mention = _resolve_chatmode()
+
+            # Check onchar trigger
+            onchar_triggered, stripped = strip_onchar_prefix(content, onchar_prefixes)
+            if onchar_triggered:
+                content = stripped
+
+            # Check mention (simple substring; bot username from email prefix)
+            bot_username = self.email.split("@")[0] if self.email else ""
+            mention_regex = create_mention_regex(bot_username) if bot_username else None
+            was_mentioned = bool(mention_regex and mention_regex.search(content))
+
+            # Apply gating
+            should_process = False
+            if chatmode == "onmessage":
+                should_process = True
+            elif chatmode == "oncall":
+                should_process = was_mentioned
+            elif chatmode == "onchar":
+                should_process = onchar_triggered or was_mentioned
+
+            # requireMention acts as additional gate (ignored in onmessage mode)
+            if chatmode != "onmessage" and require_mention and not was_mentioned and not onchar_triggered:
+                should_process = False
+
+            if not should_process:
+                logger.debug("zulip drop [mode=%s, no trigger] msg=%s", chatmode, message_id)
+                return
+
+            # Normalize mention from content
+            if was_mentioned and mention_regex:
+                content = normalize_mention(content, mention_regex)
 
         if msg_type == "stream":
             stream_id = message.get("stream_id")
