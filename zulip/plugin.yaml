@@ -50,3 +50,12 @@ optional_env:
   - name: ZULIP_MEDIA_MAX_MB
     description: "Max inbound attachment size in MB (default: 5)"
     prompt: "Media max size (MB)"
+  - name: ZULIP_CHATMODE
+    description: 'Stream trigger mode: "onmessage", "oncall", "onchar" (default: onmessage)'
+    prompt: "Chat mode"
+  - name: ZULIP_ONCHAR_PREFIXES
+    description: 'Trigger prefixes for onchar mode (default: >,!)'
+    prompt: "Onchar prefixes"
+  - name: ZULIP_REQUIRE_MENTION
+    description: "Require @mention in streams (default: true)"
+    prompt: "Require mention"
