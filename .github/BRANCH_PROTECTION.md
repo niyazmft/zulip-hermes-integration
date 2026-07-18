@@ -11,6 +11,7 @@ This repository uses a GitHub **Ruleset** (not legacy branch protection) named *
 | ✅ **Status checks** | Required job: `zulip-bridge` — **strict** (branches must be up-to-date) |
 | 🔀 **Pull requests** | Required, 0 approvals, dismiss stale reviews on push, **squash merge only**, threads must be resolved |
 | 🚫 **Non-fast-forward** | No force push |
+| 🧹 **Auto-delete branches** | Head branches deleted automatically after PR merge |
 
 ## What This Means for Contributors
 
@@ -19,10 +20,11 @@ This repository uses a GitHub **Ruleset** (not legacy branch protection) named *
 3. **CI must pass** — the `zulip-bridge` job in `.github/workflows/ci.yml` must succeed.
 4. **Up-to-date branches** — rebase your PR on latest `main` before merging.
 5. **Conversation resolution** — all review threads must be marked resolved.
+6. **Auto-cleanup** — your feature branch is deleted automatically after merge.
 
 ## For Repo Admins
 
-If you need to update the ruleset, go to:  
-**Settings → Rules → Rulesets → "Production Safeguard"**
+- **Ruleset:** Settings → Rules → Rulesets → "Production Safeguard"
+- **Auto-delete branches:** Settings → General → "Automatically delete head branches" (currently ✅ enabled)
 
 Do not disable without team agreement.
