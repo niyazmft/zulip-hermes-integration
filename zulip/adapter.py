@@ -27,7 +27,24 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
+from zulip.text_utils import chunk_text, extract_topic_directive
+
 logger = logging.getLogger(__name__)
+
+
+# Chunking defaults (overridable via env)
+DEFAULT_CHUNK_LIMIT = 10000  # Hermes registry max_message_length
+DEFAULT_CHUNK_MODE = "length"
+
+
+def _resolve_chunk_config() -> tuple[int, str]:
+    """Read chunking config from environment."""
+    limit_raw = os.getenv("ZULIP_TEXT_CHUNK_LIMIT", "").strip()
+    limit = int(limit_raw) if limit_raw.isdigit() else DEFAULT_CHUNK_LIMIT
+    mode = os.getenv("ZULIP_CHUNK_MODE", DEFAULT_CHUNK_MODE).strip()
+    if mode not in ("length", "newline"):
+        mode = DEFAULT_CHUNK_MODE
+    return limit, mode
 
 
 class ZulipAdapter(BasePlatformAdapter):
@@ -208,12 +225,44 @@ class ZulipAdapter(BasePlatformAdapter):
         reply_to=None,
         metadata=None,
     ) -> SendResult:
-        """Send message to a Zulip stream or DM."""
+        """Send message to a Zulip stream or DM, with chunking and topic directives."""
         metadata = metadata or {}
 
+        # Extract inline topic directive if present
+        content, topic_override = extract_topic_directive(content)
+
+        limit, mode = _resolve_chunk_config()
+        chunks = chunk_text(content, limit=limit, mode=mode)
+
+        if not chunks:
+            chunks = [""]
+
+        last_result: Optional[SendResult] = None
+
+        for idx, chunk in enumerate(chunks):
+            result = await self._send_single(chat_id, chunk, metadata, topic_override)
+            last_result = result
+            if not result.success:
+                logger.error(
+                    "zulip send failed on chunk %d/%d [chat=%s]",
+                    idx + 1,
+                    len(chunks),
+                    chat_id,
+                )
+                # Continue sending remaining chunks despite error
+
+        return last_result or SendResult(success=False, message_id="")
+
+    async def _send_single(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: dict,
+        topic_override: Optional[str],
+    ) -> SendResult:
+        """Send a single (unchunked) message."""
         try:
             if chat_id.startswith("dm:"):
-                # Private message
                 user_id = int(chat_id[3:])
                 result = await asyncio.to_thread(
                     self.client.send_message,
@@ -224,9 +273,8 @@ class ZulipAdapter(BasePlatformAdapter):
                     },
                 )
             else:
-                # Stream message
                 stream_id = int(chat_id)
-                topic = metadata.get("topic")
+                topic = topic_override or metadata.get("topic")
                 if not topic:
                     topic = self._topic_cache.get(chat_id, self.home_topic)
 
@@ -241,16 +289,16 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
 
             if result.get("result") == "success":
-                logger.debug(f"Zulip message sent to {chat_id}")
+                logger.debug("zulip message sent to %s", chat_id)
                 return SendResult(
                     success=True, message_id=str(result.get("id", ""))
                 )
             else:
-                logger.error(f"Zulip send failed: {result}")
+                logger.error("zulip send failed: %s", result)
                 return SendResult(success=False, message_id="")
 
         except Exception as e:
-            logger.error(f"Zulip send error: {e}")
+            logger.error("zulip send error [chat=%s]: %s", chat_id, e)
             return SendResult(success=False, message_id="")
 
 
