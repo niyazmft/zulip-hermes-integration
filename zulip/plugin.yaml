@@ -41,3 +41,9 @@ optional_env:
   - name: ZULIP_REACTION_ERROR
     description: "Emoji on error (default: warning)"
     prompt: "Error reaction emoji"
+  - name: ZULIP_TEXT_CHUNK_LIMIT
+    description: "Max chars per outbound message (default: 10000)"
+    prompt: "Text chunk limit"
+  - name: ZULIP_CHUNK_MODE
+    description: 'Chunking mode: "length" or "newline" (default: length)'
+    prompt: "Chunk mode"
