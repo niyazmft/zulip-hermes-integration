@@ -9,7 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Persistent Event Queue**: `ZulipQueueManager` persists `queue_id` + `last_event_id` to disk, survives gateway restarts, handles `BAD_EVENT_QUEUE_ID` gracefully
 - **Message Deduplication**: `ZulipDedupeStore` prevents duplicate processing with 5-minute TTL and debounced disk persistence
-- **Resilient API Client**: `ZulipApiClient` wraps the Zulip SDK with exponential backoff retry, rate-limit respect, and typing indicator support
 - **Text Processing**: `strip_html_to_text()`, `chunk_text()` (length/newline modes), `extract_topic_directive()` for inline topic changes
 - **Reaction Status Indicators**: Configurable emoji reactions (👀/✅/⚠️) for start/success/error states
 - **Message Chunking**: Long responses split into multiple Zulip messages; topic directives extracted and applied
@@ -17,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Outbound Uploads**: Send files via `/user_uploads` with path traversal security
 - **Stream Trigger Modes**: `onmessage` (all), `oncall` (mention only), `onchar` (prefix trigger) with `ZULIP_CHATMODE`
 - **Structured Logging**: Machine-parseable `[k=v]` format with PII masking for emails, IDs, and stream names
-- **Admin Tools**: Message search and stream management API methods
 
 ### Changed
 - `adapter.py` refactored to use all new modules: queue manager, dedupe store, reactions, chunking, triggers, logging
