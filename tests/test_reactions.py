@@ -1,7 +1,7 @@
 """Tests for zulip.reactions — emoji reaction status indicators."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -66,27 +66,27 @@ class TestReactionConfig:
 class TestAddReaction:
     @pytest.mark.asyncio
     async def test_add_success(self):
-        client = AsyncMock()
+        client = MagicMock()
         await add_reaction(client, "123", "eyes", enabled=True)
-        client.add_reaction.assert_awaited_once_with(
+        client.add_reaction.assert_called_once_with(
             {"message_id": "123", "emoji_name": "eyes"}
         )
 
     @pytest.mark.asyncio
     async def test_add_disabled(self):
-        client = AsyncMock()
+        client = MagicMock()
         await add_reaction(client, "123", "eyes", enabled=False)
         client.add_reaction.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_add_empty_emoji(self):
-        client = AsyncMock()
+        client = MagicMock()
         await add_reaction(client, "123", "", enabled=True)
         client.add_reaction.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_add_failure_logged(self, caplog):
-        client = AsyncMock()
+        client = MagicMock()
         client.add_reaction.side_effect = RuntimeError("api down")
         await add_reaction(client, "123", "eyes", enabled=True)
         assert "api down" in caplog.text
@@ -95,21 +95,21 @@ class TestAddReaction:
 class TestRemoveReaction:
     @pytest.mark.asyncio
     async def test_remove_success(self):
-        client = AsyncMock()
+        client = MagicMock()
         await remove_reaction(client, "123", "eyes", enabled=True)
-        client.remove_reaction.assert_awaited_once_with(
+        client.remove_reaction.assert_called_once_with(
             {"message_id": "123", "emoji_name": "eyes"}
         )
 
     @pytest.mark.asyncio
     async def test_remove_disabled(self):
-        client = AsyncMock()
+        client = MagicMock()
         await remove_reaction(client, "123", "eyes", enabled=False)
         client.remove_reaction.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_remove_failure_logged(self, caplog):
-        client = AsyncMock()
+        client = MagicMock()
         client.remove_reaction.side_effect = RuntimeError("no reaction")
         await remove_reaction(client, "123", "eyes", enabled=True)
         assert "no reaction" in caplog.text
@@ -118,44 +118,44 @@ class TestRemoveReaction:
 class TestReactionLifecycle:
     @pytest.mark.asyncio
     async def test_start_adds_eyes(self):
-        client = AsyncMock()
+        client = MagicMock()
         lifecycle = ReactionLifecycle(client, "msg_1", ReactionConfig())
         await lifecycle.start()
-        client.add_reaction.assert_awaited_once_with(
+        client.add_reaction.assert_called_once_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_START}
         )
 
     @pytest.mark.asyncio
     async def test_success_clears_start_and_adds_check(self):
-        client = AsyncMock()
+        client = MagicMock()
         lifecycle = ReactionLifecycle(client, "msg_1", ReactionConfig())
         await lifecycle.success()
-        client.remove_reaction.assert_awaited_with(
+        client.remove_reaction.assert_called_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_START}
         )
-        client.add_reaction.assert_awaited_with(
+        client.add_reaction.assert_called_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_SUCCESS}
         )
 
     @pytest.mark.asyncio
     async def test_error_clears_start_and_adds_warning(self):
-        client = AsyncMock()
+        client = MagicMock()
         lifecycle = ReactionLifecycle(client, "msg_1", ReactionConfig())
         await lifecycle.error()
-        client.remove_reaction.assert_awaited_with(
+        client.remove_reaction.assert_called_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_START}
         )
-        client.add_reaction.assert_awaited_with(
+        client.add_reaction.assert_called_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_ERROR}
         )
 
     @pytest.mark.asyncio
     async def test_success_no_clear(self):
         cfg = ReactionConfig(clear_on_finish=False)
-        client = AsyncMock()
+        client = MagicMock()
         lifecycle = ReactionLifecycle(client, "msg_1", cfg)
         await lifecycle.success()
         client.remove_reaction.assert_not_called()
-        client.add_reaction.assert_awaited_once_with(
+        client.add_reaction.assert_called_once_with(
             {"message_id": "msg_1", "emoji_name": DEFAULT_SUCCESS}
         )

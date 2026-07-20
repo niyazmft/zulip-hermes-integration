@@ -8,6 +8,7 @@ Adds/removes emoji reactions to signal processing state:
 Safe wrappers catch and log errors so a reaction failure never breaks the flow.
 """
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -71,7 +72,10 @@ async def add_reaction(
     if not enabled or not emoji_name:
         return
     try:
-        await client.add_reaction({"message_id": message_id, "emoji_name": emoji_name})
+        await asyncio.to_thread(
+            client.add_reaction,
+            {"message_id": message_id, "emoji_name": emoji_name},
+        )
     except Exception as e:
         logger.warning(
             "zulip add reaction failed [message_id=%s emoji=%s error=%s]",
@@ -91,7 +95,10 @@ async def remove_reaction(
     if not enabled or not emoji_name:
         return
     try:
-        await client.remove_reaction({"message_id": message_id, "emoji_name": emoji_name})
+        await asyncio.to_thread(
+            client.remove_reaction,
+            {"message_id": message_id, "emoji_name": emoji_name},
+        )
     except Exception as e:
         logger.warning(
             "zulip remove reaction failed [message_id=%s emoji=%s error=%s]",

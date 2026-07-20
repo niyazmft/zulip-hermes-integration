@@ -160,7 +160,7 @@ async def upload_file_to_zulip(
         )
 
     with open(resolved, "rb") as f:
-        result = await client.upload_file(f)
+        result = await asyncio.to_thread(client.upload_file, f)
 
     if result.get("result") != "success":
         raise RuntimeError(f"Upload failed: {result}")
