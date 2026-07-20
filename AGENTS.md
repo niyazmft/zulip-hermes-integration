@@ -136,6 +136,43 @@ If the admin sets `ZULIP_EDIT_PLACEHOLDER=false`, placeholder editing is disable
 
 **Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
 
+**Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
+
+### 8. File Generation & Attachments
+
+You can generate files (reports, CSVs, JSON dumps, etc.) and send them as Zulip uploads. The user receives a clickable link in your message.
+
+**How to generate and send a file:**
+
+```python
+from zulip.workspace import BotWorkspace
+
+# Create a workspace (sandboxed directory under /tmp)
+ws = BotWorkspace()
+
+# Generate content
+path = ws.save_text("report.csv", "id,value\n1,42\n")
+
+# Send with your message
+await adapter.send(
+    chat_id="dm:42",
+    content="Here is your report:",
+    media_files=[path]
+)
+```
+
+**Supported operations:**
+- `ws.save_text("file.txt", "content")` — UTF-8 text files
+- `ws.save_bytes("file.bin", b"\x00...")` — binary files
+- `ws.save_json("data.json", {"key": "value"})` — JSON with indentation
+- `ws.read_text("file.txt")` — read back a file
+- `ws.list_files()` — see what's in your workspace
+- `ws.clear()` — delete everything in workspace
+
+**Auto-cleanup:** Local temp files are automatically deleted after upload. The workspace also auto-prunes files older than 1 hour on every save.
+
+**Security:** Only files under `/tmp` or `HERMES_DATA_DIR` can be uploaded. Path traversal attacks (e.g., `../../etc/passwd`) are rejected.
+
 ## Platform-Specific Etiquette
 
 ### Do

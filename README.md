@@ -148,6 +148,44 @@ The adapter uses Zulip's **event queue API** for inbound messages and wraps all 
 
 For stream messages, the adapter caches the last seen **topic** per stream and uses it for replies, so conversations stay threaded.
 
+## Bot Workspace & File Attachments
+
+Bots can generate files (reports, CSVs, JSON, etc.) in a sandboxed workspace and send them as Zulip uploads:
+
+```python
+from zulip.workspace import BotWorkspace
+
+ws = BotWorkspace()
+path = ws.save_text("report.csv", "id,value\n1,42\n")
+await adapter.send(
+    chat_id="dm:42",
+    content="Here is your report:",
+    media_files=[path]
+)
+```
+
+The file is uploaded to Zulip's `/user_uploads` and rendered as a clickable Markdown link in the message. Local temp files are **auto-deleted after upload** to prevent disk bloat.
+
+**Workspace features:**
+- `save_text(filename, content)` — write UTF-8 text
+- `save_bytes(filename, content)` — write raw bytes
+- `save_json(filename, data)` — serialize JSON with indentation
+- `read_text(filename)` / `read_bytes(filename)` — read back files
+- `list_files()` — list all files in workspace
+- `clear()` — delete everything in workspace
+- Auto-prunes files older than 1 hour on every save (configurable via `ttl=`)
+- Path traversal attacks are rejected
+
+### Sending Existing Files
+
+You can also pass any file path to `media_files`:
+
+```python
+await adapter.send(chat_id, "See attached", media_files=["/path/to/data.pdf"])
+```
+
+Only files under `/tmp` or `HERMES_DATA_DIR` are accepted — path traversal is blocked.
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -158,6 +196,7 @@ For stream messages, the adapter caches the last seen **topic** per stream and u
 | `ZULIP_ALLOWED_USERS` | ❌ | Comma-separated authorized user emails |
 | `ZULIP_ALLOW_ALL_USERS` | ❌ | Set `true` to disable authorization (dev only) |
 | `ZULIP_EDIT_PLACEHOLDER` | ❌ | Set `false` to disable "Thinking..." placeholder editing |
+| `ZULIP_MEDIA_MAX_MB` | ❌ | Max inbound attachment size in MB (default: 5) |
 
 ## Troubleshooting
 

@@ -40,7 +40,7 @@ class TestOutboundUpload:
         call = adapter.client._calls[0]
         assert "See attached" in call["content"]
         assert "doc.pdf" in call["content"]
-        Path(tmp.name).unlink()
+        Path(tmp.name).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_upload_only_no_text(self, adapter, monkeypatch):
@@ -54,7 +54,7 @@ class TestOutboundUpload:
         assert result.success is True
         call = adapter.client._calls[0]
         assert "doc.pdf" in call["content"]
-        Path(tmp.name).unlink()
+        Path(tmp.name).unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_path_traversal_rejected(self, adapter, monkeypatch):
