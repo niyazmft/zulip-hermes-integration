@@ -21,10 +21,22 @@ class MockZulipClient:
         self._queue_id = "queue_123"
         self._last_event_id = 1
         self._members = {"result": "success", "members": []}
+        self._profile = {"result": "success", "full_name": "Test Bot"}
+        self._server_settings = {"result": "success", "zulip_version": "8.0"}
+        self._subscriptions = {"result": "success", "subscriptions": []}
         self._events = []
         self._sent_messages = []
         self._reactions = []
         self._uploads = []
+
+    def get_server_settings(self):
+        return self._server_settings
+
+    def get_profile(self):
+        return self._profile
+
+    def get_subscriptions(self):
+        return self._subscriptions
 
     def get_members(self):
         return self._members
