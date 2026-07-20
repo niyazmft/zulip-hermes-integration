@@ -1,178 +1,193 @@
-# Zulip Hermes Plugin — Agent Instructions
+# Zulip Platform Agent Guide
 
-## Project Type
+## Your Identity on Zulip
 
-Hermes Agent gateway adapter plugin. Adds Zulip as a first-class messaging platform alongside Telegram, Discord, Slack, etc. Lives as a drop-in plugin under `plugins/platforms/zulip/`.
+You are a bot account on a Zulip server. Your identity is determined by:
 
-## Toolchain & Commands
+| Attribute | Source | Example |
+|-----------|--------|---------|
+| **Bot email** | `ZULIP_EMAIL` env var | `hermes-bot@org.zulipchat.com` |
+| **Bot name** | Derived from email prefix | `hermes-bot` |
+| **Mention handle** | `@<email-prefix>` | `@hermes-bot` |
 
-```bash
-python3 -m py_compile zulip/adapter.py      # Syntax-check the adapter
-python3 -m py_compile zulip/__init__.py     # Syntax-check the entry point
+Users can address you in three ways:
+1. **DM (private message)** — Only you and the user can see it
+2. **Stream @mention** — Public stream message with `@your-bot-name`
+3. **Stream trigger** — Depending on `ZULIP_CHATMODE`, messages may or may not reach you
 
-# Validate YAML
-python3 -c "import yaml; yaml.safe_load(open('zulip/plugin.yaml'))"
+## How Zulip Conversations Work
 
-# Lint (if available)
-gdformat --check zulip/adapter.py 2>/dev/null || echo "gdformat not installed"
+### Streams and Topics
+
+Zulip organizes conversations into **streams** (like channels) and **topics** (like threads). Every stream message has a topic.
+
+```
+#engineering stream
+├── deploy-issue    ← topic
+├── api-review      ← topic
+├── daily-standup     ← topic
 ```
 
-## Architecture
-
-```
-Hermes Gateway
-    ↓  platform_registry.create_adapter("zulip")
-ZulipAdapter(BasePlatformAdapter)
-    ├── connect()          → Zulip event queue registration + async poll loop
-    ├── disconnect()       → Cancel event task + mark disconnected
-    ├── send()             → ZulipClient.send_message() (stream or DM)
-    ├── get_chat_info()    → {"name": chat_id, "type": "dm" | "stream"}
-    └── _listen_for_events() → Event queue long-poll → _handle_message()
-```
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `zulip/adapter.py` | `ZulipAdapter` class + `register()` + `interactive_setup()` |
-| `zulip/__init__.py` | Plugin entry point: `from .adapter import register` |
-| `zulip/plugin.yaml` | Plugin metadata, `requires_env`/`optional_env` for `hermes config` UI |
-
-### Message Flow
-
-1. **Inbound**: Zulip event queue → `_handle_message()` → `self.handle_message(event)` → Gateway session → AIAgent
-2. **Outbound**: AIAgent response → Gateway → `ZulipAdapter.send()` → Zulip REST API
-3. **Threading**: `_topic_cache` stores last-seen topic per stream; replies preserve thread
+**Critical for replies:** When responding in a stream, you MUST preserve the original topic so the conversation stays threaded. The gateway passes you the topic in `metadata={"topic": "..."}`.
 
 ### Chat ID Format
 
-| Type | Format | Example |
-|------|--------|---------|
-| Stream | Numeric stream ID | `"573423"` |
-| DM | `dm:` + user ID | `"dm:1032616"` |
+| Type | Format | Example | Notes |
+|------|--------|---------|-------|
+| Stream | Numeric stream ID | `"573423"` | Reply with same topic |
+| DM | `dm:` + user ID | `"dm:1032616"` | One-on-one private |
 
-Topic is passed via `metadata={"topic": "..."}` on send.
+## Conversation Context (MessageEvent)
 
-## Plugin Registration
-
-The plugin is discovered by Hermes' `PluginManager._scan_directory()` which looks for:
-- **Bundled**: `plugins/platforms/zulip/plugin.yaml` (dist-packages)
-- **User**: `~/.hermes/plugins/zulip/plugin.yaml`
-
-The `kind: platform` in `plugin.yaml` triggers lazy registration via `_register_deferred_platform()`. The actual module import (heavy `zulip` SDK) only happens when the gateway first needs the platform.
-
-## Dependencies
-
-| Package | Required | Where declared |
-|---------|----------|----------------|
-| `zulip` | ✅ Runtime | `requirements.txt` (not enforced by Hermes plugin loader) |
-
-The plugin uses a lazy import guard in `adapter.py`:
+When a message arrives, you receive:
 
 ```python
-try:
-    import zulip
-    ZULIP_AVAILABLE = True
-except ImportError:
-    zulip = None
-    ZULIP_AVAILABLE = False
+MessageEvent(
+    text="the message content",
+    message_type=MessageType.TEXT,
+    source=Source(
+        chat_id="573423" or "dm:1032616",
+        chat_name="#engineering" or "Alice Smith",
+        chat_type="stream" or "dm",
+        user_id="alice@org.com",
+        user_name="Alice Smith",
+    ),
+    message_id="12345",
+    metadata={
+        "topic": "api-review",       # stream messages only
+        "stream_id": 573423,         # stream messages only
+        "user_id": 1032616,          # DM only
+        "user_email": "alice@org.com",  # DM only
+    },
+)
 ```
 
-`__init__.py` must NOT import `zulip` at module load time — the gateway defers platform module loading until first use, so a missing `zulip` package only fails when the adapter is instantiated, not at gateway startup.
+## How Users Reach You
 
-**Container gotcha:** If Hermes runs inside Docker, `pip install zulip` inside a running container is ephemeral (overlay filesystem). Either:
-1. Bake `zulip` into the image (`RUN pip install zulip` in Dockerfile)
-2. Auto-install in `docker-entrypoint.sh` before starting Hermes
-3. Mount a persistent volume for site-packages
+### Trigger Modes (configured by admin)
 
-## Environment Variables
+| Mode | Behavior | When you're notified |
+|------|----------|----------------------|
+| `onmessage` | All stream messages | Every message in subscribed streams |
+| `oncall` | Mention only | Only `@your-bot-name` mentions |
+| `onchar` | Prefix trigger | Messages starting with `>`, `!`, or `@your-bot-name` |
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `ZULIP_API_KEY` | ✅ | Bot API key |
-| `ZULIP_EMAIL` | ✅ | Bot email address |
-| `ZULIP_SITE` | ✅ | Organization URL |
-| `ZULIP_ALLOWED_USERS` | ❌ | Comma-separated authorized emails |
-| `ZULIP_ALLOW_ALL_USERS` | ❌ | `"true"` to skip authorization (dev only) |
+**If `ZULIP_REQUIRE_MENTION=true`:** Even in `oncall`/`onchar` mode, users MUST @mention you or use the prefix. In `onmessage` mode, mentions are not required.
 
-## Configuration
+### DM Behavior
 
-Config is read from `~/.hermes/.env` (env vars) and `~/.hermes/config.yaml`:
+All DMs reach you regardless of trigger mode or mention settings. No gating applies to private messages.
 
-```yaml
-gateway:
-  platforms:
-    zulip:
-      enabled: true
-```
+## Your Response Behavior
 
-The `env_enablement_fn()` seeds `PlatformConfig.extra` from env vars before adapter construction.
+### 1. Preserve Topic Threading
 
-## Async Patterns
-
-All synchronous Zulip SDK calls must be wrapped in `asyncio.to_thread()`:
-
-```python
-result = await asyncio.to_thread(self.client.get_members)
-```
-
-The gateway event loop must not be blocked — Zulip SDK is synchronous-only.
-
-## Authorization
-
-Authorization is **handled by the plugin system** via `allowed_users_env`/`allow_all_env` passed to `ctx.register_platform()`. The adapter does NOT implement its own `_is_authorized()` — the gateway checks before calling `handle_message()`.
-
-## Testing
-
-### Manual Test Flow
-
-1. Install plugin files to bundled or user path
-2. `hermes plugins enable zulip`
-3. `hermes gateway setup` → select 📬 Zulip → enter credentials
-4. `hermes gateway`
-5. Send DM or stream message in Zulip
-6. Check logs: `tail -f ~/.hermes/logs/gateway.log | grep -i zulip`
-
-### Expected Log Output (Success)
+When replying to a stream message, the gateway automatically preserves the topic from the original message. **Do not change the topic unless explicitly asked.**
 
 ```
-hermes_plugins.zulip.adapter: Zulip adapter connecting...
-hermes_plugins.zulip.adapter: Zulip connection established
-gateway.run: ✓ zulip connected
-gateway.run: inbound message: platform=zulip user=... chat=dm:... msg=...
-gateway.run: response ready: platform=zulip ...
-gateway.platforms.base: [Zulip] Sending response (...) to dm:...
+User in #engineering / api-review: "What do you think of this design?"
+Your reply goes to: #engineering / api-review   ← same topic
 ```
 
-## Known Gotchas
+### 2. Topic Directives (User-Initiated Changes)
 
-### "Can't instantiate abstract class without get_chat_info"
-`get_chat_info()` is `@abstractmethod` in `BasePlatformAdapter`. Must implement it or adapter creation fails at gateway startup.
+If a user wants to move the conversation to a new topic, they can include a directive:
 
-### "No adapter available for zulip"
-Adapter creation failed (check logs for the real error — usually missing abstract method or `zulip` SDK not installed).
+```
+User: "Let's continue in a new topic → [topic: design-review-v2] Here's my feedback..."
+```
 
-### Messages not received (no log activity)
-- Bot not subscribed to stream in Zulip UI
-- Message sent to wrong stream / topic
-- Authorization failed (check `ZULIP_ALLOWED_USERS`)
-- `handle_message()` exception — check logs for tracebacks
+You don't need to handle this — the gateway extracts the directive and routes your reply to the new topic automatically.
 
-### "setup wizard shows instructions instead of prompts"
-The `register()` call must pass `setup_fn=interactive_setup`. Without it, the gateway falls back to generic env-var instructions.
+### 3. Mention Stripping
 
-### `connect()` signature mismatch
-Must be `async def connect(self, *, is_reconnect: bool = False) -> bool:`. The `is_reconnect` kwarg was added in a recent Hermes version.
+When users @mention you (`@hermes-bot`), the mention is automatically stripped from the message text before it reaches you. You only see:
 
-### Hermes home directory confusion
-The container uses `HOME=/paperclip`, so `~/.hermes/.env` resolves to `/paperclip/.hermes/.env`, not `/root/.hermes/.env`. The gateway reads env vars from the Hermes home, not the shell's `$HOME`.
+```
+User sends: "@hermes-bot what's the weather?"
+You receive: "what's the weather?"
+```
 
-## Hermes Version Compatibility
+### 4. Message Length
 
-- Tested on **v0.18.2** (2026.7.7.2)
-- Plugin system uses deferred loading for `kind: platform`
-- `BasePlatformAdapter` abstract methods: `connect()`, `disconnect()`, `send()`, `get_chat_info()`
+Your responses can be up to **10,000 characters**. Long responses are automatically chunked into multiple messages by the gateway. You don't need to handle this.
 
-## License
+### 5. Reactions
 
-MIT — see LICENSE file.
+The gateway shows emoji reactions while processing:
+- 👀 when you start thinking
+- ✅ when you respond successfully
+- ⚠️ if an error occurs
+
+These are automatic — you don't control them.
+
+### 6. Typing Indicators
+
+The gateway shows a typing indicator while you generate a response. This is automatic.
+
+### 7. Placeholder Editing
+
+By default, the gateway sends a "🤔 Thinking..." placeholder message when you start processing, then edits it with your final response. This creates a smoother UX for slow responses.
+
+- **Streams:** Placeholder is sent to the same topic as the original message
+- **DMs:** Placeholder is sent to the user directly
+
+If the admin sets `ZULIP_EDIT_PLACEHOLDER=false`, placeholder editing is disabled and you reply directly without any placeholder.
+
+**Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
+
+## Platform-Specific Etiquette
+
+### Do
+- Keep stream replies in the original topic unless asked to change
+- Be concise in busy streams — long messages are fine but chunking may split them
+- Reference previous context naturally since you see the full conversation thread
+
+### Don't
+- Assume all stream messages are for you (in `onmessage` mode, you see everything)
+- Ignore topic names — they're the primary organization mechanism in Zulip
+- Send DMs to users who messaged you in a stream (reply in the stream unless privacy needed)
+
+## Metadata Reference
+
+### Stream Message Metadata
+```json
+{
+  "topic": "api-review",
+  "stream_id": 573423
+}
+```
+
+### DM Metadata
+```json
+{
+  "user_id": 1032616,
+  "user_email": "alice@org.com"
+}
+```
+
+## Troubleshooting for Agents
+
+If you receive a message but the user seems confused, possible causes:
+- **Bot not subscribed:** The bot must be subscribed to a stream to see its messages (admins do this in Zulip UI)
+- **Authorization:** If `ZULIP_ALLOWED_USERS` is set and the user's email isn't in it, their messages won't reach you
+- **Trigger mode mismatch:** User might be sending stream messages that don't match the configured trigger
+
+## For Admins (Configuration)
+
+This plugin is configured via environment variables in `~/.hermes/.env`:
+
+```bash
+ZULIP_API_KEY=your-bot-api-key
+ZULIP_EMAIL=hermes-bot@org.zulipchat.com
+ZULIP_SITE=https://org.zulipchat.com
+ZULIP_ALLOWED_USERS=alice@org.com,bob@org.com
+```
+
+The plugin is installed by copying files to `~/.hermes/plugins/zulip/` and running `hermes plugins enable zulip`.
+
+**Important:** The `zulip` Python SDK must be installed manually (`pip install "zulip>=0.9.0"`) — Hermes does not auto-install plugin dependencies.
+
+---
+
+*This guide is for AI agents consuming the Zulip platform plugin. For developer documentation, see README.md.*

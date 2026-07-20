@@ -21,7 +21,7 @@ optional_env:
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
   - name: ZULIP_EDIT_PLACEHOLDER
-    description: 'Send "Thinking..." placeholder then edit with final response (default: false)'
+    description: 'Send "Thinking..." placeholder then edit with final response (default: true, set false to disable)'
     prompt: "Enable placeholder editing"
   - name: ZULIP_REACTIONS_ENABLED
     description: "Enable emoji reaction status indicators (default: true)"
