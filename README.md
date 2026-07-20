@@ -4,13 +4,18 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Hermes](https://img.shields.io/badge/hermes-%3E%3D0.18.2-orange)](https://hermes-agent.nousresearch.com)
 
-A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds **Zulip** as a first-class messaging platform. Chat with Hermes via Zulip streams (with topic-aware threading) and DMs, schedule cron deliveries, and send automated notifications.
+A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds **Zulip** as a first-class messaging platform. Chat with Hermes via Zulip **streams** (with topic-aware threading) and **DMs**.
+
+> ⚠️ **Prerequisite:** You must manually install the `zulip` Python SDK before using this plugin:
+> ```bash
+> pip install "zulip>=0.9.0"
+> ```
+> Hermes does **not** auto-install plugin dependencies.
 
 ## Features
 
 - ✅ Bi-directional chat via Zulip **streams** (with automatic topic threading) and **DMs**
-- ✅ Cron job deliveries to Zulip streams via `deliver=zulip:stream_id`
-- ✅ `send_message` tool for automated outbound notifications
+- ✅ **"Thinking..." placeholder** — shows users the bot is working, then edits with the final response
 - ✅ User authorization via email allowlist
 - ✅ Interactive onboarding via `hermes gateway setup`
 - ✅ Zero core code changes — pure plugin architecture
@@ -32,14 +37,24 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds
 
 - Python 3.8+
 - Hermes Agent ≥ v0.18.2
-- **Zulip SDK** (`zulip`): must be installed in the same Python environment as Hermes
+- **Zulip SDK** (`zulip>=0.9.0`): **must be installed manually**
 - A Zulip bot account ([create one here](https://zulipchat.com/help/add-a-bot))
 
-> ⚠️ **Runtime Dependency:** The `zulip` Python package is a runtime dependency of this plugin. If you are running Hermes inside a Docker container, ensure `zulip` is either baked into the image (e.g. `RUN pip install zulip` in the Dockerfile) or auto-installed on container startup. Manual `pip install` inside a running container will be lost on restart.
+> ⚠️ **Critical:** The `zulip` Python package is a **runtime dependency** that Hermes does **not** install automatically. You must install it yourself in the same Python environment as Hermes:
+>
+> ```bash
+> pip install "zulip>=0.9.0"
+> ```
+>
+> If you are running Hermes inside a Docker container, ensure `zulip` is either baked into the image (`RUN pip install zulip` in the Dockerfile) or auto-installed on container startup. Manual `pip install` inside a running container will be lost on restart.
 
 ### Option A: User Plugin (Recommended)
 
 ```bash
+# 1. Install the Zulip SDK (REQUIRED — not automatic)
+pip install "zulip>=0.9.0"
+
+# 2. Install the plugin into Hermes
 mkdir -p ~/.hermes/plugins/zulip
 cp zulip/__init__.py zulip/adapter.py zulip/plugin.yaml ~/.hermes/plugins/zulip/
 hermes plugins enable zulip
@@ -66,7 +81,8 @@ Select **📬 Zulip** from the menu. The wizard will prompt for:
 - Bot email address
 - Bot API key (password-masked)
 - Allowed users (optional)
-- Home stream ID & topic for cron deliveries (optional)
+
+Values are saved to `~/.hermes/.env` automatically.
 
 Values are saved to `~/.hermes/.env` automatically.
 
@@ -107,27 +123,6 @@ hermes gateway
 
 Send a message to the bot in Zulip (DM or subscribed stream). The bot will respond via the same channel, preserving the topic for stream messages.
 
-### Send Message Tool
-
-```python
-from hermes_tools import send_message
-
-# Send to stream
-send_message(
-    platform="zulip",
-    chat_id="573423",
-    message="Hello from Hermes!",
-    extra={"topic": "announcements"}
-)
-
-# Send DM
-send_message(
-    platform="zulip",
-    chat_id="dm:1032616",
-    message="Private notification"
-)
-```
-
 ## Architecture
 
 ```
@@ -162,6 +157,7 @@ For stream messages, the adapter caches the last seen **topic** per stream and u
 | `ZULIP_SITE` | ✅ | Zulip organization URL |
 | `ZULIP_ALLOWED_USERS` | ❌ | Comma-separated authorized user emails |
 | `ZULIP_ALLOW_ALL_USERS` | ❌ | Set `true` to disable authorization (dev only) |
+| `ZULIP_EDIT_PLACEHOLDER` | ❌ | Set `false` to disable "Thinking..." placeholder editing |
 
 ## Troubleshooting
 

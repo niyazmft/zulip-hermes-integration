@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+from collections import deque
 from pathlib import Path
 from typing import Optional, Any
 
@@ -130,12 +131,12 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Track latest topic per stream so replies stay threaded
         self._topic_cache: dict[str, str] = {}
-        # Pending placeholder message IDs for editing (chat_id → msg_id)
-        self._pending_placeholders: dict[str, int] = {}
+        # Pending placeholder message IDs for editing (chat_id → deque of msg_ids)
+        self._pending_placeholders: dict[str, deque[int]] = {}
 
-        # Placeholder editing config
+        # Placeholder editing config (default: true, set false to disable)
         self._edit_placeholder_enabled = (
-            os.getenv("ZULIP_EDIT_PLACEHOLDER", "").strip().lower() == "true"
+            os.getenv("ZULIP_EDIT_PLACEHOLDER", "").strip().lower() not in ("false", "0", "no", "off")
         )
 
         self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
@@ -435,7 +436,9 @@ class ZulipAdapter(BasePlatformAdapter):
                         },
                     )
                     if ph_result.get("result") == "success":
-                        self._pending_placeholders[chat_id] = ph_result["id"]
+                        self._pending_placeholders.setdefault(chat_id, deque()).append(
+                            ph_result["id"]
+                        )
                 except Exception:
                     pass  # placeholder is best-effort
 
@@ -450,6 +453,24 @@ class ZulipAdapter(BasePlatformAdapter):
         else:
             sender_id = message.get("sender_id")
             chat_id = f"dm:{sender_id}"
+
+            # Send placeholder if editing is enabled (DMs too)
+            if self._edit_placeholder_enabled:
+                try:
+                    ph_result = await asyncio.to_thread(
+                        self.client.send_message,
+                        {
+                            "type": "private",
+                            "to": [sender_id],
+                            "content": "🤔 Thinking...",
+                        },
+                    )
+                    if ph_result.get("result") == "success":
+                        self._pending_placeholders.setdefault(chat_id, deque()).append(
+                            ph_result["id"]
+                        )
+                except Exception:
+                    pass  # placeholder is best-effort
 
             source = self.build_source(
                 chat_id=chat_id,
@@ -473,6 +494,17 @@ class ZulipAdapter(BasePlatformAdapter):
             await reactions.success()
         except Exception:
             await reactions.error()
+            # Clean up orphaned placeholder if present
+            orphaned_queue = self._pending_placeholders.get(chat_id)
+            if orphaned_queue:
+                try:
+                    orphaned_id = orphaned_queue.popleft()
+                    await asyncio.to_thread(
+                        self.client.update_message,
+                        {"message_id": orphaned_id, "content": "❌ Error — could not generate response"},
+                    )
+                except Exception:
+                    pass  # best-effort cleanup
             raise
         finally:
             if typing_params:
@@ -558,7 +590,13 @@ class ZulipAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a single (unchunked) message, editing placeholder if present."""
         # Check for pending placeholder to edit instead of sending new
-        placeholder_id = self._pending_placeholders.pop(chat_id, None)
+        placeholder_id: Optional[int] = None
+        orphaned_queue = self._pending_placeholders.get(chat_id)
+        if orphaned_queue:
+            try:
+                placeholder_id = orphaned_queue.popleft()
+            except IndexError:
+                placeholder_id = None
         if placeholder_id is not None:
             try:
                 result = await asyncio.to_thread(
