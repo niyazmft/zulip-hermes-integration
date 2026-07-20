@@ -94,8 +94,6 @@ except ImportError:
 | `ZULIP_SITE` | ✅ | Organization URL |
 | `ZULIP_ALLOWED_USERS` | ❌ | Comma-separated authorized emails |
 | `ZULIP_ALLOW_ALL_USERS` | ❌ | `"true"` to skip authorization (dev only) |
-| `ZULIP_HOME_CHANNEL` | ❌ | Default stream ID for cron |
-| `ZULIP_HOME_CHANNEL_NAME` | ❌ | Default topic for cron |
 
 ## Configuration
 
@@ -123,11 +121,6 @@ The gateway event loop must not be blocked — Zulip SDK is synchronous-only.
 ## Authorization
 
 Authorization is **handled by the plugin system** via `allowed_users_env`/`allow_all_env` passed to `ctx.register_platform()`. The adapter does NOT implement its own `_is_authorized()` — the gateway checks before calling `handle_message()`.
-
-## Cron Delivery
-
-- `cron_deliver_env_var="ZULIP_HOME_CHANNEL"` makes `deliver=zulip:stream_id` work
-- `standalone_sender_fn` handles out-of-process sends (when `hermes cron run` runs separately from `hermes gateway`)
 
 ## Testing
 

@@ -17,12 +17,6 @@ requires_env:
     description: "Zulip organization URL (e.g. https://your-org.zulipchat.com)"
     prompt: "Zulip site URL"
 optional_env:
-  - name: ZULIP_HOME_CHANNEL
-    description: "Default stream ID for cron deliveries"
-    prompt: "Home stream ID"
-  - name: ZULIP_HOME_CHANNEL_NAME
-    description: "Default topic for cron deliveries"
-    prompt: "Home topic"
   - name: ZULIP_ALLOWED_USERS
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

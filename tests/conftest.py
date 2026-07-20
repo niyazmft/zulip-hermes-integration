@@ -85,7 +85,6 @@ def mock_platform_config():
             "api_key": "fake-key",
             "email": "bot@test.zulipchat.com",
             "site": "https://test.zulipchat.com",
-            "home_topic": "general",
         }
 
     return FakeConfig()
