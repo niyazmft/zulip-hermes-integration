@@ -31,6 +31,12 @@ class TestFullFlow:
                 return {"result": "success"}
             def get_members(self):
                 return {"result": "success", "members": []}
+            def get_server_settings(self):
+                return {"result": "success", "zulip_version": "8.0"}
+            def get_profile(self):
+                return {"result": "success", "full_name": "Test Bot"}
+            def get_subscriptions(self):
+                return {"result": "success", "subscriptions": []}
             def register(self, **kw):
                 return {"result": "success", "queue_id": "q1", "last_event_id": 1}
             def get_events(self, **kw):

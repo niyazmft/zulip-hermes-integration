@@ -158,13 +158,53 @@ class ZulipAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Initialize connection and start listening."""
         logger.info("Zulip adapter connecting...")
+
+        # 1. Verify server is reachable (no auth required)
         try:
-            result = await asyncio.to_thread(self.client.get_members)
-            if result.get("result") != "success":
-                raise ConnectionError(f"Zulip connection failed: {result}")
+            settings = await asyncio.to_thread(self.client.get_server_settings)
+            if settings.get("result") != "success":
+                raise ConnectionError(
+                    f"Cannot reach Zulip server: {self.site}"
+                )
         except Exception as e:
-            logger.error(f"Zulip connection error: {e}")
+            logger.error("Zulip server unreachable: %s", e)
+            raise ConnectionError(f"Cannot reach Zulip server: {self.site}") from e
+
+        # 2. Validate credentials with lightweight profile call
+        try:
+            result = await asyncio.to_thread(self.client.get_profile)
+            if result.get("result") != "success":
+                raise ConnectionError(f"Zulip authentication failed: {result}")
+            bot_name = result.get("full_name", "Unknown")
+            logger.info(
+                format_zulip_log(
+                    "zulip bot authenticated",
+                    bot=mask_pii(bot_name),
+                )
+            )
+        except Exception as e:
+            logger.error("Zulip authentication error: %s", e)
             raise
+
+        # 3. Log subscriptions so admins know what streams the bot sees
+        try:
+            subs = await asyncio.to_thread(self.client.get_subscriptions)
+            if subs.get("result") == "success":
+                stream_names = [s["name"] for s in subs.get("subscriptions", [])]
+                if stream_names:
+                    logger.info(
+                        "zulip bot subscribed to %d stream(s): %s",
+                        len(stream_names),
+                        ", ".join(stream_names),
+                    )
+                else:
+                    logger.warning(
+                        "zulip bot not subscribed to any streams — "
+                        "stream messages will be invisible"
+                    )
+        except Exception:
+            # Non-fatal: subscription info is advisory
+            pass
 
         logger.info(
             format_zulip_log(
