@@ -12,14 +12,6 @@ import re
 from pathlib import Path
 from typing import Optional, Any
 
-try:
-    import zulip
-
-    ZULIP_AVAILABLE = True
-except ImportError:
-    zulip = None  # type: ignore
-    ZULIP_AVAILABLE = False
-
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -28,8 +20,10 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
-from zulip.logger import format_zulip_log, mask_pii
-from zulip.text_utils import (
+# Use relative imports for internal modules so the plugin works
+# regardless of how Hermes loads it (bundled, user path, etc.)
+from .logger import format_zulip_log, mask_pii
+from .text_utils import (
     chunk_text,
     extract_topic_directive,
     strip_onchar_prefix,
@@ -38,12 +32,49 @@ from zulip.text_utils import (
     normalize_mention,
     strip_html_to_text,
 )
-from zulip.media import upload_file_to_zulip
-from zulip.queue_manager import ZulipQueueManager
-from zulip.dedupe_store import ZulipDedupeStore
-from zulip.reactions import ReactionConfig, ReactionLifecycle
+from .media import upload_file_to_zulip
+from .queue_manager import ZulipQueueManager
+from .dedupe_store import ZulipDedupeStore
+from .reactions import ReactionConfig, ReactionLifecycle
 
 logger = logging.getLogger(__name__)
+
+# Module-level SDK handle — updated by _import_zulip_sdk()
+zulip = None  # type: ignore
+ZULIP_AVAILABLE = False
+
+
+def _import_zulip_sdk():
+    """Lazy-import the zulip SDK, bypassing plugin shadow if needed.
+
+    Hermes adds ~/.hermes/plugins/ to sys.path, so a directory named
+    'zulip' shadows the pip-installed zulip package. We temporarily
+    remove the shadowed entry from sys.modules to force Python to
+    re-resolve to the real SDK.
+    """
+    import sys
+
+    global ZULIP_AVAILABLE, zulip
+    if ZULIP_AVAILABLE and zulip is not None:
+        return zulip
+
+    # Remove any shadowed plugin entry so Python resolves the real SDK
+    _shadow = sys.modules.pop("zulip", None)
+    try:
+        import zulip as _sdk
+
+        zulip = _sdk
+        ZULIP_AVAILABLE = True
+        return _sdk
+    except ImportError:
+        zulip = None
+        ZULIP_AVAILABLE = False
+        return None
+    finally:
+        # Restore the shadowed plugin entry so Hermes/other imports
+        # that expect the zulip package continue to work
+        if _shadow is not None:
+            sys.modules["zulip"] = _shadow
 
 
 # Chunking defaults (overridable via env)
@@ -86,7 +117,8 @@ class ZulipAdapter(BasePlatformAdapter):
             or extra.get("home_topic", "general")
         )
 
-        if not ZULIP_AVAILABLE:
+        _zulip = _import_zulip_sdk()
+        if not _zulip:
             logger.error(
                 "zulip package not installed. Run: pip install zulip"
             )
@@ -94,7 +126,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 "zulip package not installed. Run: pip install zulip"
             )
 
-        self.client = zulip.Client(
+        self.client = _zulip.Client(
             email=self.email,
             api_key=self.api_key,
             site=self.site,
@@ -490,7 +522,7 @@ class ZulipAdapter(BasePlatformAdapter):
 
 def check_requirements() -> bool:
     """Return True if the zulip SDK is installed."""
-    return ZULIP_AVAILABLE
+    return _import_zulip_sdk() is not None
 
 
 def validate_config(config) -> bool:
@@ -531,7 +563,8 @@ async def _standalone_send(
     force_document=False,
 ):
     """Send from cron without a live gateway adapter."""
-    if not ZULIP_AVAILABLE:
+    _zulip = _import_zulip_sdk()
+    if not _zulip:
         return {"error": "zulip package not installed"}
 
     extra = getattr(pconfig, "extra", {}) or {}
@@ -544,7 +577,7 @@ async def _standalone_send(
         return {"error": "Zulip credentials missing in platform config"}
 
     try:
-        client = zulip.Client(email=email, api_key=api_key, site=site)
+        client = _zulip.Client(email=email, api_key=api_key, site=site)
 
         if chat_id.startswith("dm:"):
             user_id = int(chat_id[3:])
