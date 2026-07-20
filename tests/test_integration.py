@@ -37,6 +37,12 @@ class TestFullFlow:
                 return {"result": "success", "full_name": "Test Bot"}
             def get_subscriptions(self):
                 return {"result": "success", "subscriptions": []}
+            def update_presence(self, req):
+                return {"result": "success"}
+            def update_message(self, req):
+                return {"result": "success"}
+            def update_message_flags(self, req):
+                return {"result": "success"}
             def register(self, **kw):
                 return {"result": "success", "queue_id": "q1", "last_event_id": 1}
             def get_events(self, **kw):

@@ -69,6 +69,15 @@ class MockZulipClient:
     def set_typing_status(self, request):
         return {"result": "success"}
 
+    def update_presence(self, request):
+        return {"result": "success"}
+
+    def update_message(self, request):
+        return {"result": "success"}
+
+    def update_message_flags(self, request):
+        return {"result": "success"}
+
     def upload_file(self, file):
         uri = f"/user_uploads/{len(self._uploads)}"
         self._uploads.append({"uri": uri, "file": file})
