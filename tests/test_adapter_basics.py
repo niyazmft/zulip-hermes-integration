@@ -42,7 +42,7 @@ class TestAdapterInstantiation:
 
     def test_adapter_missing_zulip_raises(self, mock_platform_config, monkeypatch):
         import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", False)
+        monkeypatch.setattr(adapter_module, "_import_zulip_sdk", lambda: None)
 
         from zulip.adapter import ZulipAdapter
         with pytest.raises(ImportError, match="zulip package not installed"):
