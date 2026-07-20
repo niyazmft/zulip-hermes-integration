@@ -77,7 +77,6 @@ hermes gateway
 | Problem | Fix |
 |---------|-----|
 | Bot not responding | Check `ZULIP_ALLOWED_USERS` includes your email; verify bot is subscribed to the stream |
-| Cron delivery fails | Verify `ZULIP_HOME_CHANNEL` is a numeric stream ID |
 | Connection errors | Verify API key, email, and site URL (no trailing slash) |
 | "zulip package not installed" | Run `pip install zulip` |
 

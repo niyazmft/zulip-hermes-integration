@@ -79,8 +79,6 @@ ZULIP_API_KEY=your-bot-api-key
 ZULIP_EMAIL=your-bot@niyaz.zulipchat.com
 ZULIP_SITE=https://niyaz.zulipchat.com
 ZULIP_ALLOWED_USERS=your-email@niyaz.zulipchat.com
-ZULIP_HOME_CHANNEL=573423
-ZULIP_HOME_CHANNEL_NAME=general
 ```
 
 Then add to `~/.hermes/config.yaml`:
@@ -108,21 +106,6 @@ hermes gateway
 ```
 
 Send a message to the bot in Zulip (DM or subscribed stream). The bot will respond via the same channel, preserving the topic for stream messages.
-
-### Cron Deliveries
-
-```python
-from hermes_tools import cronjob
-
-cronjob(
-    action="create",
-    prompt="Check Linear for new issues and summarize",
-    schedule="0 9 * * *",
-    deliver="zulip:573423",
-    extra={"topic": "daily-pulse"},
-    name="Daily Pulse"
-)
-```
 
 ### Send Message Tool
 
@@ -179,8 +162,6 @@ For stream messages, the adapter caches the last seen **topic** per stream and u
 | `ZULIP_SITE` | ✅ | Zulip organization URL |
 | `ZULIP_ALLOWED_USERS` | ❌ | Comma-separated authorized user emails |
 | `ZULIP_ALLOW_ALL_USERS` | ❌ | Set `true` to disable authorization (dev only) |
-| `ZULIP_HOME_CHANNEL` | ❌ | Default stream ID for cron deliveries |
-| `ZULIP_HOME_CHANNEL_NAME` | ❌ | Default topic for cron deliveries |
 
 ## Troubleshooting
 
@@ -189,7 +170,6 @@ For stream messages, the adapter caches the last seen **topic** per stream and u
 | "Can't instantiate abstract class" | Add `async def get_chat_info()` to adapter |
 | "No adapter available for zulip" | Check logs for missing SDK or syntax error |
 | Bot not responding | Verify bot is subscribed to stream; check `ZULIP_ALLOWED_USERS` |
-| Cron delivery fails | Verify `ZULIP_HOME_CHANNEL` is numeric; check bot has send permission |
 | Setup wizard shows instructions only | Ensure `setup_fn=interactive_setup` passed to `register()` |
 
 For detailed agent instructions, see [AGENTS.md](AGENTS.md).

@@ -112,10 +112,6 @@ class ZulipAdapter(BasePlatformAdapter):
         self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
         self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
         self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
-        self.home_topic = (
-            os.getenv("ZULIP_HOME_CHANNEL_NAME")
-            or extra.get("home_topic", "general")
-        )
 
         _zulip = _import_zulip_sdk()
         if not _zulip:
@@ -482,7 +478,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 stream_id = int(chat_id)
                 topic = topic_override or metadata.get("topic")
                 if not topic:
-                    topic = self._topic_cache.get(chat_id, self.home_topic)
+                    topic = self._topic_cache.get(chat_id, "general")
 
                 result = await asyncio.to_thread(
                     self.client.send_message,
@@ -543,72 +539,7 @@ def _env_enablement() -> dict | None:
     if not (key and email and site):
         return None
 
-    seed = {"api_key": key, "email": email, "site": site}
-    home = os.getenv("ZULIP_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": os.getenv("ZULIP_HOME_CHANNEL_NAME", "general"),
-        }
-    return seed
-
-
-async def _standalone_send(
-    pconfig,
-    chat_id,
-    message,
-    *,
-    thread_id=None,
-    media_files=None,
-    force_document=False,
-):
-    """Send from cron without a live gateway adapter."""
-    _zulip = _import_zulip_sdk()
-    if not _zulip:
-        return {"error": "zulip package not installed"}
-
-    extra = getattr(pconfig, "extra", {}) or {}
-    email = extra.get("email")
-    api_key = extra.get("api_key")
-    site = extra.get("site")
-    home_topic = extra.get("home_topic", "general")
-
-    if not (email and api_key and site):
-        return {"error": "Zulip credentials missing in platform config"}
-
-    try:
-        client = _zulip.Client(email=email, api_key=api_key, site=site)
-
-        if chat_id.startswith("dm:"):
-            user_id = int(chat_id[3:])
-            result = await asyncio.to_thread(
-                client.send_message,
-                {
-                    "type": "private",
-                    "to": [user_id],
-                    "content": message,
-                },
-            )
-        else:
-            topic = thread_id or home_topic
-            stream_id = int(chat_id)
-            result = await asyncio.to_thread(
-                client.send_message,
-                {
-                    "type": "stream",
-                    "to": stream_id,
-                    "topic": topic,
-                    "content": message,
-                },
-            )
-
-        if result.get("result") == "success":
-            return {"success": True, "message_id": str(result.get("id", ""))}
-        else:
-            return {"error": f"Zulip send failed: {result}"}
-
-    except Exception as e:
-        return {"error": f"Zulip standalone send error: {e}"}
+    return {"api_key": key, "email": email, "site": site}
 
 
 def interactive_setup() -> None:
@@ -675,25 +606,6 @@ def interactive_setup() -> None:
     if allowed:
         save_env_value("ZULIP_ALLOWED_USERS", allowed.strip())
 
-    # Home channel for cron deliveries (optional)
-    home = prompt(
-        "Home stream ID for cron deliveries (numeric, or empty to set later)",
-        default=get_env_value("ZULIP_HOME_CHANNEL") or "",
-    )
-    if home:
-        try:
-            int(home)
-            save_env_value("ZULIP_HOME_CHANNEL", home.strip())
-        except ValueError:
-            print_warning(f"Invalid stream ID '{home}' — must be numeric")
-
-    home_topic = prompt(
-        "Default topic for cron deliveries (default: general)",
-        default=get_env_value("ZULIP_HOME_CHANNEL_NAME") or "general",
-    )
-    if home_topic:
-        save_env_value("ZULIP_HOME_CHANNEL_NAME", home_topic.strip())
-
     print_success("Zulip configured.")
     print_info("Tip: Subscribe your bot to streams via Stream settings → Subscribers")
 
@@ -709,8 +621,6 @@ def register(ctx):
         required_env=["ZULIP_API_KEY", "ZULIP_EMAIL", "ZULIP_SITE"],
         install_hint="pip install zulip",
         env_enablement_fn=_env_enablement,
-        cron_deliver_env_var="ZULIP_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send,
         allowed_users_env="ZULIP_ALLOWED_USERS",
         allow_all_env="ZULIP_ALLOW_ALL_USERS",
         max_message_length=10000,
