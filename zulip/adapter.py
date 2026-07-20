@@ -130,6 +130,13 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Track latest topic per stream so replies stay threaded
         self._topic_cache: dict[str, str] = {}
+        # Pending placeholder message IDs for editing (chat_id → msg_id)
+        self._pending_placeholders: dict[str, int] = {}
+
+        # Placeholder editing config
+        self._edit_placeholder_enabled = (
+            os.getenv("ZULIP_EDIT_PLACEHOLDER", "").strip().lower() == "true"
+        )
 
         self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
 
@@ -154,6 +161,7 @@ class ZulipAdapter(BasePlatformAdapter):
 
         self._listening = False
         self._event_task: Optional[asyncio.Task] = None
+        self._presence_task: Optional[asyncio.Task] = None
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Initialize connection and start listening."""
@@ -213,6 +221,9 @@ class ZulipAdapter(BasePlatformAdapter):
             )
         )
 
+        # Start presence heartbeat so bot appears online
+        self._presence_task = asyncio.create_task(self._presence_heartbeat())
+
         # Ensure queue is registered before starting listener
         await self._queue_mgr.ensure_queue()
 
@@ -236,8 +247,26 @@ class ZulipAdapter(BasePlatformAdapter):
                 await self._event_task
             except asyncio.CancelledError:
                 pass
+        if self._presence_task:
+            self._presence_task.cancel()
+            try:
+                await self._presence_task
+            except asyncio.CancelledError:
+                pass
         self._mark_disconnected()
         logger.info("Zulip adapter disconnected")
+
+    async def _presence_heartbeat(self):
+        """Keep bot presence active while connected."""
+        while self._listening:
+            try:
+                await asyncio.to_thread(
+                    self.client.update_presence,
+                    {"status": "active", "ping_only": False},
+                )
+            except Exception:
+                pass  # presence is best-effort
+            await asyncio.sleep(60)
 
     async def _listen_for_events(self):
         """Listen for incoming Zulip messages via persistent event queue."""
@@ -393,6 +422,23 @@ class ZulipAdapter(BasePlatformAdapter):
             chat_id = str(stream_id)
             self._topic_cache[chat_id] = topic
 
+            # Send placeholder if editing is enabled
+            if self._edit_placeholder_enabled:
+                try:
+                    ph_result = await asyncio.to_thread(
+                        self.client.send_message,
+                        {
+                            "type": "stream",
+                            "to": stream_id,
+                            "topic": topic,
+                            "content": "🤔 Thinking...",
+                        },
+                    )
+                    if ph_result.get("result") == "success":
+                        self._pending_placeholders[chat_id] = ph_result["id"]
+                except Exception:
+                    pass  # placeholder is best-effort
+
             source = self.build_source(
                 chat_id=chat_id,
                 chat_name=stream_name,
@@ -437,6 +483,14 @@ class ZulipAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
+            # Mark message as read (best-effort)
+            try:
+                await asyncio.to_thread(
+                    self.client.update_message_flags,
+                    {"messages": [message_id], "op": "add", "flag": "read"},
+                )
+            except Exception:
+                pass
 
     async def send(
         self,
@@ -502,7 +556,24 @@ class ZulipAdapter(BasePlatformAdapter):
         metadata: dict,
         topic_override: Optional[str],
     ) -> SendResult:
-        """Send a single (unchunked) message."""
+        """Send a single (unchunked) message, editing placeholder if present."""
+        # Check for pending placeholder to edit instead of sending new
+        placeholder_id = self._pending_placeholders.pop(chat_id, None)
+        if placeholder_id is not None:
+            try:
+                result = await asyncio.to_thread(
+                    self.client.update_message,
+                    {"message_id": placeholder_id, "content": content},
+                )
+                if result.get("result") == "success":
+                    logger.debug("zulip placeholder edited for %s", chat_id)
+                    return SendResult(
+                        success=True, message_id=str(placeholder_id)
+                    )
+                # If edit fails, fall through to normal send
+            except Exception:
+                pass  # fall through to normal send
+
         try:
             if chat_id.startswith("dm:"):
                 user_id = int(chat_id[3:])
