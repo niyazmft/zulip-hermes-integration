@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Optional, Any
@@ -101,6 +102,23 @@ def _resolve_chatmode() -> tuple[str, list[str], bool]:
     prefixes = resolve_onchar_prefixes(os.getenv("ZULIP_ONCHAR_PREFIXES", ""))
     require_mention = os.getenv("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
     return mode, prefixes, require_mention
+
+
+def _safe_delete_temp_file(file_path: str) -> None:
+    """Delete a local file only if it resides under /tmp or a bot workspace.
+
+    Prevents accidental deletion of user-owned files outside temp dirs.
+    Errors are logged, not raised.
+    """
+    try:
+        p = Path(file_path).resolve()
+        tmp = Path(tempfile.gettempdir()).resolve()
+        ws = tmp / "hermes_bot_workspace"
+        if str(p).startswith(str(tmp)) or str(p).startswith(str(ws)):
+            p.unlink()
+            logger.debug("cleaned up temp file [path=%s]", file_path)
+    except OSError as e:
+        logger.warning("temp file cleanup failed [path=%s]: %s", file_path, e)
 
 
 class ZulipAdapter(BasePlatformAdapter):
@@ -538,6 +556,7 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Upload files first
         uploaded_urls = []
+        uploaded_local_paths = []
         if media_files:
             data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
             for file_path in media_files:
@@ -546,8 +565,13 @@ class ZulipAdapter(BasePlatformAdapter):
                         self.client, file_path, data_dir
                     )
                     uploaded_urls.append(url)
+                    uploaded_local_paths.append(file_path)
                 except Exception as e:
                     logger.error("zulip upload failed [file=%s]: %s", file_path, e)
+
+        # Clean up local temp files after upload (best-effort)
+        for local_path in uploaded_local_paths:
+            _safe_delete_temp_file(local_path)
 
         # Append uploaded file links to content
         if uploaded_urls:
