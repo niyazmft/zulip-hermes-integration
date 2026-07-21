@@ -54,10 +54,13 @@ MessageEvent(
     ),
     message_id="12345",
     metadata={
-        "topic": "api-review",       # stream messages only
-        "stream_id": 573423,         # stream messages only
-        "user_id": 1032616,          # DM only
-        "user_email": "alice@org.com",  # DM only
+        "topic": "api-review",              # stream messages only
+        "stream_id": 573423,                # stream messages only
+        "user_id": 1032616,                 # DM only
+        "user_email": "alice@org.com",     # DM only
+        "conversation_turn": 12,            # all messages
+        "session_gap_seconds": 45.2,        # all messages
+        "topic_changed": False,             # streams only
     },
 )
 ```
@@ -136,9 +139,19 @@ If the admin sets `ZULIP_EDIT_PLACEHOLDER=false`, placeholder editing is disable
 
 **Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
 
-**Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
+### 8. Context Awareness
 
-### 8. File Generation & Attachments
+Every message you receive carries metadata that helps you stay contextually coherent:
+
+| Field | What It Tells You | What You Should Do |
+|-------|-------------------|-------------------|
+| `conversation_turn` | How many messages have been exchanged in this chat | Very high counts (>20) with short gaps mean dense conversation — don't recycle stale responses |
+| `session_gap_seconds` | How long since the last message | >30 min = new session, old context can be deprioritized |
+| `topic_changed` | **Streams only.** Whether the Zulip topic just changed | `true` = treat as fresh subject, don't assume continuity with prior topic |
+
+**Example:** If `conversation_turn` is 25 and `session_gap_seconds` is 12, the user has been rapidly messaging in the same stream for a while. Guard against hallucinating old content as current.
+
+### 9. File Generation & Attachments
 
 You can generate files (reports, CSVs, JSON dumps, etc.) and send them as Zulip uploads. The user receives a clickable link in your message.
 
