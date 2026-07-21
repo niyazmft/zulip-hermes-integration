@@ -259,40 +259,40 @@ For detailed agent instructions, see [AGENTS.md](AGENTS.md).
 
 ## Plugin Version & Updates
 
-The plugin exposes its version so you can verify what is running.
+The plugin tracks its version in `zulip/version.py`. You can check what version is running by inspecting that file:
 
-### Checking the Version
-
-In Zulip, DM the bot:
-```
-!version
-```
-
-The bot will reply with its current version, e.g.:
-```
-📬 Zulip plugin v1.5.0
-You are on the latest version.
+```bash
+cat ~/.hermes/plugins/zulip/version.py
 ```
 
 ### Updating the Plugin
 
-**Recommended:** Use the Git clone install (Option A above). Then updating is:
+**Recommended:** Use the update script (created automatically in the plugin directory):
 
 ```bash
-cd ~/.hermes/plugins/zulip
-git pull origin main
-hermes gateway restart
+ssh user@device "bash ~/.hermes/plugins/zulip/update.sh"
 ```
 
-**If you used manual copy (Option B):**
+This downloads the latest files from GitHub `main` branch and restarts Hermes automatically.
+
+**If you prefer manual control:**
+
 ```bash
-# Remove old files
-rm ~/.hermes/plugins/zulip/*.py ~/.hermes/plugins/zulip/plugin.yaml
+# SSH into the device running Hermes
+ssh user@device
 
-# Re-copy from latest download
-cp zulip/*.py ~/.hermes/plugins/zulip/
-cp zulip/plugin.yaml ~/.hermes/plugins/zulip/
+# Go to the plugin directory
+cd ~/.hermes/plugins/zulip
 
+# Download latest files
+curl -fsL https://github.com/niyazmft/zulip-hermes-integration/archive/refs/heads/main.zip -o /tmp/update.zip
+unzip -qo /tmp/update.zip -d /tmp/
+
+# Replace plugin files
+cp /tmp/zulip-hermes-integration-main/zulip/*.py .
+cp /tmp/zulip-hermes-integration-main/zulip/plugin.yaml .
+
+# Restart Hermes
 hermes gateway restart
 ```
 
