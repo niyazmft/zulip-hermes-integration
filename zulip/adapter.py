@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import Optional, Any
@@ -151,6 +152,10 @@ class ZulipAdapter(BasePlatformAdapter):
         self._topic_cache: dict[str, str] = {}
         # Pending placeholder message IDs for editing (chat_id → deque of msg_ids)
         self._pending_placeholders: dict[str, deque[int]] = {}
+        # Context-mitigation state
+        self._last_topic_cache: dict[str, str] = {}      # stream_id → previous topic
+        self._message_counts: dict[str, int] = {}        # chat_id → message count
+        self._last_message_time: dict[str, float] = {}   # chat_id → last message epoch
 
         # Placeholder editing config (default: true, set false to disable)
         self._edit_placeholder_enabled = (
@@ -498,6 +503,29 @@ class ZulipAdapter(BasePlatformAdapter):
                 user_name=sender_full_name,
             )
             extra_meta = {"user_id": sender_id, "user_email": sender_email}
+
+        # --- Context-mitigation metadata ---
+        now = time.time()
+        msg_count = self._message_counts.get(chat_id, 0) + 1
+        self._message_counts[chat_id] = msg_count
+
+        last_time = self._last_message_time.get(chat_id)
+        session_gap = (now - last_time) if last_time else 0
+        self._last_message_time[chat_id] = now
+
+        # Detect topic change in streams
+        topic_changed = False
+        if msg_type == "stream":
+            prev_topic = self._last_topic_cache.get(chat_id)
+            if prev_topic and prev_topic != topic:
+                topic_changed = True
+            self._last_topic_cache[chat_id] = topic
+
+        extra_meta.update({
+            "conversation_turn": msg_count,
+            "session_gap_seconds": round(session_gap, 1),
+            "topic_changed": topic_changed,
+        })
 
         event = MessageEvent(
             text=content,
