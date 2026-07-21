@@ -15,7 +15,10 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds
 ## Features
 
 - ✅ Bi-directional chat via Zulip **streams** (with automatic topic threading) and **DMs**
-- ✅ **"Thinking..." placeholder** — shows users the bot is working, then edits with the final response
+- ✅ **"Thinking..." placeholder** — shows users the bot is working, then edits with the final response. Works for both streams and DMs; supports FIFO queue for concurrent messages.
+- ✅ **Context-mitigation metadata** — tracks `conversation_turn`, `session_gap_seconds`, and `topic_changed` to help the upstream AI agent avoid stale template recycling.
+- ✅ **Bot workspace** — AI agents can generate files (reports, CSVs, JSON) in a sandboxed workspace and send them as Zulip uploads. Auto-cleans temp files after upload.
+- ✅ **Self-update via Git** — keep the plugin directory as a git clone and `git pull` to update.
 - ✅ User authorization via email allowlist
 - ✅ Interactive onboarding via `hermes gateway setup`
 - ✅ Zero core code changes — pure plugin architecture
@@ -48,7 +51,31 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds
 >
 > If you are running Hermes inside a Docker container, ensure `zulip` is either baked into the image (`RUN pip install zulip` in the Dockerfile) or auto-installed on container startup. Manual `pip install` inside a running container will be lost on restart.
 
-### Option A: User Plugin (Recommended)
+### Option A: Git Clone (Recommended for Easy Updates)
+
+This keeps the plugin as a proper Git repository so you can `git pull` to update:
+
+```bash
+# 1. Install the Zulip SDK (REQUIRED — not automatic)
+pip install "zulip>=0.9.0"
+
+# 2. Clone directly into the Hermes plugin directory
+mkdir -p ~/.hermes/plugins
+rm -rf ~/.hermes/plugins/zulip  # remove old files if any
+git clone https://github.com/niyazmft/zulip-hermes-integration.git ~/.hermes/plugins/zulip
+
+# 3. Enable the plugin
+hermes plugins enable zulip
+```
+
+**Future updates:**
+```bash
+cd ~/.hermes/plugins/zulip
+git pull origin main
+hermes gateway restart
+```
+
+### Option B: Manual Copy (One-time Install)
 
 ```bash
 # 1. Install the Zulip SDK (REQUIRED — not automatic)
@@ -60,7 +87,9 @@ cp zulip/__init__.py zulip/adapter.py zulip/plugin.yaml ~/.hermes/plugins/zulip/
 hermes plugins enable zulip
 ```
 
-### Option B: Bundled Plugin (Containers / System-wide)
+> ⚠️ **Note:** Option B does not support easy updates. You must manually re-copy files every time the plugin changes.
+
+### Option C: Bundled Plugin (Containers / System-wide)
 
 ```bash
 HERMES_PATH=$(python3 -c "import hermes_cli; print(hermes_cli.__path__[0])")
@@ -148,6 +177,18 @@ The adapter uses Zulip's **event queue API** for inbound messages and wraps all 
 
 For stream messages, the adapter caches the last seen **topic** per stream and uses it for replies, so conversations stay threaded.
 
+## Context-Mitigation Metadata
+
+Every incoming message includes metadata that helps the upstream AI agent manage conversation context and avoid stale responses:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `conversation_turn` | `int` | Cumulative message count in this chat |
+| `session_gap_seconds` | `float` | Seconds since the last message in this chat |
+| `topic_changed` | `bool` | `true` if the stream topic changed since the last message |
+
+**Agent guidance:** When `conversation_turn` is high (>20) AND `session_gap_seconds` is low, the conversation is dense — guard against stale template recycling. When `topic_changed` is `true`, treat this as a fresh subject within the same stream.
+
 ## Bot Workspace & File Attachments
 
 Bots can generate files (reports, CSVs, JSON, etc.) in a sandboxed workspace and send them as Zulip uploads:
@@ -197,8 +238,15 @@ Only files under `/tmp` or `HERMES_DATA_DIR` are accepted — path traversal is 
 | `ZULIP_ALLOW_ALL_USERS` | ❌ | Set `true` to disable authorization (dev only) |
 | `ZULIP_EDIT_PLACEHOLDER` | ❌ | Set `false` to disable "Thinking..." placeholder editing |
 | `ZULIP_MEDIA_MAX_MB` | ❌ | Max inbound attachment size in MB (default: 5) |
+| `ZULIP_REACTIONS_ENABLED` | ❌ | Set `false` to disable emoji reactions (default: true) |
+| `ZULIP_REACTION_CLEAR_ON_FINISH` | ❌ | Set `false` to keep start reactions on success (default: true) |
+| `ZULIP_CHATMODE` | ❌ | Stream trigger mode: `onmessage` / `oncall` / `onchar` (default: onmessage) |
+| `ZULIP_ONCHAR_PREFIXES` | ❌ | Custom onchar triggers, e.g. `!,>` (default: `!,>`, `@bot`) |
+| `ZULIP_REQUIRE_MENTION` | ❌ | Set `false` to allow stream messages without mention (default: true) |
+| `ZULIP_CHUNK_LIMIT` | ❌ | Max characters per message chunk (default: 4000) |
+| `ZULIP_CHUNK_MODE` | ❌ | Chunking strategy: `length` or `newline` (default: length) |
 
-## Troubleshooting
+## Plugin Version & Updates
 
 | Problem | Solution |
 |---------|----------|
@@ -208,6 +256,45 @@ Only files under `/tmp` or `HERMES_DATA_DIR` are accepted — path traversal is 
 | Setup wizard shows instructions only | Ensure `setup_fn=interactive_setup` passed to `register()` |
 
 For detailed agent instructions, see [AGENTS.md](AGENTS.md).
+
+## Plugin Version & Updates
+
+The plugin exposes its version so you can verify what is running.
+
+### Checking the Version
+
+In Zulip, DM the bot:
+```
+!version
+```
+
+The bot will reply with its current version, e.g.:
+```
+📬 Zulip plugin v1.5.0
+You are on the latest version.
+```
+
+### Updating the Plugin
+
+**Recommended:** Use the Git clone install (Option A above). Then updating is:
+
+```bash
+cd ~/.hermes/plugins/zulip
+git pull origin main
+hermes gateway restart
+```
+
+**If you used manual copy (Option B):**
+```bash
+# Remove old files
+rm ~/.hermes/plugins/zulip/*.py ~/.hermes/plugins/zulip/plugin.yaml
+
+# Re-copy from latest download
+cp zulip/*.py ~/.hermes/plugins/zulip/
+cp zulip/plugin.yaml ~/.hermes/plugins/zulip/
+
+hermes gateway restart
+```
 
 ## Contributing
 

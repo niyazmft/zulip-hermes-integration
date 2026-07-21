@@ -375,25 +375,24 @@ class ZulipAdapter(BasePlatformAdapter):
         content = strip_html_to_text(content)
 
         # --- Admin commands (bypass AI agent) ---
-        cmd = content.strip().lower()
-        if cmd in ("/version", "version"):
+        # Use `!` prefix to avoid conflict with Hermes slash commands.
+        # Also strip bot mention so "@Hermes !version" works.
+        cmd_text = content.strip().lower()
+        bot_username = self.email.split("@")[0] if self.email else ""
+        if bot_username:
+            cmd_text = cmd_text.replace(f"@{bot_username}", "").strip()
+
+        if cmd_text in ("!version", "!ver"):
             newer = updater.check_for_update(__repo__, __version__)
-            reply = f"Zulip plugin v{__version__}"
+            reply = f"📬 Zulip plugin v{__version__}"
             if newer:
-                reply += f"\n**Update available:** v{newer} — type `/update` to download."
+                reply += (
+                    f"\n**Update available:** v{newer}\n"
+                    f"Run `git pull` inside `~/.hermes/plugins/zulip` or re-install from GitHub."
+                )
             else:
                 reply += "\nYou are on the latest version."
             await self._send_admin_reply(chat_id, reply, msg_type, message)
-            return
-
-        if cmd in ("/update", "update"):
-            # Only allow update from DMs or from bot owner email
-            allowed = msg_type == "private" or sender_email == self.email
-            if not allowed:
-                await self._send_admin_reply(chat_id, "Updates can only be triggered from DMs.", msg_type, message)
-                return
-            ok, msg = updater.perform_update(__repo__, os.path.dirname(__file__), PLUGIN_FILES)
-            await self._send_admin_reply(chat_id, msg, msg_type, message)
             return
 
         # --- Reactions ---
