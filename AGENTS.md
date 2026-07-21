@@ -191,7 +191,10 @@ await adapter.send(
 ```json
 {
   "topic": "api-review",
-  "stream_id": 573423
+  "stream_id": 573423,
+  "conversation_turn": 12,
+  "session_gap_seconds": 45.2,
+  "topic_changed": false
 }
 ```
 
@@ -199,9 +202,22 @@ await adapter.send(
 ```json
 {
   "user_id": 1032616,
-  "user_email": "alice@org.com"
+  "user_email": "alice@org.com",
+  "conversation_turn": 5,
+  "session_gap_seconds": 180.5,
+  "topic_changed": false
 }
 ```
+
+### Context-Mitigation Fields (All Messages)
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `conversation_turn` | `int` | Cumulative message count in this `chat_id`. High values (>20) may indicate context window saturation. |
+| `session_gap_seconds` | `float` | Seconds since the last message in this `chat_id`. Values >1800 (30 min) suggest a new session. |
+| `topic_changed` | `bool` | **Streams only.** `true` if the topic changed since the last message in this stream. Signals a context shift. |
+
+**Agent guidance:** When `conversation_turn` is high AND `session_gap_seconds` is low, the conversation is dense — guard against stale template recycling. When `topic_changed` is `true`, treat this as a fresh subject within the same stream.
 
 ## Troubleshooting for Agents
 
