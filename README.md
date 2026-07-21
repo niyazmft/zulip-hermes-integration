@@ -3,6 +3,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Hermes](https://img.shields.io/badge/hermes-%3E%3D0.18.2-orange)](https://hermes-agent.nousresearch.com)
+[![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
 
 A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds **Zulip** as a first-class messaging platform. Chat with Hermes via Zulip **streams** (with topic-aware threading) and **DMs**.
 
@@ -259,15 +260,21 @@ For detailed agent instructions, see [AGENTS.md](AGENTS.md).
 
 ## Plugin Version & Updates
 
-The plugin tracks its version in `zulip/version.py`. You can check what version is running by inspecting that file:
+The current version is tracked in `zulip/version.py` and published on [GitHub Releases](https://github.com/niyazmft/zulip-hermes-integration/releases/latest).
+
+### Checking Your Version
+
+SSH into the device running Hermes and check the version file:
 
 ```bash
 cat ~/.hermes/plugins/zulip/version.py
 ```
 
+Compare with the [latest release](https://github.com/niyazmft/zulip-hermes-integration/releases/latest).
+
 ### Updating the Plugin
 
-**Recommended:** Use the update script (created automatically in the plugin directory):
+**Recommended:** Use the `update.sh` script in the plugin directory:
 
 ```bash
 ssh user@device "bash ~/.hermes/plugins/zulip/update.sh"
@@ -275,7 +282,7 @@ ssh user@device "bash ~/.hermes/plugins/zulip/update.sh"
 
 This downloads the latest files from GitHub `main` branch and restarts Hermes automatically.
 
-**If you prefer manual control:**
+**Manual update:**
 
 ```bash
 # SSH into the device running Hermes
@@ -284,7 +291,7 @@ ssh user@device
 # Go to the plugin directory
 cd ~/.hermes/plugins/zulip
 
-# Download latest files
+# Download latest release
 curl -fsL https://github.com/niyazmft/zulip-hermes-integration/archive/refs/heads/main.zip -o /tmp/update.zip
 unzip -qo /tmp/update.zip -d /tmp/
 
