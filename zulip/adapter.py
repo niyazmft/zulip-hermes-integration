@@ -374,27 +374,6 @@ class ZulipAdapter(BasePlatformAdapter):
         # Strip Zulip @-mention syntax and HTML
         content = strip_html_to_text(content)
 
-        # --- Admin commands (bypass AI agent) ---
-        # Use `!` prefix to avoid conflict with Hermes slash commands.
-        # Also strip bot mention so "@Hermes !version" works.
-        cmd_text = content.strip().lower()
-        bot_username = self.email.split("@")[0] if self.email else ""
-        if bot_username:
-            cmd_text = cmd_text.replace(f"@{bot_username}", "").strip()
-
-        if cmd_text in ("!version", "!ver"):
-            newer = updater.check_for_update(__repo__, __version__)
-            reply = f"📬 Zulip plugin v{__version__}"
-            if newer:
-                reply += (
-                    f"\n**Update available:** v{newer}\n"
-                    f"Run `git pull` inside `~/.hermes/plugins/zulip` or re-install from GitHub."
-                )
-            else:
-                reply += "\nYou are on the latest version."
-            await self._send_admin_reply(chat_id, reply, msg_type, message)
-            return
-
         # --- Reactions ---
         reactions = ReactionLifecycle(
             self.client, str(message_id), self._reaction_cfg
@@ -658,39 +637,6 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
 
         return last_result or SendResult(success=False, message_id="")
-
-    async def _send_admin_reply(
-        self,
-        chat_id: str,
-        content: str,
-        msg_type: str,
-        original_message: dict,
-    ) -> None:
-        """Send a direct reply for admin commands (version, update) without AI involvement."""
-        try:
-            if msg_type == "private":
-                await asyncio.to_thread(
-                    self.client.send_message,
-                    {
-                        "type": "private",
-                        "to": [original_message.get("sender_id")],
-                        "content": content,
-                    },
-                )
-            else:
-                stream_id = original_message.get("stream_id")
-                topic = original_message.get("subject", "")
-                await asyncio.to_thread(
-                    self.client.send_message,
-                    {
-                        "type": "stream",
-                        "to": stream_id,
-                        "topic": topic,
-                        "content": content,
-                    },
-                )
-        except Exception as e:
-            logger.warning("admin reply failed: %s", e)
 
     async def _send_single(
         self,
