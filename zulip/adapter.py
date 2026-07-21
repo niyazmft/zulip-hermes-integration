@@ -39,6 +39,8 @@ from .media import upload_file_to_zulip
 from .queue_manager import ZulipQueueManager
 from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
+from .version import __version__, __repo__, PLUGIN_FILES
+from . import updater
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,9 @@ class ZulipAdapter(BasePlatformAdapter):
         # Start presence heartbeat so bot appears online
         self._presence_task = asyncio.create_task(self._presence_heartbeat())
 
+        # Check for plugin updates on startup
+        updater.startup_version_check(__version__, __repo__)
+
         # Ensure queue is registered before starting listener
         await self._queue_mgr.ensure_queue()
 
@@ -368,6 +373,28 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Strip Zulip @-mention syntax and HTML
         content = strip_html_to_text(content)
+
+        # --- Admin commands (bypass AI agent) ---
+        cmd = content.strip().lower()
+        if cmd in ("/version", "version"):
+            newer = updater.check_for_update(__repo__, __version__)
+            reply = f"Zulip plugin v{__version__}"
+            if newer:
+                reply += f"\n**Update available:** v{newer} — type `/update` to download."
+            else:
+                reply += "\nYou are on the latest version."
+            await self._send_admin_reply(chat_id, reply, msg_type, message)
+            return
+
+        if cmd in ("/update", "update"):
+            # Only allow update from DMs or from bot owner email
+            allowed = msg_type == "private" or sender_email == self.email
+            if not allowed:
+                await self._send_admin_reply(chat_id, "Updates can only be triggered from DMs.", msg_type, message)
+                return
+            ok, msg = updater.perform_update(__repo__, os.path.dirname(__file__), PLUGIN_FILES)
+            await self._send_admin_reply(chat_id, msg, msg_type, message)
+            return
 
         # --- Reactions ---
         reactions = ReactionLifecycle(
@@ -632,6 +659,39 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
 
         return last_result or SendResult(success=False, message_id="")
+
+    async def _send_admin_reply(
+        self,
+        chat_id: str,
+        content: str,
+        msg_type: str,
+        original_message: dict,
+    ) -> None:
+        """Send a direct reply for admin commands (version, update) without AI involvement."""
+        try:
+            if msg_type == "private":
+                await asyncio.to_thread(
+                    self.client.send_message,
+                    {
+                        "type": "private",
+                        "to": [original_message.get("sender_id")],
+                        "content": content,
+                    },
+                )
+            else:
+                stream_id = original_message.get("stream_id")
+                topic = original_message.get("subject", "")
+                await asyncio.to_thread(
+                    self.client.send_message,
+                    {
+                        "type": "stream",
+                        "to": stream_id,
+                        "topic": topic,
+                        "content": content,
+                    },
+                )
+        except Exception as e:
+            logger.warning("admin reply failed: %s", e)
 
     async def _send_single(
         self,
