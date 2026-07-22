@@ -41,7 +41,7 @@ from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
 from .version import __version__, __repo__, PLUGIN_FILES
 from . import updater
-from .probe import probe_zulip
+from .probe import probe_zulip, _normalize_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,13 @@ class ZulipAdapter(BasePlatformAdapter):
         self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
         self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
         self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
+
+        # Validate site URL to prevent SSRF before creating client
+        if self.site:
+            validated = _normalize_base_url(self.site)
+            if not validated:
+                raise ValueError(f"Invalid or unsafe ZULIP_SITE: {self.site}")
+            self.site = validated
 
         _zulip = _import_zulip_sdk()
         if not _zulip:
