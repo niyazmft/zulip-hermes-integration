@@ -41,6 +41,7 @@ from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
 from .version import __version__, __repo__, PLUGIN_FILES
 from . import updater
+from .probe import probe_zulip
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,28 @@ class ZulipAdapter(BasePlatformAdapter):
         """Initialize connection and start listening."""
         logger.info("Zulip adapter connecting...")
 
+        # 0. Pre-flight health probe (side-effect free)
+        probe_result = await probe_zulip(self.site, self.email, self.api_key, timeout=10)
+        if not probe_result.get("ok"):
+            error = probe_result.get("error", "unknown")
+            logger.error(
+                format_zulip_log(
+                    "zulip probe failed",
+                    site=mask_pii(self.site),
+                    error=error,
+                )
+            )
+            raise ConnectionError(f"Zulip probe failed: {error}")
+
+        bot = probe_result.get("bot", {})
+        logger.info(
+            format_zulip_log(
+                "zulip probe ok",
+                bot=mask_pii(bot.get("full_name", "Unknown")),
+                id=bot.get("id"),
+            )
+        )
+
         # 1. Verify server is reachable (no auth required)
         try:
             settings = await asyncio.to_thread(self.client.get_server_settings)
@@ -247,6 +270,13 @@ class ZulipAdapter(BasePlatformAdapter):
             )
         )
 
+        # Structured health status for monitoring tools
+        logger.info(
+            "health_status=connected platform=zulip site=%s account=%s",
+            mask_pii(self.site),
+            mask_pii(self.email),
+        )
+
         # Start presence heartbeat so bot appears online
         self._presence_task = asyncio.create_task(self._presence_heartbeat())
 
@@ -284,6 +314,11 @@ class ZulipAdapter(BasePlatformAdapter):
                 pass
         self._mark_disconnected()
         logger.info("Zulip adapter disconnected")
+        logger.info(
+            "health_status=disconnected platform=zulip site=%s account=%s",
+            mask_pii(self.site),
+            mask_pii(self.email),
+        )
 
     async def _presence_heartbeat(self):
         """Keep bot presence active while connected."""
