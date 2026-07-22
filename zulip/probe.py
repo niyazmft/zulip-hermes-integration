@@ -76,7 +76,7 @@ def _normalize_base_url(raw: str) -> Optional[str]:
         return None
 
     # Remove trailing slash for consistency
-    return f"{scheme}://{rest.rstrip("/")}"
+    return f"{scheme}://{rest.rstrip(chr(47))}"
 
 
 async def probe_zulip(
