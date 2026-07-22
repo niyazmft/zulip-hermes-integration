@@ -93,6 +93,14 @@ class MockZulipClient:
         self._last_event_id += 1
 
 
+@pytest.fixture(autouse=True)
+def clear_caches():
+    """Clear client and target caches between tests to ensure isolation."""
+    from zulip.adapter import _clear_caches
+    _clear_caches()
+    yield
+
+
 @pytest.fixture
 def mock_zulip_client():
     return MockZulipClient()
