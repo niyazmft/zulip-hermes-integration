@@ -56,8 +56,12 @@ class BotWorkspace:
         return deleted
 
     def _safe_path(self, filename: str) -> Path:
-        """Resolve a filename under root, rejecting path traversal."""
-        target = (self.root / filename).resolve()
+        """Resolve a filename under root, rejecting path traversal and symlinks."""
+        target = self.root / filename
+        # Check for symlinks BEFORE resolving — prevent reading outside workspace
+        if target.is_symlink():
+            raise ValueError(f"Symlink rejected: {filename}")
+        target = target.resolve()
         if not str(target).startswith(str(self.root)):
             raise ValueError(f"Path traversal rejected: {filename}")
         target.parent.mkdir(parents=True, exist_ok=True)

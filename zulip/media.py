@@ -144,9 +144,15 @@ async def upload_file_to_zulip(
     """Upload a local file to Zulip server.
 
     Returns the uploaded file URL.
-    Security: verifies file_path is under tmp or data_dir.
+    Security: verifies file_path is under tmp or data_dir; rejects symlinks.
     """
-    resolved = Path(file_path).resolve()
+    original = Path(file_path)
+
+    # Reject symlinks BEFORE resolving — prevents reading outside tmp/data_dir
+    if original.is_symlink():
+        raise ValueError(f"Symlink rejected: {file_path}")
+
+    resolved = original.resolve()
     tmp_dir = Path(tempfile.gettempdir()).resolve()
     allowed_data = Path(data_dir).expanduser().resolve()
 
