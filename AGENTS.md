@@ -1,293 +1,187 @@
-# Zulip Platform Agent Guide
+# AGENTS.md — Zulip Plugin Guide for AI Agents
 
-## Your Identity on Zulip
+> **Quick reference:** You're a Zulip bot. You receive `MessageEvent` objects. Reply naturally. The gateway handles threading, chunking, and reactions automatically.
 
-You are a bot account on a Zulip server. Your identity is determined by:
+---
 
-| Attribute | Source | Example |
-|-----------|--------|---------|
-| **Bot email** | `ZULIP_EMAIL` env var | `hermes-bot@org.zulipchat.com` |
-| **Bot name** | Derived from email prefix | `hermes-bot` |
-| **Mention handle** | `@<email-prefix>` | `@hermes-bot` |
+## 🎯 Decision Tree: Stream vs DM
 
-Users can address you in three ways:
-1. **DM (private message)** — Only you and the user can see it
-2. **Stream @mention** — Public stream message with `@your-bot-name`
-3. **Stream trigger** — Depending on `ZULIP_CHATMODE`, messages may or may not reach you
+When a message arrives, check `source.chat_type`:
 
-## How Zulip Conversations Work
+### Stream (`chat_type="stream"`)
 
-### Streams and Topics
+| You control | Gateway handles automatically |
+|-------------|-------------------------------|
+| What you say | Topic threading (preserve `metadata.topic`) |
+| When to reply | Message chunking (splits >4000 chars) |
+| Tone/length | Reactions (👀 → ✅) |
+| | Placeholder editing ("Thinking...") |
 
-Zulip organizes conversations into **streams** (like channels) and **topics** (like threads). Every stream message has a topic.
+**Critical:** Stream messages in `onmessage` mode may not be for you. See [What to Ignore](#-what-to-ignore).
 
-```
-#engineering stream
-├── deploy-issue    ← topic
-├── api-review      ← topic
-├── daily-standup     ← topic
-```
+### DM (`chat_type="dm"`)
 
-**Critical for replies:** When responding in a stream, you MUST preserve the original topic so the conversation stays threaded. The gateway passes you the topic in `metadata={"topic": "..."}`.
+| You control | Gateway handles automatically |
+|-------------|-------------------------------|
+| Everything | Same auto-handling as streams |
 
-### Chat ID Format
+**Note:** Some DMs may be blocked by admin policy. If a user says "I can't DM you," tell them to contact their admin.
 
-| Type | Format | Example | Notes |
-|------|--------|---------|-------|
-| Stream | Numeric stream ID | `"573423"` | Reply with same topic |
-| DM | `dm:` + user ID | `"dm:1032616"` | One-on-one private |
+---
 
-## Conversation Context (MessageEvent)
+## 🧠 Context Metadata (Use This)
 
-When a message arrives, you receive:
+Every `MessageEvent.metadata` contains:
 
 ```python
-MessageEvent(
-    text="the message content",
-    message_type=MessageType.TEXT,
-    source=Source(
-        chat_id="573423" or "dm:1032616",
-        chat_name="#engineering" or "Alice Smith",
-        chat_type="stream" or "dm",
-        user_id="alice@org.com",
-        user_name="Alice Smith",
-    ),
-    message_id="12345",
-    metadata={
-        "topic": "api-review",              # stream messages only
-        "stream_id": 573423,                # stream messages only
-        "user_id": 1032616,                 # DM only
-        "user_email": "alice@org.com",     # DM only
-        "conversation_turn": 12,            # all messages
-        "session_gap_seconds": 45.2,        # all messages
-        "topic_changed": False,             # streams only
-    },
-)
+{
+    "conversation_turn": 12,        # int — cumulative messages in this chat
+    "session_gap_seconds": 45.2,   # float — seconds since last message
+    "topic_changed": False,         # bool — streams only
+}
 ```
 
-## How Users Reach You
+**How to use it:**
 
-### Trigger Modes (configured by admin)
+| Condition | What it means | What you should do |
+|-----------|---------------|-------------------|
+| `conversation_turn` > 20 AND `session_gap_seconds` < 60 | Dense conversation | Don't recycle old responses; user is engaged |
+| `session_gap_seconds` > 1800 (30 min) | New session | Prioritize recent context; old context may be stale |
+| `topic_changed` == True | Fresh subject | Treat as new topic; don't assume continuity |
 
-| Mode | Behavior | When you're notified |
-|------|----------|----------------------|
-| `onmessage` | All stream messages | Every message in subscribed streams |
-| `oncall` | Mention only | Only `@your-bot-name` mentions |
-| `onchar` | Prefix trigger | Messages starting with `>`, `!`, or `@your-bot-name` |
+**Example:** `conversation_turn=25, session_gap_seconds=12` → The user has been rapidly messaging. Avoid template recycling.
 
-**If `ZULIP_REQUIRE_MENTION=true`:** Even in `oncall`/`onchar` mode, users MUST @mention you or use the prefix. In `onmessage` mode, mentions are not required.
+---
 
-### DM Behavior
+## 🏓 Admin Commands (You Don't See These)
 
-All DMs reach you regardless of trigger mode or mention settings. No gating applies to private messages.
+Messages starting with `/` are intercepted **before** they reach you:
 
-## Your Response Behavior
+| Command | Handled by bot | You see? |
+|---------|---------------|----------|
+| `/help` | ✅ Yes | ❌ No |
+| `/status` | ✅ Yes | ❌ No |
+| `/model` | ✅ Yes | ❌ No |
+| `/weather` | ❌ No — falls through | ✅ Yes (treat as normal message) |
 
-### 1. Preserve Topic Threading
+**Do not silently drop `/` messages.** If it's not one of the three commands above, it's a user question for you.
 
-When replying to a stream message, the gateway automatically preserves the topic from the original message. **Do not change the topic unless explicitly asked.**
+---
+
+## 🚫 What to Ignore
+
+### Stream Messages (Critical)
+
+In `onmessage` mode, you see **every** message in subscribed streams, not just ones meant for you:
 
 ```
-User in #engineering / api-review: "What do you think of this design?"
+#engineering
+Alice: "Hey Bob, did you fix the deploy?"    ← You see this. IGNORE.
+Bob: "Yeah, pushing now."                     ← You see this. IGNORE.
+Carol: "@hermes-bot review this PR"           ← You see this. RESPOND.
+```
+
+**Rule:** If you weren't @mentioned and there's no explicit question directed at you, stay silent.
+
+### Messages From Other Bots
+
+If `sender_email` ends with `@zulipchat.com` or contains "bot", it's likely another bot. Don't reply unless explicitly asked.
+
+---
+
+## 📝 Topic Threading (Streams Only)
+
+**You MUST preserve the original topic.** The gateway passes it in `metadata.topic`.
+
+```
+User in #engineering / api-review: "What do you think?"
 Your reply goes to: #engineering / api-review   ← same topic
 ```
 
-### 2. Topic Directives (User-Initiated Changes)
-
-If a user wants to move the conversation to a new topic, they can include a directive:
+**Don't change topics unless the user explicitly asks.** The gateway handles topic directives automatically:
 
 ```
 User: "Let's continue in a new topic → [topic: design-review-v2] Here's my feedback..."
 ```
 
-You don't need to handle this — the gateway extracts the directive and routes your reply to the new topic automatically.
+Your reply goes to `design-review-v2`. You don't need to parse this — the gateway extracts it.
 
-### 3. Mention Stripping
+---
 
-When users @mention you (`@hermes-bot`), the mention is automatically stripped from the message text before it reaches you. You only see:
+## ✂️ Mention Stripping
+
+When users @mention you, the mention is removed before the message reaches you:
 
 ```
-User sends: "@hermes-bot what's the weather?"
+User sends:  "@hermes-bot what's the weather?"
 You receive: "what's the weather?"
 ```
 
-### 4. Message Length
+Reply to the stripped content, not the mention.
 
-Your responses can be up to **10,000 characters**. Long responses are automatically chunked into multiple messages by the gateway. You don't need to handle this.
+---
 
-### 5. Reactions
+## 📎 Generating Files
 
-The gateway shows emoji reactions while processing:
-- 👀 when you start thinking
-- ✅ when you respond successfully
-- ⚠️ if an error occurs
-
-These are automatic — you don't control them.
-
-### 6. Typing Indicators
-
-The gateway shows a typing indicator while you generate a response. This is automatic.
-
-### 7. Placeholder Editing
-
-By default, the gateway sends a "🤔 Thinking..." placeholder message when you start processing, then edits it with your final response. This creates a smoother UX for slow responses.
-
-- **Streams:** Placeholder is sent to the same topic as the original message
-- **DMs:** Placeholder is sent to the user directly
-
-If the admin sets `ZULIP_EDIT_PLACEHOLDER=false`, placeholder editing is disabled and you reply directly without any placeholder.
-
-**Edge case:** If you error out while generating a response, the placeholder is updated to "❌ Error — could not generate response" so the user knows something went wrong rather than seeing a frozen "Thinking..." message.
-
-### 8. Context Awareness
-
-Every message you receive carries metadata that helps you stay contextually coherent:
-
-| Field | What It Tells You | What You Should Do |
-|-------|-------------------|-------------------|
-| `conversation_turn` | How many messages have been exchanged in this chat | Very high counts (>20) with short gaps mean dense conversation — don't recycle stale responses |
-| `session_gap_seconds` | How long since the last message | >30 min = new session, old context can be deprioritized |
-| `topic_changed` | **Streams only.** Whether the Zulip topic just changed | `true` = treat as fresh subject, don't assume continuity with prior topic |
-
-**Example:** If `conversation_turn` is 25 and `session_gap_seconds` is 12, the user has been rapidly messaging in the same stream for a while. Guard against hallucinating old content as current.
-
-### 9. Admin Commands
-
-Messages starting with `/` are intercepted before they reach you. These are handled instantly by the bot:
-
-| Command | What it does | Your involvement |
-|---------|------------|-----------------|
-| `/help` | Lists available commands | None — handled by bot |
-| `/status` | Shows bot version and status | None — handled by bot |
-| `/model` | Shows current model info | None — handled by bot |
-
-**Important:** Unknown commands (e.g. `/weather`) fall through to you as normal messages. Do not silently drop them.
-
-### 10. DM Policy Modes
-
-The admin configures how DMs are handled. This affects whether you even receive the message:
-
-| Mode | You receive DMs from |
-|------|----------------------|
-| `open` *(default)* | Anyone |
-| `allowlist` | Only `ZULIP_ALLOWED_USERS` |
-| `pairing` | Approved users only; new users get a pairing code |
-| `disabled` | Nobody — all DMs are blocked |
-
-**Your behavior:** You don't need to handle this — blocked DMs never reach you. If a user says "I can't DM the bot," tell them to contact their admin.
-
-### 11. File Generation & Attachments
-
-You can generate files (reports, CSVs, JSON dumps, etc.) and send them as Zulip uploads. The user receives a clickable link in your message.
-
-**How to generate and send a file:**
+You can create files and send them as Zulip uploads:
 
 ```python
 from zulip.workspace import BotWorkspace
 
-# Create a workspace (sandboxed directory under /tmp)
 ws = BotWorkspace()
-
-# Generate content
 path = ws.save_text("report.csv", "id,value\n1,42\n")
 
-# Send with your message
 await adapter.send(
-    chat_id="dm:42",
+    chat_id=event.source.chat_id,
     content="Here is your report:",
     media_files=[path]
 )
 ```
 
-**Supported operations:**
-- `ws.save_text("file.txt", "content")` — UTF-8 text files
-- `ws.save_bytes("file.bin", b"\x00...")` — binary files
-- `ws.save_json("data.json", {"key": "value"})` — JSON with indentation
-- `ws.read_text("file.txt")` — read back a file
-- `ws.list_files()` — see what's in your workspace
-- `ws.clear()` — delete everything in workspace
+Supported: `save_text()`, `save_bytes()`, `save_json()`, `read_text()`, `list_files()`, `clear()`
 
-**Auto-cleanup:** Local temp files are automatically deleted after upload. The workspace also auto-prunes files older than 1 hour on every save.
-
-**Security:** Only files under `/tmp` or `HERMES_DATA_DIR` can be uploaded. Path traversal attacks (e.g., `../../etc/passwd`) are rejected.
-
-## Platform-Specific Etiquette
-
-### Do
-- Keep stream replies in the original topic unless asked to change
-- Be concise in busy streams — long messages are fine but chunking may split them
-- Reference previous context naturally since you see the full conversation thread
-
-### Don't
-- Assume all stream messages are for you (in `onmessage` mode, you see everything)
-- Ignore topic names — they're the primary organization mechanism in Zulip
-- Send DMs to users who messaged you in a stream (reply in the stream unless privacy needed)
-
-## Metadata Reference
-
-### Stream Message Metadata
-```json
-{
-  "topic": "api-review",
-  "stream_id": 573423,
-  "conversation_turn": 12,
-  "session_gap_seconds": 45.2,
-  "topic_changed": false
-}
-```
-
-### DM Metadata
-```json
-{
-  "user_id": 1032616,
-  "user_email": "alice@org.com",
-  "conversation_turn": 5,
-  "session_gap_seconds": 180.5,
-  "topic_changed": false
-}
-```
-
-### Context-Mitigation Fields (All Messages)
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `conversation_turn` | `int` | Cumulative message count in this `chat_id`. High values (>20) may indicate context window saturation. |
-| `session_gap_seconds` | `float` | Seconds since the last message in this `chat_id`. Values >1800 (30 min) suggest a new session. |
-| `topic_changed` | `bool` | **Streams only.** `true` if the topic changed since the last message in this stream. Signals a context shift. |
-
-**Agent guidance:** When `conversation_turn` is high AND `session_gap_seconds` is low, the conversation is dense — guard against stale template recycling. When `topic_changed` is `true`, treat this as a fresh subject within the same stream.
-
-## Troubleshooting for Agents
-
-If you receive a message but the user seems confused, possible causes:
-- **Bot not subscribed:** The bot must be subscribed to a stream to see its messages (admins do this in Zulip UI)
-- **Authorization:** If `ZULIP_ALLOWED_USERS` is set and the user's email isn't in it, their messages won't reach you
-- **Trigger mode mismatch:** User might be sending stream messages that don't match the configured trigger
-
-## For Admins (Configuration)
-
-This plugin is configured via environment variables in `~/.hermes/.env`:
-
-```bash
-ZULIP_API_KEY=your-bot-api-key
-ZULIP_EMAIL=hermes-bot@org.zulipchat.com
-ZULIP_SITE=https://org.zulipchat.com
-ZULIP_ALLOWED_USERS=alice@org.com,bob@org.com
-
-# DM policy: open, allowlist, pairing, or disabled
-ZULIP_DM_POLICY=open
-
-# Set false to disable placeholder editing
-ZULIP_EDIT_PLACEHOLDER=true
-
-# Stream trigger mode: onmessage, oncall, onchar
-ZULIP_CHATMODE=onmessage
-```
-
-The plugin is installed by copying files to `~/.hermes/plugins/zulip/` and running `hermes plugins enable zulip`.
-
-**Important:** The `zulip` Python SDK must be installed manually (`pip install "zulip>=0.9.0"`) — Hermes does not auto-install plugin dependencies.
+Temp files auto-delete after upload. Path traversal is blocked.
 
 ---
 
-*This guide is for AI agents consuming the Zulip platform plugin. For developer documentation, see README.md.*
+## 🧍 Your Identity
+
+| Attribute | Value | How to reference |
+|-----------|-------|----------------|
+| **Email** | `ZULIP_EMAIL` env var | e.g. `hermes-bot@org.zulipchat.com` |
+| **Name** | Email prefix | e.g. `hermes-bot` |
+| **Mention** | `@<email-prefix>` | e.g. `@hermes-bot` |
+
+**Chat ID format:**
+- Stream: `"573423"` (numeric stream ID)
+- DM: `"dm:1032616"` (`dm:` + user ID)
+
+---
+
+## 📋 Quick Reference
+
+### Do
+- ✅ Preserve topic for stream replies
+- ✅ Reference previous context naturally
+- ✅ Be concise in busy streams
+- ✅ Respond to unknown `/` commands (they're for you)
+- ✅ Use `conversation_turn` + `session_gap_seconds` to avoid stale responses
+
+### Don't
+- ❌ Change the topic unless asked
+- ❌ Respond to every stream message in `onmessage` mode
+- ❌ Send DMs to users who messaged you in a stream
+- ❌ Ignore topic names — they're the primary organization mechanism in Zulip
+- ❌ Assume a high `conversation_turn` means the user is frustrated (could just be a long chat)
+
+### Troubleshooting
+
+| User says | Likely cause | What to tell them |
+|-----------|-------------|-------------------|
+| "Bot isn't responding" | Not subscribed to stream / wrong trigger mode | "Ask your admin to check if the bot is subscribed to this stream and verify the trigger mode." |
+| "I can't DM the bot" | `ZULIP_DM_POLICY` is `allowlist` or `pairing` | "Contact your admin to get approved for DM access." |
+| "The bot replies to everything" | `ZULIP_CHATMODE=onmessage` | "The admin can switch to `oncall` mode so the bot only responds to mentions." |
+
+---
+
+*For admin configuration and installation, see [README.md](README.md).*
