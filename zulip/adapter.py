@@ -11,7 +11,7 @@ import os
 import re
 import tempfile
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Optional, Any
 
@@ -48,6 +48,86 @@ logger = logging.getLogger(__name__)
 
 # Module-level SDK handle — updated by _import_zulip_sdk()
 zulip = None  # type: ignore
+
+# ------------------------------------------------------------------
+# Performance: client + target caching (Issue #49)
+# ------------------------------------------------------------------
+_MAX_CLIENT_CACHE = 50
+_MAX_TARGET_CACHE = 500
+
+_client_cache: OrderedDict[str, Any] = OrderedDict()
+_target_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+
+def _get_cached_client(site: str, email: str, api_key: str, *, _zulip_mod: Any = None) -> Any:
+    """Return a cached Zulip client or create a new one.
+
+    LRU eviction keeps the most-recently-used clients.
+    """
+    key = f"{site}\x00{email}\x00{api_key}"
+    client = _client_cache.pop(key, None)
+    if client is not None:
+        _client_cache[key] = client
+        return client
+
+    _zulip = _zulip_mod or _import_zulip_sdk()
+    if _zulip is None:
+        raise ImportError("zulip package not installed")
+
+    client = _zulip.Client(email=email, api_key=api_key, site=site)
+
+    if len(_client_cache) >= _MAX_CLIENT_CACHE:
+        oldest = next(iter(_client_cache))
+        del _client_cache[oldest]
+
+    _client_cache[key] = client
+    return client
+
+
+def _get_cached_target(chat_id: str) -> dict[str, Any] | None:
+    """Return cached target info or None.
+
+    Target info: {"type": "dm", "user_id": int} | {"type": "stream", "stream_id": int}
+    """
+    info = _target_cache.get(chat_id)
+    if info is not None:
+        # Move to end (most-recently-used)
+        del _target_cache[chat_id]
+        _target_cache[chat_id] = info
+    return info
+
+
+def _set_cached_target(chat_id: str, info: dict[str, Any]) -> None:
+    """Cache parsed target info with LRU eviction."""
+    if chat_id in _target_cache:
+        del _target_cache[chat_id]
+
+    if len(_target_cache) >= _MAX_TARGET_CACHE:
+        oldest = next(iter(_target_cache))
+        del _target_cache[oldest]
+
+    _target_cache[chat_id] = info
+
+
+def _parse_target(chat_id: str) -> dict[str, Any]:
+    """Parse chat_id into target info, using cache if available."""
+    cached = _get_cached_target(chat_id)
+    if cached is not None:
+        return cached
+
+    if chat_id.startswith("dm:"):
+        info = {"type": "dm", "user_id": int(chat_id[3:])}
+    else:
+        info = {"type": "stream", "stream_id": int(chat_id)}
+
+    _set_cached_target(chat_id, info)
+    return info
+
+
+def _clear_caches() -> None:
+    """Clear all caches. Used by tests and for resource cleanup."""
+    _client_cache.clear()
+    _target_cache.clear()
 ZULIP_AVAILABLE = False
 
 
@@ -153,11 +233,8 @@ class ZulipAdapter(BasePlatformAdapter):
                 "zulip package not installed. Run: pip install zulip"
             )
 
-        self.client = _zulip.Client(
-            email=self.email,
-            api_key=self.api_key,
-            site=self.site,
-        )
+        # Use cached client if available (avoids repeated base64 encoding + object creation)
+        self.client = _get_cached_client(self.site, self.email, self.api_key, _zulip_mod=_zulip)
 
         # Track latest topic per stream so replies stay threaded
         self._topic_cache: dict[str, str] = {}
@@ -171,6 +248,11 @@ class ZulipAdapter(BasePlatformAdapter):
         # Placeholder editing config (default: true, set false to disable)
         self._edit_placeholder_enabled = (
             os.getenv("ZULIP_EDIT_PLACEHOLDER", "").strip().lower() not in ("false", "0", "no", "off")
+        )
+
+        # Block streaming config (Issue #49 — requires gateway-level streaming support)
+        self._block_streaming = (
+            os.getenv("ZULIP_BLOCK_STREAMING", "").strip().lower() in ("true", "1", "yes", "on")
         )
 
         self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
@@ -721,6 +803,8 @@ class ZulipAdapter(BasePlatformAdapter):
 
         last_result: Optional[SendResult] = None
 
+        # When block streaming is enabled, send each chunk as a separate message
+        # immediately. This requires gateway-level support (not yet implemented).
         for idx, chunk in enumerate(chunks):
             result = await self._send_single(chat_id, chunk, metadata, topic_override)
             last_result = result
@@ -766,18 +850,18 @@ class ZulipAdapter(BasePlatformAdapter):
                 pass  # fall through to normal send
 
         try:
-            if chat_id.startswith("dm:"):
-                user_id = int(chat_id[3:])
+            target = _parse_target(chat_id)
+            if target["type"] == "dm":
                 result = await asyncio.to_thread(
                     self.client.send_message,
                     {
                         "type": "private",
-                        "to": [user_id],
+                        "to": [target["user_id"]],
                         "content": content,
                     },
                 )
             else:
-                stream_id = int(chat_id)
+                stream_id = target["stream_id"]
                 topic = topic_override or metadata.get("topic")
                 if not topic:
                     topic = self._topic_cache.get(chat_id, "general")
