@@ -12,6 +12,11 @@ class TestFullFlow:
         import zulip.adapter as adapter_module
         monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
 
+        # Patch probe so connect() doesn't make real HTTP calls
+        async def fake_probe(*args, **kwargs):
+            return {"ok": True, "bot": {"id": "1", "email": "bot@test.com", "full_name": "Test"}}
+        monkeypatch.setattr(adapter_module, "probe_zulip", fake_probe)
+
         calls = {"send_message": [], "set_typing_status": [], "add_reaction": []}
 
         class MockClient:
