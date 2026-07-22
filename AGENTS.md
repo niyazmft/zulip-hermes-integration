@@ -151,7 +151,32 @@ Every message you receive carries metadata that helps you stay contextually cohe
 
 **Example:** If `conversation_turn` is 25 and `session_gap_seconds` is 12, the user has been rapidly messaging in the same stream for a while. Guard against hallucinating old content as current.
 
-### 9. File Generation & Attachments
+### 9. Admin Commands
+
+Messages starting with `/` are intercepted before they reach you. These are handled instantly by the bot:
+
+| Command | What it does | Your involvement |
+|---------|------------|-----------------|
+| `/help` | Lists available commands | None — handled by bot |
+| `/status` | Shows bot version and status | None — handled by bot |
+| `/model` | Shows current model info | None — handled by bot |
+
+**Important:** Unknown commands (e.g. `/weather`) fall through to you as normal messages. Do not silently drop them.
+
+### 10. DM Policy Modes
+
+The admin configures how DMs are handled. This affects whether you even receive the message:
+
+| Mode | You receive DMs from |
+|------|----------------------|
+| `open` *(default)* | Anyone |
+| `allowlist` | Only `ZULIP_ALLOWED_USERS` |
+| `pairing` | Approved users only; new users get a pairing code |
+| `disabled` | Nobody — all DMs are blocked |
+
+**Your behavior:** You don't need to handle this — blocked DMs never reach you. If a user says "I can't DM the bot," tell them to contact their admin.
+
+### 11. File Generation & Attachments
 
 You can generate files (reports, CSVs, JSON dumps, etc.) and send them as Zulip uploads. The user receives a clickable link in your message.
 
@@ -248,6 +273,15 @@ ZULIP_API_KEY=your-bot-api-key
 ZULIP_EMAIL=hermes-bot@org.zulipchat.com
 ZULIP_SITE=https://org.zulipchat.com
 ZULIP_ALLOWED_USERS=alice@org.com,bob@org.com
+
+# DM policy: open, allowlist, pairing, or disabled
+ZULIP_DM_POLICY=open
+
+# Set false to disable placeholder editing
+ZULIP_EDIT_PLACEHOLDER=true
+
+# Stream trigger mode: onmessage, oncall, onchar
+ZULIP_CHATMODE=onmessage
 ```
 
 The plugin is installed by copying files to `~/.hermes/plugins/zulip/` and running `hermes plugins enable zulip`.

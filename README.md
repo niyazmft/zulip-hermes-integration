@@ -16,6 +16,11 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) gateway plugin that adds
 ## Features
 
 - ✅ Bi-directional chat via Zulip **streams** (with automatic topic threading) and **DMs**
+- ✅ **Admin commands** — `/help`, `/status`, `/model` parsed before AI dispatch
+- ✅ **DM pairing system** — secure onboarding with random pairing codes (policy modes: open, allowlist, pairing, disabled)
+- ✅ **Health probe** — pre-flight connection validation with SSRF protection + structured `health_status` logging
+- ✅ **Security hardening** — SSRF URL validation, symlink rejection, path traversal protection
+- ✅ **Performance caching** — LRU client cache (50) + target cache (500) to reduce repeated allocations
 - ✅ **"Thinking..." placeholder** — shows users the bot is working, then edits with the final response. Works for both streams and DMs; supports FIFO queue for concurrent messages.
 - ✅ **Context-mitigation metadata** — tracks `conversation_turn`, `session_gap_seconds`, and `topic_changed` to help the upstream AI agent avoid stale template recycling.
 - ✅ **Bot workspace** — AI agents can generate files (reports, CSVs, JSON) in a sandboxed workspace and send them as Zulip uploads. Auto-cleans temp files after upload.
@@ -190,6 +195,78 @@ Every incoming message includes metadata that helps the upstream AI agent manage
 
 **Agent guidance:** When `conversation_turn` is high (>20) AND `session_gap_seconds` is low, the conversation is dense — guard against stale template recycling. When `topic_changed` is `true`, treat this as a fresh subject within the same stream.
 
+## Admin Commands
+
+The bot intercepts messages starting with `/` before they reach the AI agent. These are handled instantly without invoking the LLM:
+
+| Command | Response |
+|---------|----------|
+| `/help` | List available commands |
+| `/status` | Bot version, repo, sender info |
+| `/model` | Current model status (placeholder) |
+
+Unknown commands fall through to the AI agent (not silently dropped). Commands work in both streams and DMs.
+
+### Registering Custom Commands
+
+Plugin developers can add new commands via the `register_command` decorator:
+
+```python
+from zulip.commands import register_command
+
+@register_command("ping")
+def _cmd_ping(args, chat_id, sender_email, sender_name):
+    return "🏓 Pong!"
+```
+
+## DM Policy & Pairing System
+
+Control who can send DMs to the bot via the `ZULIP_DM_POLICY` environment variable:
+
+| Mode | Behavior |
+|------|----------|
+| `open` *(default)* | Anyone can DM |
+| `allowlist` | Only `ZULIP_ALLOWED_USERS` can DM |
+| `pairing` | New users get a pairing code to share with an admin |
+| `disabled` | All DMs blocked |
+
+**Pairing flow:**
+1. New user sends DM → blocked with pairing code (e.g. `PAIR-ABC123`)
+2. Admin approves: add email to `ZULIP_ALLOWED_USERS` or call `policy.approve_email("user@example.com")`
+3. Future DMs from that user are processed normally
+
+## Health Probe
+
+Before connecting, the adapter probes the Zulip server to verify reachability. The probe validates:
+- HTTP(S) scheme only (no `file://` or `gopher://`)
+- No internal/private IPs (127.x.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 169.254.x.x)
+- No localhost or AWS metadata endpoints
+
+Results are logged as structured `health_status` events:
+```json
+{"health_status": "connected", "platform": "zulip", "site": "...", "account": "..."}
+```
+
+## Performance Caching
+
+Two module-level LRU caches reduce repeated allocations:
+
+| Cache | Key | Max Size | Benefit |
+|-------|-----|----------|---------|
+| **Client** | `site\0email\0api_key` | 50 | Avoids repeated `base64` encoding + `Client()` object creation |
+| **Target** | `chat_id` | 500 | Avoids re-parsing `"dm:42"` vs `"573423"` on every send |
+
+Caches are automatically cleared between reconnects. Set `ZULIP_BLOCK_STREAMING=true` for experimental block streaming (gateway-level support required).
+
+## Security Hardening
+
+The plugin includes several security measures:
+
+- **SSRF protection** — `ZULIP_SITE` is validated before creating the client; rejects internal IPs, file URLs, and non-HTTP schemes
+- **Symlink rejection** — `BotWorkspace` and `upload_file_to_zulip()` reject symlinks to prevent reading files outside authorized directories
+- **Path traversal blocking** — `BotWorkspace._safe_path()` rejects `../../etc/passwd`-style paths
+- **URL encoding** — Zulip SDK handles encoding internally; our wrappers validate for injection attempts
+
 ## Bot Workspace & File Attachments
 
 Bots can generate files (reports, CSVs, JSON, etc.) in a sandboxed workspace and send them as Zulip uploads:
@@ -246,6 +323,9 @@ Only files under `/tmp` or `HERMES_DATA_DIR` are accepted — path traversal is 
 | `ZULIP_REQUIRE_MENTION` | ❌ | Set `false` to allow stream messages without mention (default: true) |
 | `ZULIP_CHUNK_LIMIT` | ❌ | Max characters per message chunk (default: 4000) |
 | `ZULIP_CHUNK_MODE` | ❌ | Chunking strategy: `length` or `newline` (default: length) |
+| `ZULIP_DM_POLICY` | ❌ | DM access control: `open` / `allowlist` / `pairing` / `disabled` (default: open) |
+| `ZULIP_BLOCK_STREAMING` | ❌ | Set `true` to enable experimental block streaming (default: false) |
+| `ZULIP_EDIT_PLACEHOLDER` | ❌ | Set `false` to disable "Thinking..." placeholder editing |
 
 ## Plugin Version & Updates
 

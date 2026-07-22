@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] - 2026-07-22
+
+### Added
+- **Admin Command Framework**: `/help`, `/status`, `/model` commands intercepted before AI dispatch. Extensible via `@register_command` decorator.
+- **DM Policy & Pairing System**: Four policy modes — `open`, `allowlist`, `pairing`, `disabled`. Pairing mode generates random 6-char codes for secure onboarding.
+- **Performance Caching**: LRU client cache (50 entries) + target cache (500 entries) to reduce repeated allocations.
+- **Health Probe**: Pre-flight SSRF-safe connection validation with structured `health_status` logging.
+- **Security Hardening**: SSRF URL validation, symlink rejection in workspace/media uploads, path traversal blocking.
+- **Multi-Account Config**: `AccountResolver` supports backward-compatible single-account and multi-account configs.
+
+### Changed
+- `adapter.py` now uses cached clients via `_get_cached_client()` instead of creating new `Client()` instances per reconnect.
+- `_send_single()` now uses `_parse_target()` cache for DM vs stream resolution.
+- `update.sh` deployment script now runs `hermes gateway restart` in background via `nohup`.
+
 ## [Unreleased]
 
 ### Added
