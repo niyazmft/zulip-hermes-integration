@@ -40,6 +40,7 @@ from .queue_manager import ZulipQueueManager
 from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
 from .version import __version__, __repo__, PLUGIN_FILES
+from .commands import handle_command, is_command
 from . import updater
 from .probe import probe_zulip, _normalize_base_url
 
@@ -483,6 +484,59 @@ class ZulipAdapter(BasePlatformAdapter):
             # Normalize mention from content
             if was_mentioned and mention_regex:
                 content = normalize_mention(content, mention_regex)
+
+        # --- Command interception (before placeholders / AI dispatch) ---
+        if is_command(content):
+            sender_email = message.get("sender_email", "")
+            sender_full_name = message.get("sender_full_name", "")
+            # Determine chat_id early for command replies
+            if msg_type == "stream":
+                cmd_chat_id = str(message.get("stream_id", ""))
+                cmd_topic = message.get("subject", "")
+            else:
+                cmd_chat_id = f"dm:{message.get('sender_id', '')}"
+                cmd_topic = None
+
+            cmd_result = handle_command(
+                content=content,
+                chat_id=cmd_chat_id,
+                sender_email=sender_email,
+                sender_name=sender_full_name,
+                version=__version__,
+            )
+            if cmd_result.handled:
+                # Send command reply directly
+                try:
+                    if msg_type == "stream":
+                        await asyncio.to_thread(
+                            self.client.send_message,
+                            {
+                                "type": "stream",
+                                "to": message.get("stream_id"),
+                                "topic": cmd_topic,
+                                "content": cmd_result.reply,
+                            },
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            self.client.send_message,
+                            {
+                                "type": "private",
+                                "to": [message.get("sender_id")],
+                                "content": cmd_result.reply,
+                            },
+                        )
+                except Exception as e:
+                    logger.warning("command reply failed: %s", e)
+                # Mark message as read and stop processing
+                try:
+                    await asyncio.to_thread(
+                        self.client.update_message_flags,
+                        {"messages": [message_id], "op": "add", "flag": "read"},
+                    )
+                except Exception:
+                    pass
+                return
 
         if msg_type == "stream":
             stream_id = message.get("stream_id")
