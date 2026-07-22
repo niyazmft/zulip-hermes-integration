@@ -41,6 +41,8 @@ from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
 from .version import __version__, __repo__, PLUGIN_FILES
 from .commands import handle_command, is_command
+from .policy import PolicyEngine
+from .accounts import AccountResolver
 from . import updater
 from .probe import probe_zulip, _normalize_base_url
 
@@ -275,6 +277,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Reaction config
         self._reaction_cfg = ReactionConfig.from_env()
+
+        # DM policy engine (Issue #48 — controls who can DM the bot)
+        self._policy = PolicyEngine()
 
         self._listening = False
         self._event_task: Optional[asyncio.Task] = None
@@ -618,6 +623,46 @@ class ZulipAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
+                return
+
+        # --- DM policy check (Issue #48) ---
+        if msg_type == "private":
+            sender_email = message.get("sender_email", "")
+            allowed, pairing_code = self._policy.check_dm(sender_email)
+            if not allowed:
+                reply = ""
+                if pairing_code:
+                    reply = (
+                        f"👋 Hi! You need to be approved before messaging this bot.\n\n"
+                        f"Your pairing code: **PAIR-{pairing_code}**\n\n"
+                        f"Share this code with your admin to get access."
+                    )
+                elif self._policy.mode == "disabled":
+                    reply = "🚫 DMs to this bot are currently disabled."
+                else:
+                    reply = "🚫 You are not authorized to message this bot."
+
+                try:
+                    await asyncio.to_thread(
+                        self.client.send_message,
+                        {
+                            "type": "private",
+                            "to": [message.get("sender_id")],
+                            "content": reply,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning("DM policy rejection failed: %s", e)
+
+                # Mark message as read and stop processing
+                try:
+                    await asyncio.to_thread(
+                        self.client.update_message_flags,
+                        {"messages": [message_id], "op": "add", "flag": "read"},
+                    )
+                except Exception:
+                    pass
+                logger.info("zulip DM blocked [policy=%s sender=%s]", self._policy.mode, sender_email)
                 return
 
         if msg_type == "stream":
