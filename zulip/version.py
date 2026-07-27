@@ -4,7 +4,7 @@ This module is the single source of truth for the plugin version.
 When releasing, bump __version__ and create a matching Git tag.
 """
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __repo__ = "niyazmft/zulip-hermes-integration"
 __min_hermes__ = "0.18.2"
 

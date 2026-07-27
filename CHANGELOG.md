@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] - 2026-07-27
+
+### Added
+- **Network Timeouts**: All Zulip SDK calls wrapped with `asyncio.wait_for()` via `_sdk_call()` helper. Configurable via `ZULIP_CONNECT_TIMEOUT` (30s), `ZULIP_READ_TIMEOUT` (60s), `ZULIP_SEND_TIMEOUT` (90s). Prevents gateway event loop from hanging on degraded networks.
+- **Stream Filtering**: `ZULIP_STREAMS` env var restricts monitoring to specific stream names (default: `*` for all). Messages from non-monitored streams are silently dropped.
+- **Response Prefix**: `ZULIP_RESPONSE_PREFIX` prepends a string to every outbound message (e.g. emoji branding).
+- **Group Policy**: Separate `ZULIP_GROUP_POLICY` (`open`/`allowlist`/`disabled`) and `ZULIP_GROUP_ALLOW_FROM` for stream messages. Independent from DM policy.
+- **Topic Resolution**: `resolve_topic(stream_id, topic)` method prepends `✔ ` to mark topics as resolved. Skips already-resolved topics.
+
+### Changed
+- `reactions.py` updated to accept optional `timeout` parameter on `add_reaction`/`remove_reaction`.
+- `plugin.yaml` documented 6 new env vars.
+
 ## [1.6.0] - 2026-07-22
 
 ### Added
