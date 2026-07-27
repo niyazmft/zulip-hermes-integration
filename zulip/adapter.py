@@ -170,6 +170,11 @@ def _import_zulip_sdk():
 DEFAULT_CHUNK_LIMIT = 10000  # Hermes registry max_message_length
 DEFAULT_CHUNK_MODE = "length"
 
+# Timeout defaults (seconds) — Issue #62
+DEFAULT_CONNECT_TIMEOUT = 30.0
+DEFAULT_READ_TIMEOUT = 60.0
+DEFAULT_SEND_TIMEOUT = 90.0
+
 
 def _resolve_chunk_config() -> tuple[int, str]:
     """Read chunking config from environment."""
@@ -179,6 +184,23 @@ def _resolve_chunk_config() -> tuple[int, str]:
     if mode not in ("length", "newline"):
         mode = DEFAULT_CHUNK_MODE
     return limit, mode
+
+
+def _resolve_timeouts() -> tuple[float, float, float]:
+    """Read timeout config from environment.
+
+    Returns (connect_timeout, read_timeout, send_timeout) in seconds.
+    """
+    def _parse(val: str, default: float) -> float:
+        try:
+            return float(val.strip())
+        except (ValueError, AttributeError):
+            return default
+
+    connect = _parse(os.getenv("ZULIP_CONNECT_TIMEOUT", ""), DEFAULT_CONNECT_TIMEOUT)
+    read = _parse(os.getenv("ZULIP_READ_TIMEOUT", ""), DEFAULT_READ_TIMEOUT)
+    send = _parse(os.getenv("ZULIP_SEND_TIMEOUT", ""), DEFAULT_SEND_TIMEOUT)
+    return connect, read, send
 
 
 def _resolve_chatmode() -> tuple[str, list[str], bool]:
@@ -259,6 +281,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
         self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
 
+        # Timeout configuration (Issue #62)
+        self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
+
         # Persistent queue and dedupe
         self._queue_mgr = ZulipQueueManager(
             account_id=self.email or "default",
@@ -284,6 +309,25 @@ class ZulipAdapter(BasePlatformAdapter):
         self._listening = False
         self._event_task: Optional[asyncio.Task] = None
         self._presence_task: Optional[asyncio.Task] = None
+
+    async def _sdk_call(self, fn, *args, timeout: float, **kwargs):
+        """Wrap a synchronous SDK call in asyncio.to_thread + asyncio.wait_for.
+
+        Provides outer-timeout protection so the gateway event loop never
+        blocks indefinitely on a hung Zulip API request.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *args, **kwargs),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "zulip SDK call timed out after %.1fs [fn=%s]",
+                timeout,
+                getattr(fn, "__name__", repr(fn)),
+            )
+            raise
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Initialize connection and start listening."""
@@ -313,7 +357,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # 1. Verify server is reachable (no auth required)
         try:
-            settings = await asyncio.to_thread(self.client.get_server_settings)
+            settings = await self._sdk_call(
+                self.client.get_server_settings,
+                timeout=self._connect_timeout,
+            )
             if settings.get("result") != "success":
                 raise ConnectionError(
                     f"Cannot reach Zulip server: {self.site}"
@@ -324,7 +371,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # 2. Validate credentials with lightweight profile call
         try:
-            result = await asyncio.to_thread(self.client.get_profile)
+            result = await self._sdk_call(
+                self.client.get_profile,
+                timeout=self._connect_timeout,
+            )
             if result.get("result") != "success":
                 raise ConnectionError(f"Zulip authentication failed: {result}")
             bot_name = result.get("full_name", "Unknown")
@@ -340,7 +390,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # 3. Log subscriptions so admins know what streams the bot sees
         try:
-            subs = await asyncio.to_thread(self.client.get_subscriptions)
+            subs = await self._sdk_call(
+                self.client.get_subscriptions,
+                timeout=self._connect_timeout,
+            )
             if subs.get("result") == "success":
                 stream_names = [s["name"] for s in subs.get("subscriptions", [])]
                 if stream_names:
@@ -419,9 +472,10 @@ class ZulipAdapter(BasePlatformAdapter):
         """Keep bot presence active while connected."""
         while self._listening:
             try:
-                await asyncio.to_thread(
+                await self._sdk_call(
                     self.client.update_presence,
                     {"status": "active", "ping_only": False},
+                    timeout=self._send_timeout,
                 )
             except Exception:
                 pass  # presence is best-effort
@@ -435,10 +489,11 @@ class ZulipAdapter(BasePlatformAdapter):
             try:
                 queue = await self._queue_mgr.ensure_queue()
 
-                events = await asyncio.to_thread(
+                events = await self._sdk_call(
                     self.client.get_events,
                     queue_id=queue.queue_id,
                     last_event_id=queue.last_event_id,
+                    timeout=self._read_timeout,
                 )
 
                 if events.get("result") == "error":
@@ -506,7 +561,8 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # --- Reactions ---
         reactions = ReactionLifecycle(
-            self.client, str(message_id), self._reaction_cfg
+            self.client, str(message_id), self._reaction_cfg,
+            timeout=self._send_timeout,
         )
         await reactions.start()
 
@@ -531,8 +587,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         if typing_params:
             try:
-                await asyncio.to_thread(
-                    self.client.set_typing_status, typing_params
+                await self._sdk_call(
+                    self.client.set_typing_status,
+                    typing_params,
+                    timeout=self._send_timeout,
                 )
             except Exception:
                 pass  # typing is best-effort
@@ -595,7 +653,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 # Send command reply directly
                 try:
                     if msg_type == "stream":
-                        await asyncio.to_thread(
+                        await self._sdk_call(
                             self.client.send_message,
                             {
                                 "type": "stream",
@@ -603,23 +661,26 @@ class ZulipAdapter(BasePlatformAdapter):
                                 "topic": cmd_topic,
                                 "content": cmd_result.reply,
                             },
+                            timeout=self._send_timeout,
                         )
                     else:
-                        await asyncio.to_thread(
+                        await self._sdk_call(
                             self.client.send_message,
                             {
                                 "type": "private",
                                 "to": [message.get("sender_id")],
                                 "content": cmd_result.reply,
                             },
+                            timeout=self._send_timeout,
                         )
                 except Exception as e:
                     logger.warning("command reply failed: %s", e)
                 # Mark message as read and stop processing
                 try:
-                    await asyncio.to_thread(
+                    await self._sdk_call(
                         self.client.update_message_flags,
                         {"messages": [message_id], "op": "add", "flag": "read"},
+                        timeout=self._send_timeout,
                     )
                 except Exception:
                     pass
@@ -643,22 +704,24 @@ class ZulipAdapter(BasePlatformAdapter):
                     reply = "🚫 You are not authorized to message this bot."
 
                 try:
-                    await asyncio.to_thread(
+                    await self._sdk_call(
                         self.client.send_message,
                         {
                             "type": "private",
                             "to": [message.get("sender_id")],
                             "content": reply,
                         },
+                        timeout=self._send_timeout,
                     )
                 except Exception as e:
                     logger.warning("DM policy rejection failed: %s", e)
 
                 # Mark message as read and stop processing
                 try:
-                    await asyncio.to_thread(
+                    await self._sdk_call(
                         self.client.update_message_flags,
                         {"messages": [message_id], "op": "add", "flag": "read"},
+                        timeout=self._send_timeout,
                     )
                 except Exception:
                     pass
@@ -677,7 +740,7 @@ class ZulipAdapter(BasePlatformAdapter):
             # Send placeholder if editing is enabled
             if self._edit_placeholder_enabled:
                 try:
-                    ph_result = await asyncio.to_thread(
+                    ph_result = await self._sdk_call(
                         self.client.send_message,
                         {
                             "type": "stream",
@@ -685,6 +748,7 @@ class ZulipAdapter(BasePlatformAdapter):
                             "topic": topic,
                             "content": "🤔 Thinking...",
                         },
+                        timeout=self._send_timeout,
                     )
                     if ph_result.get("result") == "success":
                         self._pending_placeholders.setdefault(chat_id, deque()).append(
@@ -708,13 +772,14 @@ class ZulipAdapter(BasePlatformAdapter):
             # Send placeholder if editing is enabled (DMs too)
             if self._edit_placeholder_enabled:
                 try:
-                    ph_result = await asyncio.to_thread(
+                    ph_result = await self._sdk_call(
                         self.client.send_message,
                         {
                             "type": "private",
                             "to": [sender_id],
                             "content": "🤔 Thinking...",
                         },
+                        timeout=self._send_timeout,
                     )
                     if ph_result.get("result") == "success":
                         self._pending_placeholders.setdefault(chat_id, deque()).append(
@@ -773,9 +838,10 @@ class ZulipAdapter(BasePlatformAdapter):
             if orphaned_queue:
                 try:
                     orphaned_id = orphaned_queue.popleft()
-                    await asyncio.to_thread(
+                    await self._sdk_call(
                         self.client.update_message,
                         {"message_id": orphaned_id, "content": "❌ Error — could not generate response"},
+                        timeout=self._send_timeout,
                     )
                 except Exception:
                     pass  # best-effort cleanup
@@ -784,16 +850,19 @@ class ZulipAdapter(BasePlatformAdapter):
             if typing_params:
                 typing_params["op"] = "stop"
                 try:
-                    await asyncio.to_thread(
-                        self.client.set_typing_status, typing_params
+                    await self._sdk_call(
+                        self.client.set_typing_status,
+                        typing_params,
+                        timeout=self._send_timeout,
                     )
                 except Exception:
                     pass
             # Mark message as read (best-effort)
             try:
-                await asyncio.to_thread(
+                await self._sdk_call(
                     self.client.update_message_flags,
                     {"messages": [message_id], "op": "add", "flag": "read"},
+                    timeout=self._send_timeout,
                 )
             except Exception:
                 pass
@@ -881,9 +950,10 @@ class ZulipAdapter(BasePlatformAdapter):
                 placeholder_id = None
         if placeholder_id is not None:
             try:
-                result = await asyncio.to_thread(
+                result = await self._sdk_call(
                     self.client.update_message,
                     {"message_id": placeholder_id, "content": content},
+                    timeout=self._send_timeout,
                 )
                 if result.get("result") == "success":
                     logger.debug("zulip placeholder edited for %s", chat_id)
@@ -897,13 +967,14 @@ class ZulipAdapter(BasePlatformAdapter):
         try:
             target = _parse_target(chat_id)
             if target["type"] == "dm":
-                result = await asyncio.to_thread(
+                result = await self._sdk_call(
                     self.client.send_message,
                     {
                         "type": "private",
                         "to": [target["user_id"]],
                         "content": content,
                     },
+                    timeout=self._send_timeout,
                 )
             else:
                 stream_id = target["stream_id"]
@@ -911,7 +982,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 if not topic:
                     topic = self._topic_cache.get(chat_id, "general")
 
-                result = await asyncio.to_thread(
+                result = await self._sdk_call(
                     self.client.send_message,
                     {
                         "type": "stream",
@@ -919,6 +990,7 @@ class ZulipAdapter(BasePlatformAdapter):
                         "topic": topic,
                         "content": content,
                     },
+                    timeout=self._send_timeout,
                 )
 
             if result.get("result") == "success":

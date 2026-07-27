@@ -19,6 +19,9 @@ DEFAULT_START = "eyes"
 DEFAULT_SUCCESS = "check_mark"
 DEFAULT_ERROR = "warning"
 
+# Default timeout for reaction API calls (seconds)
+DEFAULT_REACTION_TIMEOUT = 15.0
+
 
 class ReactionConfig:
     """Holds reaction settings parsed from env/config."""
@@ -67,15 +70,20 @@ async def add_reaction(
     message_id: str,
     emoji_name: str,
     enabled: bool = True,
+    timeout: Optional[float] = None,
 ) -> None:
     """Safely add a Zulip reaction. Errors are logged, not raised."""
     if not enabled or not emoji_name:
         return
     try:
-        await asyncio.to_thread(
+        coro = asyncio.to_thread(
             client.add_reaction,
             {"message_id": message_id, "emoji_name": emoji_name},
         )
+        if timeout:
+            await asyncio.wait_for(coro, timeout=timeout)
+        else:
+            await coro
     except Exception as e:
         logger.warning(
             "zulip add reaction failed [message_id=%s emoji=%s error=%s]",
@@ -90,15 +98,20 @@ async def remove_reaction(
     message_id: str,
     emoji_name: str,
     enabled: bool = True,
+    timeout: Optional[float] = None,
 ) -> None:
     """Safely remove a Zulip reaction. Errors are logged, not raised."""
     if not enabled or not emoji_name:
         return
     try:
-        await asyncio.to_thread(
+        coro = asyncio.to_thread(
             client.remove_reaction,
             {"message_id": message_id, "emoji_name": emoji_name},
         )
+        if timeout:
+            await asyncio.wait_for(coro, timeout=timeout)
+        else:
+            await coro
     except Exception as e:
         logger.warning(
             "zulip remove reaction failed [message_id=%s emoji=%s error=%s]",
@@ -111,10 +124,17 @@ async def remove_reaction(
 class ReactionLifecycle:
     """High-level helper that manages the full reaction lifecycle for a message."""
 
-    def __init__(self, client: Any, message_id: str, config: ReactionConfig):
+    def __init__(
+        self,
+        client: Any,
+        message_id: str,
+        config: ReactionConfig,
+        timeout: Optional[float] = None,
+    ):
         self.client = client
         self.message_id = message_id
         self.config = config
+        self.timeout = timeout
 
     async def start(self) -> None:
         await add_reaction(
@@ -122,24 +142,29 @@ class ReactionLifecycle:
             self.message_id,
             self.config.on_start,
             self.config.enabled,
+            timeout=self.timeout,
         )
 
     async def success(self) -> None:
         cfg = self.config
         if cfg.clear_on_finish:
             await remove_reaction(
-                self.client, self.message_id, cfg.on_start, cfg.enabled
+                self.client, self.message_id, cfg.on_start, cfg.enabled,
+                timeout=self.timeout,
             )
         await add_reaction(
-            self.client, self.message_id, cfg.on_success, cfg.enabled
+            self.client, self.message_id, cfg.on_success, cfg.enabled,
+            timeout=self.timeout,
         )
 
     async def error(self) -> None:
         cfg = self.config
         if cfg.clear_on_finish:
             await remove_reaction(
-                self.client, self.message_id, cfg.on_start, cfg.enabled
+                self.client, self.message_id, cfg.on_start, cfg.enabled,
+                timeout=self.timeout,
             )
         await add_reaction(
-            self.client, self.message_id, cfg.on_error, cfg.enabled
+            self.client, self.message_id, cfg.on_error, cfg.enabled,
+            timeout=self.timeout,
         )
