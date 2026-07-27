@@ -937,6 +937,56 @@ class ZulipAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+    async def resolve_topic(self, stream_id: int, topic: str) -> dict[str, Any]:
+        """Mark a topic as resolved by prepending ✔.
+
+        Returns the API response dict. If the topic is already resolved,
+        returns early without calling the API.
+        """
+        trimmed = topic.strip()
+        if not trimmed:
+            return {"skipped": True, "reason": "empty topic"}
+
+        resolved_prefix = "✔ "
+        if trimmed.startswith(resolved_prefix):
+            return {"skipped": True, "reason": "already resolved", "topic": trimmed}
+
+        resolved_topic = resolved_prefix + trimmed
+        try:
+            result = await self._sdk_call(
+                self.client.update_message,
+                {
+                    "message_id": 0,  # Not used for topic updates with propagate_mode
+                    "topic": resolved_topic,
+                    "propagate_mode": "change_all",
+                },
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                logger.info(
+                    "zulip topic resolved [stream_id=%d old=%s new=%s]",
+                    stream_id,
+                    trimmed,
+                    resolved_topic,
+                )
+                return {"ok": True, "stream_id": stream_id, "topic": resolved_topic}
+            else:
+                logger.warning(
+                    "zulip topic resolution failed [stream_id=%d topic=%s error=%s]",
+                    stream_id,
+                    trimmed,
+                    result.get("msg"),
+                )
+                return {"ok": False, "error": result.get("msg")}
+        except Exception as e:
+            logger.error(
+                "zulip topic resolution error [stream_id=%d topic=%s]: %s",
+                stream_id,
+                trimmed,
+                e,
+            )
+            return {"ok": False, "error": str(e)}
+
     async def send(
         self,
         chat_id: str,
