@@ -122,3 +122,56 @@ class TestPolicyStatus:
         monkeypatch.setenv("ZULIP_DM_POLICY", "allowlist")
         p = PolicyEngine()
         assert p.get_status("unknown@example.com") == "unauthorized"
+
+
+class TestGroupPolicy:
+    """Group (stream) policy tests (Issue #66)."""
+
+    def test_group_defaults_to_open(self):
+        """Default group policy is open."""
+        p = PolicyEngine()
+        assert p.group_mode == "open"
+        assert p.can_group_message("anyone@example.com") is True
+
+    def test_group_disabled_blocks_all(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "disabled")
+        p = PolicyEngine()
+        assert p.group_mode == "disabled"
+        assert p.can_group_message("anyone@example.com") is False
+
+    def test_group_allowlist_allows_configured(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("ZULIP_GROUP_ALLOW_FROM", "alice@example.com, bob@example.com")
+        p = PolicyEngine()
+        assert p.can_group_message("alice@example.com") is True
+        assert p.can_group_message("bob@example.com") is True
+        assert p.can_group_message("charlie@example.com") is False
+
+    def test_group_allowlist_empty_blocks_all(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("ZULIP_GROUP_ALLOW_FROM", "")
+        p = PolicyEngine()
+        assert p.can_group_message("anyone@example.com") is False
+
+    def test_group_lowercased(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("ZULIP_GROUP_ALLOW_FROM", "Alice@Example.COM")
+        p = PolicyEngine()
+        assert p.can_group_message("alice@example.com") is True
+
+    def test_dm_policy_unchanged_by_group_policy(self, monkeypatch):
+        """DM policy and group policy are independent."""
+        monkeypatch.setenv("ZULIP_DM_POLICY", "open")
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "disabled")
+        p = PolicyEngine()
+        assert p.mode == "open"
+        assert p.group_mode == "disabled"
+        # DM still allowed even though group is disabled
+        assert p.can_dm("anyone@example.com") is True
+        assert p.can_group_message("anyone@example.com") is False
+
+    def test_group_pairing_not_supported(self, monkeypatch):
+        """Pairing mode falls back to open for group policy."""
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "pairing")
+        p = PolicyEngine()
+        assert p.group_mode == "open"

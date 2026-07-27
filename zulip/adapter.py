@@ -203,6 +203,23 @@ def _resolve_timeouts() -> tuple[float, float, float]:
     return connect, read, send
 
 
+def _resolve_streams_filter() -> set[str] | None:
+    """Read stream filtering config from environment.
+
+    Returns None if all streams are allowed (default), or a set of
+    lowercase stream names to monitor.
+    """
+    raw = os.getenv("ZULIP_STREAMS", "").strip()
+    if not raw or raw == "*":
+        return None
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
+def _resolve_response_prefix() -> str:
+    """Read outbound response prefix from environment."""
+    return os.getenv("ZULIP_RESPONSE_PREFIX", "")
+
+
 def _resolve_chatmode() -> tuple[str, list[str], bool]:
     """Read stream trigger mode config from environment."""
     mode = os.getenv("ZULIP_CHATMODE", "onmessage").strip().lower()
@@ -283,6 +300,12 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Timeout configuration (Issue #62)
         self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
+
+        # Stream filtering (Issue #65) — None means all streams
+        self._streams_filter = _resolve_streams_filter()
+
+        # Response prefix (Issue #65) — prepended to every outbound message
+        self._response_prefix = _resolve_response_prefix()
 
         # Persistent queue and dedupe
         self._queue_mgr = ZulipQueueManager(
@@ -626,6 +649,53 @@ class ZulipAdapter(BasePlatformAdapter):
                 logger.debug("zulip drop [mode=%s, no trigger] msg=%s", chatmode, message_id)
                 return
 
+            # --- Stream filtering (Issue #65) ---
+            if self._streams_filter is not None:
+                stream_name = message.get("display_recipient", "").lower()
+                if stream_name not in self._streams_filter:
+                    logger.debug(
+                        "zulip drop [stream=%s not in filter] msg=%s",
+                        stream_name,
+                        message_id,
+                    )
+                    return
+
+            # --- Group policy check (Issue #66) ---
+            if not self._policy.can_group_message(sender_email):
+                if self._policy.group_mode == "disabled":
+                    reply = "🚫 Stream messages to this bot are currently disabled."
+                else:
+                    reply = "🚫 You are not authorized to send stream messages to this bot."
+                try:
+                    await self._sdk_call(
+                        self.client.send_message,
+                        {
+                            "type": "stream",
+                            "to": stream_id,
+                            "topic": topic,
+                            "content": reply,
+                        },
+                        timeout=self._send_timeout,
+                    )
+                except Exception as e:
+                    logger.warning("group policy rejection reply failed: %s", e)
+                # Mark message as read and stop processing
+                try:
+                    await self._sdk_call(
+                        self.client.update_message_flags,
+                        {"messages": [message_id], "op": "add", "flag": "read"},
+                        timeout=self._send_timeout,
+                    )
+                except Exception:
+                    pass
+                logger.info(
+                    "zulip group message blocked [policy=%s sender=%s stream=%s]",
+                    self._policy.group_mode,
+                    sender_email,
+                    stream_name,
+                )
+                return
+
             # Normalize mention from content
             if was_mentioned and mention_regex:
                 content = normalize_mention(content, mention_regex)
@@ -940,6 +1010,10 @@ class ZulipAdapter(BasePlatformAdapter):
         topic_override: Optional[str],
     ) -> SendResult:
         """Send a single (unchunked) message, editing placeholder if present."""
+        # Prepend response prefix if configured (Issue #65)
+        if self._response_prefix and content:
+            content = self._response_prefix + content
+
         # Check for pending placeholder to edit instead of sending new
         placeholder_id: Optional[int] = None
         orphaned_queue = self._pending_placeholders.get(chat_id)

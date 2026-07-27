@@ -62,6 +62,18 @@ optional_env:
   - name: ZULIP_SEND_TIMEOUT
     description: "Max seconds for send/write Zulip API calls (default: 90)"
     prompt: "Send timeout (seconds)"
+  - name: ZULIP_STREAMS
+    description: 'Comma-separated stream names to monitor (default: * for all)'
+    prompt: "Streams to monitor"
+  - name: ZULIP_RESPONSE_PREFIX
+    description: 'Prefix prepended to every outbound message (default: empty)'
+    prompt: "Response prefix"
+  - name: ZULIP_GROUP_POLICY
+    description: 'Who can send stream messages: open, allowlist, disabled (default: open)'
+    prompt: "Group policy"
+  - name: ZULIP_GROUP_ALLOW_FROM
+    description: "Comma-separated emails allowed in streams (for allowlist mode)"
+    prompt: "Group allowlist"
   - name: ZULIP_REQUIRE_MENTION
     description: "Require @mention in streams (default: true)"
     prompt: "Require mention"

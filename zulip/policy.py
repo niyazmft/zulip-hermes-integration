@@ -35,23 +35,43 @@ class PairingCode:
 
 
 class PolicyEngine:
-    """Manages DM policies and pairing codes."""
+    """Manages DM and group/stream policies."""
 
     def __init__(self, *, pairing_ttl: int = _PAIRING_CODE_TTL_SECONDS):
-        self.mode = self._resolve_mode()
+        # DM policy
+        self.mode = self._resolve_dm_mode()
         self.allowlist = self._parse_allowlist()
         self._pairing_codes: dict[str, PairingCode] = {}  # code → PairingCode
         self._email_to_code: dict[str, str] = {}            # email → code
         self._pairing_ttl = pairing_ttl
 
+        # Group (stream) policy
+        self.group_mode = self._resolve_group_mode()
+        self.group_allowlist = self._parse_group_allowlist()
+
     @staticmethod
-    def _resolve_mode() -> str:
+    def _resolve_dm_mode() -> str:
         raw = os.getenv("ZULIP_DM_POLICY", "open").strip().lower()
         return raw if raw in _VALID_POLICIES else POLICY_OPEN
 
     @staticmethod
+    def _resolve_group_mode() -> str:
+        """Group policy defaults to 'open' for backward compatibility."""
+        raw = os.getenv("ZULIP_GROUP_POLICY", "open").strip().lower()
+        # Group policy does not support 'pairing'
+        valid = frozenset({POLICY_OPEN, POLICY_ALLOWLIST, POLICY_DISABLED})
+        return raw if raw in valid else POLICY_OPEN
+
+    @staticmethod
     def _parse_allowlist() -> set[str]:
         raw = os.getenv("ZULIP_ALLOWED_USERS", "").strip()
+        if not raw:
+            return set()
+        return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+    @staticmethod
+    def _parse_group_allowlist() -> set[str]:
+        raw = os.getenv("ZULIP_GROUP_ALLOW_FROM", "").strip()
         if not raw:
             return set()
         return {e.strip().lower() for e in raw.split(",") if e.strip()}
@@ -80,6 +100,25 @@ class PolicyEngine:
                 if pc and not pc.used and (time.time() - pc.created_at) < self._pairing_ttl:
                     return False  # Has code but not yet approved
             return False
+
+        return True  # Default fallback
+
+    def can_group_message(self, email: str) -> bool:
+        """Return True if this email is allowed to send stream messages.
+
+        Group policy controls who can interact with the bot in public
+        streams. It does not support 'pairing' mode.
+        """
+        email = email.strip().lower()
+
+        if self.group_mode == POLICY_OPEN:
+            return True
+
+        if self.group_mode == POLICY_DISABLED:
+            return False
+
+        if self.group_mode == POLICY_ALLOWLIST:
+            return email in self.group_allowlist
 
         return True  # Default fallback
 
