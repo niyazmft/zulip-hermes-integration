@@ -53,6 +53,15 @@ optional_env:
   - name: ZULIP_ONCHAR_PREFIXES
     description: 'Trigger prefixes for onchar mode (default: >,!)'
     prompt: "Onchar prefixes"
+  - name: ZULIP_CONNECT_TIMEOUT
+    description: "Max seconds for connection validation calls (default: 30)"
+    prompt: "Connect timeout (seconds)"
+  - name: ZULIP_READ_TIMEOUT
+    description: "Max seconds for read/get Zulip API calls (default: 60)"
+    prompt: "Read timeout (seconds)"
+  - name: ZULIP_SEND_TIMEOUT
+    description: "Max seconds for send/write Zulip API calls (default: 90)"
+    prompt: "Send timeout (seconds)"
   - name: ZULIP_REQUIRE_MENTION
     description: "Require @mention in streams (default: true)"
     prompt: "Require mention"
