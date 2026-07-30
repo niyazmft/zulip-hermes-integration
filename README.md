@@ -199,9 +199,45 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 |----------|---------|-------------|
 | `ZULIP_CHATMODE` | `onmessage` | Stream trigger: `onmessage` / `oncall` / `onchar` |
 | `ZULIP_REQUIRE_MENTION` | `true` | Stream messages need @mention (except `onmessage`) |
+| `ZULIP_STREAM_OVERRIDES` | *(empty)* | Per-stream `chatmode` / `requireMention` overrides, as a JSON object — see [below](#per-stream-trigger-overrides) |
 | `ZULIP_EDIT_PLACEHOLDER` | `true` | Show "Thinking..." placeholder while AI generates |
 | `ZULIP_REACTIONS_ENABLED` | `true` | Emoji reactions (👀/✅/⚠️) for status |
 | `ZULIP_CHUNK_LIMIT` | `4000` | Max chars per message chunk |
+
+#### Per-stream trigger overrides
+
+`ZULIP_CHATMODE` and `ZULIP_REQUIRE_MENTION` apply to every stream at once. When
+a bot sits in several streams that want different behaviour — conversational in
+its own channel, quiet unless called in a busy shared one — `ZULIP_STREAM_OVERRIDES`
+overrides them per stream:
+
+```bash
+ZULIP_CHATMODE=oncall            # default: only respond when @mentioned
+ZULIP_STREAM_OVERRIDES='{
+  "bot lab":       {"chatmode": "onmessage"},
+  "team: general": {"chatmode": "onchar"}
+}'
+```
+
+The bot now needs an `@mention` everywhere except `bot lab`, where it answers
+every message, and `team: general`, where a prefix character also triggers it.
+
+- The value is a JSON object mapping stream name to a settings object. Both
+  `chatmode` and `requireMention` may be set; omit either to inherit the global.
+- JSON is used rather than delimited pairs because Zulip stream names may
+  contain both colons and commas — `"team: general"` is a valid stream name —
+  which makes any obvious delimiter ambiguous.
+- Stream names are matched case-insensitively, the same as `ZULIP_STREAMS`.
+- Streams not listed fall back to the global settings.
+- Invalid JSON, an unknown `chatmode`, or a non-boolean `requireMention` is
+  logged and ignored — a bad override cannot stop the adapter from starting.
+
+**Which knob do you want?** `chatmode` decides whether the bot responds at all:
+`onmessage` answers everything, `oncall` only when mentioned, `onchar` on a
+prefix or a mention. `requireMention` is a further restriction applied on top,
+and is ignored entirely in `onmessage` mode. To make a bot chatty in one stream
+and mention-only in another, override `chatmode` — `requireMention` alone
+cannot loosen a stream, only tighten it.
 
 ### Optional — Advanced
 

@@ -77,3 +77,6 @@ optional_env:
   - name: ZULIP_REQUIRE_MENTION
     description: "Require @mention in streams (default: true)"
     prompt: "Require mention"
+  - name: ZULIP_STREAM_OVERRIDES
+    description: 'Per-stream chatmode/requireMention overrides as a JSON object, e.g. {"bot lab": {"chatmode": "onmessage"}}'
+    prompt: "Per-stream trigger overrides (JSON)"
