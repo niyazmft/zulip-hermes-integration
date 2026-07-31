@@ -208,6 +208,35 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ZULIP_CHUNK_MODE` | `length` | Chunking strategy: `length` or `newline` |
+| `ZULIP_TOPIC_SESSIONS` | `false` | Give each stream topic its own conversation — see [below](#per-topic-sessions) |
+
+#### Per-topic sessions
+
+By default every topic in a stream shares one conversation. Replies are still
+threaded back into the topic they came from, and the bot is told when the topic
+changes via `topic_changed` metadata, but the underlying session — and therefore
+the conversation history the AI sees — is per stream.
+
+Set `ZULIP_TOPIC_SESSIONS=true` to scope sessions per topic instead:
+
+```bash
+ZULIP_TOPIC_SESSIONS=true
+```
+
+Each topic then becomes an independent conversation. Starting a new topic in
+Zulip starts a fresh session, which is a natural fit for the way Zulip is
+normally used — one topic per subject.
+
+This works by passing the topic to Hermes as `thread_id`, which is the field
+Hermes scopes session state by. A useful side effect is that
+`gateway.profile_routes` can then match on `thread_id`, so individual topics can
+be routed to different Hermes profiles.
+
+**It is off by default deliberately.** Enabling it on an existing bot splits that
+stream's accumulated history into per-topic sessions, so the bot will appear to
+forget conversations that spanned topics. Turn it on for a new stream, or when
+you actively want that separation.
+
 | `ZULIP_ONCHAR_PREFIXES` | `!,>` | Custom onchar triggers |
 | `ZULIP_BLOCK_STREAMING` | `false` | Experimental block streaming |
 | `ZULIP_MEDIA_MAX_MB` | `5` | Max inbound attachment size (MB) |
