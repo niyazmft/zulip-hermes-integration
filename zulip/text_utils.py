@@ -121,10 +121,35 @@ def extract_topic_directive(text: str) -> tuple[str, Optional[str]]:
     return remaining, topic
 
 
-def create_mention_regex(bot_username: str) -> re.Pattern:
-    """Create a pre-compiled regex for matching @botname mentions."""
-    escaped = re.escape(bot_username)
-    return re.compile(rf"@{escaped}\b", re.IGNORECASE)
+def create_mention_regex(
+    bot_username: str, bot_full_name: Optional[str] = None
+) -> re.Pattern:
+    """Create a pre-compiled regex matching mentions of this bot.
+
+    Zulip does not write mentions as ``@local-part``. It renders them from the
+    user's *display name*::
+
+        @**Soju**          personal mention
+        @_**Soju**         silent mention
+        @**Soju|12**       disambiguated by user id
+
+    and ``strip_html_to_text()`` reduces the first of those to a bare
+    ``@Soju`` before gating ever sees it. Matching only ``@{bot_username}``
+    therefore never fires on a real mention, which silently makes
+    ``oncall``/``onchar`` unreachable.
+
+    The plain local-part form is kept because it still appears in hand-typed
+    text. Prefer Zulip's own ``mentioned`` flag where available; this is the
+    fallback for when it is not.
+    """
+    alternatives = [rf"{re.escape(bot_username)}\b"]
+    if bot_full_name:
+        escaped_name = re.escape(bot_full_name)
+        # Markup form, for content that has not been stripped.
+        alternatives.append(rf"_?\*\*{escaped_name}(?:\|\d+)?\*\*")
+        # Post-strip form. This is the one that fires in practice.
+        alternatives.append(rf"{escaped_name}\b")
+    return re.compile(rf"@(?:{'|'.join(alternatives)})", re.IGNORECASE)
 
 
 def normalize_mention(text: str, mention_regex: Optional[re.Pattern]) -> str:
