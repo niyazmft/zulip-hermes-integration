@@ -227,10 +227,12 @@ every message, and `team: general`, where a prefix character also triggers it.
 - JSON is used rather than delimited pairs because Zulip stream names may
   contain both colons and commas — `"team: general"` is a valid stream name —
   which makes any obvious delimiter ambiguous.
-- Stream names are matched case-insensitively, the same as `ZULIP_STREAMS`.
+- Stream names and setting keys are both matched case-insensitively, the same as
+  `ZULIP_STREAMS`, so `chatMode` is accepted as well as `chatmode`.
 - Streams not listed fall back to `ZULIP_CHATMODE`.
-- Invalid JSON or an unknown `chatmode` is logged and ignored — a bad override
-  cannot stop the adapter from starting.
+- Invalid JSON, an unknown `chatmode` value, or an unrecognised setting key is
+  logged and ignored — a bad override cannot stop the adapter from starting, and
+  a typo produces a warning naming the stream rather than failing silently.
 
 **Why not `requireMention`?** Because overriding it would not do anything.
 `requireMention` is only applied as an extra restriction in the trigger gate,

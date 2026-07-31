@@ -187,6 +187,26 @@ class TestResolveStreamOverrides:
         monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"requireMention": false}}')
         assert _resolve_stream_overrides() == {}
 
+    def test_chatmode_kept_when_require_mention_also_present(self, monkeypatch):
+        # requireMention is dropped, but it must not take a valid chatmode
+        # down with it.
+        monkeypatch.setenv(
+            "ZULIP_STREAM_OVERRIDES",
+            '{"a": {"chatmode": "oncall", "requireMention": false}}',
+        )
+        assert _resolve_stream_overrides() == {"a": {"chatmode": "oncall"}}
+
+    def test_setting_keys_are_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatMode": "oncall"}}')
+        assert _resolve_stream_overrides() == {"a": {"chatmode": "oncall"}}
+
+    def test_unrecognised_key_is_warned_and_ignored(self, monkeypatch, caplog):
+        # A genuine typo would otherwise drop the override with no diagnostic.
+        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatmodee": "oncall"}}')
+        with caplog.at_level("WARNING"):
+            assert _resolve_stream_overrides() == {}
+        assert "unrecognised key" in caplog.text
+
     def test_invalid_json_ignored(self, monkeypatch):
         monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", "not json{")
         assert _resolve_stream_overrides() == {}

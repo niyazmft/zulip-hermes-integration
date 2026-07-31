@@ -250,9 +250,11 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
     legitimately contain both colons and commas (``"team: general"`` is a valid
     stream name), which makes any obvious delimiter ambiguous.
 
-    Keys are matched case-insensitively, consistent with ``ZULIP_STREAMS``
-    filtering. Malformed configuration is logged and ignored rather than raised,
-    so a bad override can never stop the adapter from starting.
+    Stream names and setting keys are both matched case-insensitively,
+    consistent with ``ZULIP_STREAMS`` filtering. Unrecognised setting keys are
+    warned about rather than dropped silently, so a typo is diagnosable.
+    Malformed configuration is logged and ignored rather than raised, so a bad
+    override can never stop the adapter from starting.
     """
     raw = os.getenv("ZULIP_STREAM_OVERRIDES", "").strip()
     cached_raw, cached = _stream_overrides_cache
@@ -294,7 +296,26 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
 
         entry: dict[str, Any] = {}
 
-        mode = settings.get("chatmode")
+        # Setting keys are matched case-insensitively, like the stream names
+        # themselves, so "chatMode" is accepted as well as "chatmode".
+        normalised = {str(k).strip().lower(): v for k, v in settings.items()}
+
+        # Warn about keys we do not act on. Without this a genuine typo drops
+        # the whole override with no diagnostic. requireMention is excluded
+        # because it is documented as deliberately unsupported rather than
+        # unrecognised.
+        unknown = sorted(
+            k for k in normalised
+            if k not in ("chatmode", "requiremention", "require_mention")
+        )
+        if unknown:
+            logger.warning(
+                "ZULIP_STREAM_OVERRIDES[%r]: ignoring unrecognised key(s) %s; "
+                "the only supported key is 'chatmode'",
+                name, ", ".join(unknown),
+            )
+
+        mode = normalised.get("chatmode")
         if mode is not None:
             mode = str(mode).strip().lower()
             if mode in ("onmessage", "oncall", "onchar"):
