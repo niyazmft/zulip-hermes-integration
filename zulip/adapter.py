@@ -61,6 +61,11 @@ _MAX_TARGET_CACHE = 500
 _client_cache: OrderedDict[str, Any] = OrderedDict()
 _target_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
+# Parsed ZULIP_STREAM_OVERRIDES, keyed on the raw environment string so the
+# value stays live-reloadable while a busy stream does not re-parse JSON on
+# every inbound message.
+_stream_overrides_cache: tuple[str, dict[str, dict[str, Any]]] = ("", {})
+
 
 def _get_cached_client(site: str, email: str, api_key: str, *, _zulip_mod: Any = None) -> Any:
     """Return a cached Zulip client or create a new one.
@@ -129,8 +134,10 @@ def _parse_target(chat_id: str) -> dict[str, Any]:
 
 def _clear_caches() -> None:
     """Clear all caches. Used by tests and for resource cleanup."""
+    global _stream_overrides_cache
     _client_cache.clear()
     _target_cache.clear()
+    _stream_overrides_cache = ("", {})
 ZULIP_AVAILABLE = False
 
 
@@ -221,32 +228,23 @@ def _resolve_response_prefix() -> str:
     return os.getenv("ZULIP_RESPONSE_PREFIX", "")
 
 
-def _parse_boolish(value: Any, default: bool) -> bool:
-    """Interpret a bool-like config value, falling back to a default."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in ("false", "0", "no", "off")
-    return default
-
-
-# Parsed ZULIP_STREAM_OVERRIDES, keyed on the raw environment string so the
-# value stays live-reloadable while a busy stream does not re-parse JSON on
-# every inbound message.
-_STREAM_OVERRIDES_CACHE: tuple[str, dict[str, dict[str, Any]]] = ("", {})
-
-
 def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
     """Read per-stream trigger overrides from the environment.
 
     ``ZULIP_STREAM_OVERRIDES`` is a JSON object mapping stream name to a
-    settings object. Both ``chatmode`` and ``requireMention`` may be overridden
-    for an individual stream::
+    settings object, overriding ``ZULIP_CHATMODE`` for that stream::
 
         ZULIP_STREAM_OVERRIDES='{
           "bot lab":       {"chatmode": "onmessage"},
-          "team: general": {"chatmode": "oncall", "requireMention": true}
+          "team: general": {"chatmode": "oncall"}
         }'
+
+    Only ``chatmode`` is supported. ``requireMention`` is deliberately not
+    overridable: in the current gate it is inert in every mode — skipped
+    entirely under ``onmessage``, and under ``oncall``/``onchar`` it can only
+    set ``should_process`` to False in cases where it is already False. Exposing
+    a per-stream knob for it would imply a behaviour change that does not
+    happen.
 
     JSON is used rather than delimited pairs because Zulip stream names may
     legitimately contain both colons and commas (``"team: general"`` is a valid
@@ -257,15 +255,15 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
     so a bad override can never stop the adapter from starting.
     """
     raw = os.getenv("ZULIP_STREAM_OVERRIDES", "").strip()
-    cached_raw, cached = _STREAM_OVERRIDES_CACHE
+    cached_raw, cached = _stream_overrides_cache
     if raw == cached_raw:
         return cached
 
     def _remember(value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         # Cache failures too, so a malformed value is logged once rather than on
         # every inbound message.
-        global _STREAM_OVERRIDES_CACHE
-        _STREAM_OVERRIDES_CACHE = (raw, value)
+        global _stream_overrides_cache
+        _stream_overrides_cache = (raw, value)
         return value
 
     if not raw:
@@ -308,17 +306,6 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
                     name, mode,
                 )
 
-        require = settings.get("requireMention", settings.get("require_mention"))
-        if require is not None:
-            if isinstance(require, (bool, str)):
-                entry["requireMention"] = _parse_boolish(require, True)
-            else:
-                logger.warning(
-                    "ZULIP_STREAM_OVERRIDES[%r].requireMention must be a boolean; "
-                    "ignoring it",
-                    name,
-                )
-
         if entry:
             overrides[str(name).strip().lower()] = entry
 
@@ -330,8 +317,7 @@ def _resolve_chatmode(stream_name: Optional[str] = None) -> tuple[str, list[str]
 
     When ``stream_name`` is supplied, a matching entry in
     ``ZULIP_STREAM_OVERRIDES`` takes precedence over the global
-    ``ZULIP_CHATMODE`` and ``ZULIP_REQUIRE_MENTION`` settings, for that stream
-    only.
+    ``ZULIP_CHATMODE`` for that stream only.
     """
     mode = os.getenv("ZULIP_CHATMODE", "onmessage").strip().lower()
     if mode not in ("onmessage", "oncall", "onchar"):
@@ -343,7 +329,6 @@ def _resolve_chatmode(stream_name: Optional[str] = None) -> tuple[str, list[str]
         override = _resolve_stream_overrides().get(stream_name.strip().lower())
         if override:
             mode = override.get("chatmode", mode)
-            require_mention = override.get("requireMention", require_mention)
 
     return mode, prefixes, require_mention
 
@@ -738,7 +723,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # --- Stream trigger gating ---
         if msg_type == "stream":
-            stream_name = message.get("display_recipient", "")
+            # str() guard: Zulip sends a string here for stream messages, but a
+            # malformed event would otherwise raise AttributeError inside the
+            # handler rather than being skipped.
+            stream_name = str(message.get("display_recipient", ""))
             chatmode, onchar_prefixes, require_mention = _resolve_chatmode(stream_name)
 
             # Check onchar trigger

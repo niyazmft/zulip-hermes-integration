@@ -151,6 +151,7 @@ class TestStreamGating:
         assert call_args.text == "do this"
 
 
+
 class TestResolveStreamOverrides:
     """ZULIP_STREAM_OVERRIDES parsing."""
 
@@ -158,14 +159,14 @@ class TestResolveStreamOverrides:
         monkeypatch.delenv("ZULIP_STREAM_OVERRIDES", raising=False)
         assert _resolve_stream_overrides() == {}
 
-    def test_parses_chatmode_and_require_mention(self, monkeypatch):
+    def test_parses_chatmode(self, monkeypatch):
         monkeypatch.setenv(
             "ZULIP_STREAM_OVERRIDES",
-            '{"bot lab": {"chatmode": "onmessage"}, "alerts": {"requireMention": true}}',
+            '{"bot lab": {"chatmode": "onmessage"}, "alerts": {"chatmode": "oncall"}}',
         )
         assert _resolve_stream_overrides() == {
             "bot lab": {"chatmode": "onmessage"},
-            "alerts": {"requireMention": True},
+            "alerts": {"chatmode": "oncall"},
         }
 
     def test_keys_are_lowercased(self, monkeypatch):
@@ -180,13 +181,11 @@ class TestResolveStreamOverrides:
         )
         assert _resolve_stream_overrides() == {"team: general": {"chatmode": "onmessage"}}
 
-    def test_snake_case_alias_accepted(self, monkeypatch):
-        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"require_mention": false}}')
-        assert _resolve_stream_overrides() == {"a": {"requireMention": False}}
-
-    def test_string_booleans_accepted(self, monkeypatch):
-        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"requireMention": "false"}}')
-        assert _resolve_stream_overrides() == {"a": {"requireMention": False}}
+    def test_require_mention_is_not_overridable(self, monkeypatch):
+        # requireMention is inert in the gate in every mode, so it is
+        # deliberately not exposed as a per-stream override.
+        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"requireMention": false}}')
+        assert _resolve_stream_overrides() == {}
 
     def test_invalid_json_ignored(self, monkeypatch):
         monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", "not json{")
@@ -204,12 +203,11 @@ class TestResolveStreamOverrides:
         monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatmode": "nonsense"}}')
         assert _resolve_stream_overrides() == {}
 
-    def test_partial_entry_keeps_valid_key(self, monkeypatch):
-        monkeypatch.setenv(
-            "ZULIP_STREAM_OVERRIDES",
-            '{"a": {"chatmode": "nonsense", "requireMention": false}}',
-        )
-        assert _resolve_stream_overrides() == {"a": {"requireMention": False}}
+    def test_cache_refreshes_when_env_changes(self, monkeypatch):
+        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatmode": "oncall"}}')
+        assert _resolve_stream_overrides() == {"a": {"chatmode": "oncall"}}
+        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatmode": "onmessage"}}')
+        assert _resolve_stream_overrides() == {"a": {"chatmode": "onmessage"}}
 
 
 class TestChatmodeStreamOverride:
@@ -239,18 +237,10 @@ class TestChatmodeStreamOverride:
         mode, _, _ = _resolve_chatmode("Bot Lab")
         assert mode == "onmessage"
 
-    def test_require_mention_override(self, monkeypatch):
-        monkeypatch.setenv("ZULIP_REQUIRE_MENTION", "true")
-        monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"requireMention": false}}')
-        _, _, require = _resolve_chatmode("a")
-        assert require is False
-
-    def test_partial_override_inherits_the_rest(self, monkeypatch):
-        monkeypatch.setenv("ZULIP_CHATMODE", "onchar")
+    def test_global_require_mention_still_returned(self, monkeypatch):
         monkeypatch.setenv("ZULIP_REQUIRE_MENTION", "false")
         monkeypatch.setenv("ZULIP_STREAM_OVERRIDES", '{"a": {"chatmode": "oncall"}}')
-        mode, _, require = _resolve_chatmode("a")
-        assert mode == "oncall"
+        _, _, require = _resolve_chatmode("a")
         assert require is False
 
 
