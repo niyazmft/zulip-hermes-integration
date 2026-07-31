@@ -209,6 +209,10 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 |----------|---------|-------------|
 | `ZULIP_CHUNK_MODE` | `length` | Chunking strategy: `length` or `newline` |
 | `ZULIP_TOPIC_SESSIONS` | `false` | Give each stream topic its own conversation — see [below](#per-topic-sessions) |
+| `ZULIP_ONCHAR_PREFIXES` | `!,>` | Custom onchar triggers |
+| `ZULIP_BLOCK_STREAMING` | `false` | Experimental block streaming |
+| `ZULIP_MEDIA_MAX_MB` | `5` | Max inbound attachment size (MB) |
+| `ZULIP_ALLOW_ALL_USERS` | `false` | Disable all authorization (dev only) |
 
 #### Per-topic sessions
 
@@ -236,11 +240,6 @@ be routed to different Hermes profiles.
 stream's accumulated history into per-topic sessions, so the bot will appear to
 forget conversations that spanned topics. Turn it on for a new stream, or when
 you actively want that separation.
-
-| `ZULIP_ONCHAR_PREFIXES` | `!,>` | Custom onchar triggers |
-| `ZULIP_BLOCK_STREAMING` | `false` | Experimental block streaming |
-| `ZULIP_MEDIA_MAX_MB` | `5` | Max inbound attachment size (MB) |
-| `ZULIP_ALLOW_ALL_USERS` | `false` | Disable all authorization (dev only) |
 
 ---
 
