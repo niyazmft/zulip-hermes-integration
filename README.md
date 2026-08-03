@@ -203,6 +203,27 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 | `ZULIP_REACTIONS_ENABLED` | `true` | Emoji reactions (👀/✅/⚠️) for status |
 | `ZULIP_CHUNK_LIMIT` | `4000` | Max chars per message chunk |
 
+#### How mentions are detected
+
+In `oncall` and `onchar` modes the bot only replies when mentioned, so getting
+this right matters.
+
+Detection prefers Zulip's own `mentioned` flag, which the server sets for a
+personal mention regardless of which markup the sender used. Text matching is
+only a fallback for events that arrive without flags, and it recognises:
+
+| Form | Where it comes from |
+|---|---|
+| `@Soju` | what `@**Soju**` becomes after inbound HTML/markdown stripping |
+| `@**Soju**` | raw Zulip mention markup |
+| `@_**Soju**` | silent mention |
+| `@**Soju\|12**` | mention disambiguated by user id |
+| `@soju-bot` | hand-typed email local-part |
+
+Both the bot's display name and its email local-part are matched, because Zulip
+writes mentions from the **display name** while the account is identified by the
+local-part.
+
 ### Optional — Advanced
 
 | Variable | Default | Description |

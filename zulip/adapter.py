@@ -220,6 +220,22 @@ def _resolve_response_prefix() -> str:
     return os.getenv("ZULIP_RESPONSE_PREFIX", "")
 
 
+def _message_with_flags(event: dict) -> dict:
+    """Return the event's message with Zulip's per-user flags attached.
+
+    Zulip delivers flags on the *event*, as a sibling of ``message``, while its
+    REST API returns them on the message itself. Downstream code should only
+    have one place to look, and losing them here means losing the authoritative
+    ``mentioned`` signal.
+
+    An existing ``flags`` key on the message is left alone.
+    """
+    message = event.get("message") or {}
+    if "flags" not in message:
+        message["flags"] = event.get("flags") or []
+    return message
+
+
 def _resolve_chatmode() -> tuple[str, list[str], bool]:
     """Read stream trigger mode config from environment."""
     mode = os.getenv("ZULIP_CHATMODE", "onmessage").strip().lower()
@@ -257,6 +273,9 @@ class ZulipAdapter(BasePlatformAdapter):
         self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
         self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
         self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
+        # Populated on connect. Zulip renders mentions from the display name,
+        # not the email local-part, so mention matching needs it.
+        self.bot_full_name = ""
 
         # Validate site URL to prevent SSRF before creating client
         if self.site:
@@ -401,6 +420,7 @@ class ZulipAdapter(BasePlatformAdapter):
             if result.get("result") != "success":
                 raise ConnectionError(f"Zulip authentication failed: {result}")
             bot_name = result.get("full_name", "Unknown")
+            self.bot_full_name = result.get("full_name") or ""
             logger.info(
                 format_zulip_log(
                     "zulip bot authenticated",
@@ -544,7 +564,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     if event_id > batch_max_event_id:
                         batch_max_event_id = event_id
                     if event.get("type") == "message":
-                        msg = event["message"]
+                        msg = _message_with_flags(event)
                         msg_id = str(msg.get("id", ""))
                         # Dedupe check
                         if self._dedupe.check(msg_id):
@@ -583,40 +603,13 @@ class ZulipAdapter(BasePlatformAdapter):
         content = strip_html_to_text(content)
 
         # --- Reactions ---
+        # Constructed here so the error path below can reach it, but not
+        # started until the message has cleared every drop path. See the
+        # acknowledgement block after stream gating.
         reactions = ReactionLifecycle(
             self.client, str(message_id), self._reaction_cfg,
             timeout=self._send_timeout,
         )
-        await reactions.start()
-
-        # --- Typing indicator ---
-        typing_params = None
-        if msg_type == "private":
-            typing_params = {
-                "op": "start",
-                "type": "direct",
-                "to": [message.get("sender_id")],
-            }
-        elif msg_type == "stream":
-            stream_id = message.get("stream_id")
-            topic = message.get("subject", "")
-            if stream_id:
-                typing_params = {
-                    "op": "start",
-                    "type": "stream",
-                    "stream_id": stream_id,
-                    "topic": topic,
-                }
-
-        if typing_params:
-            try:
-                await self._sdk_call(
-                    self.client.set_typing_status,
-                    typing_params,
-                    timeout=self._send_timeout,
-                )
-            except Exception:
-                pass  # typing is best-effort
 
         # --- Stream trigger gating ---
         if msg_type == "stream":
@@ -628,9 +621,22 @@ class ZulipAdapter(BasePlatformAdapter):
                 content = stripped
 
             # Check mention (simple substring; bot username from email prefix)
+            # Mention detection.
+            #
+            # Zulip's own "mentioned" flag is authoritative: the server sets it
+            # for personal mentions regardless of which markup form was used,
+            # so it covers @**Name**, @_**Name** and @**Name|id** without this
+            # adapter having to parse any of them. Text matching is only a
+            # fallback for events that arrive without flags.
             bot_username = self.email.split("@")[0] if self.email else ""
-            mention_regex = create_mention_regex(bot_username) if bot_username else None
-            was_mentioned = bool(mention_regex and mention_regex.search(content))
+            mention_regex = (
+                create_mention_regex(bot_username, self.bot_full_name)
+                if bot_username
+                else None
+            )
+            was_mentioned = "mentioned" in (message.get("flags") or [])
+            if not was_mentioned and mention_regex:
+                was_mentioned = bool(mention_regex.search(content))
 
             # Apply gating
             should_process = False
@@ -671,8 +677,12 @@ class ZulipAdapter(BasePlatformAdapter):
                         self.client.send_message,
                         {
                             "type": "stream",
-                            "to": stream_id,
-                            "topic": topic,
+                            # Read from the message rather than relying on
+                            # locals set elsewhere: these were previously bound
+                            # as a side effect of the typing-indicator block,
+                            # which now runs after this point.
+                            "to": message.get("stream_id"),
+                            "topic": message.get("subject", ""),
                             "content": reply,
                         },
                         timeout=self._send_timeout,
@@ -692,13 +702,62 @@ class ZulipAdapter(BasePlatformAdapter):
                     "zulip group message blocked [policy=%s sender=%s stream=%s]",
                     self._policy.group_mode,
                     sender_email,
-                    stream_name,
+                    # Read from the message. This previously used a local bound
+                    # only inside the stream-filter branch, so with no
+                    # ZULIP_STREAMS configured it raised UnboundLocalError and
+                    # took the handler down instead of logging the block.
+                    message.get("display_recipient", ""),
                 )
                 return
 
             # Normalize mention from content
             if was_mentioned and mention_regex:
-                content = normalize_mention(content, mention_regex)
+                if mention_regex.search(content):
+                    content = normalize_mention(content, mention_regex)
+                else:
+                    logger.debug(
+                        "zulip mention flagged by server but not found in text "
+                        "[msg=%s]; passing content through unmodified",
+                        message_id,
+                    )
+
+        # --- Acknowledge the message ---
+        #
+        # Deliberately after all stream gating, stream filtering, and group
+        # policy checks. These signals used to fire before them, so a message
+        # the bot then dropped was left with a permanent "typing..." indicator
+        # and an uncleared start reaction — the bot appeared to be thinking
+        # about a message it had already discarded, forever.
+        #
+        # Direct messages skip the stream block above and reach here normally.
+        await reactions.start()
+
+        typing_params = None
+        if msg_type == "private":
+            typing_params = {
+                "op": "start",
+                "type": "direct",
+                "to": [message.get("sender_id")],
+            }
+        elif msg_type == "stream":
+            typing_stream_id = message.get("stream_id")
+            if typing_stream_id:
+                typing_params = {
+                    "op": "start",
+                    "type": "stream",
+                    "stream_id": typing_stream_id,
+                    "topic": message.get("subject", ""),
+                }
+
+        if typing_params:
+            try:
+                await self._sdk_call(
+                    self.client.set_typing_status,
+                    typing_params,
+                    timeout=self._send_timeout,
+                )
+            except Exception:
+                pass  # typing is best-effort
 
         # --- Command interception (before placeholders / AI dispatch) ---
         if is_command(content):
