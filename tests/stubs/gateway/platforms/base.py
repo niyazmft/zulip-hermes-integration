@@ -22,6 +22,9 @@ class MessageSource:
     chat_type: str = ""
     user_id: str = ""
     user_name: str = ""
+    # Session-scoping discriminator on the real SessionSource. Only set by the
+    # adapter when ZULIP_TOPIC_SESSIONS is enabled.
+    thread_id: str = ""
 
 
 @dataclass
