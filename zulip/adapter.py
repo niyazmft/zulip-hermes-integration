@@ -246,6 +246,20 @@ def _resolve_chatmode() -> tuple[str, list[str], bool]:
     return mode, prefixes, require_mention
 
 
+def _topic_sessions_enabled() -> bool:
+    """Whether each Zulip topic should get its own conversation session.
+
+    Off by default. When enabled, the topic is passed to ``build_source`` as
+    ``thread_id``, which is what Hermes scopes session state by — so each topic
+    in a stream becomes an independent conversation instead of all topics
+    sharing one.
+
+    This is opt-in because turning it on splits an existing stream's history
+    into per-topic sessions, which changes what an agent remembers.
+    """
+    return os.getenv("ZULIP_TOPIC_SESSIONS", "").strip().lower() in ("true", "1", "yes", "on")
+
+
 def _safe_delete_temp_file(file_path: str) -> None:
     """Delete a local file only if it resides under /tmp or a bot workspace.
 
@@ -886,13 +900,16 @@ class ZulipAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # placeholder is best-effort
 
-            source = self.build_source(
-                chat_id=chat_id,
-                chat_name=stream_name,
-                chat_type="stream",
-                user_id=sender_email,
-                user_name=sender_full_name,
-            )
+            source_kwargs: dict[str, Any] = {
+                "chat_id": chat_id,
+                "chat_name": stream_name,
+                "chat_type": "stream",
+                "user_id": sender_email,
+                "user_name": sender_full_name,
+            }
+            if topic and _topic_sessions_enabled():
+                source_kwargs["thread_id"] = topic
+            source = self.build_source(**source_kwargs)
             extra_meta = {"topic": topic, "stream_id": stream_id}
         else:
             sender_id = message.get("sender_id")

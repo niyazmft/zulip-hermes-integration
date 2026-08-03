@@ -77,3 +77,6 @@ optional_env:
   - name: ZULIP_REQUIRE_MENTION
     description: "Require @mention in streams (default: true)"
     prompt: "Require mention"
+  - name: ZULIP_TOPIC_SESSIONS
+    description: "Give each stream topic its own conversation session (default: false)"
+    prompt: "Per-topic sessions"
