@@ -80,3 +80,6 @@ optional_env:
   - name: ZULIP_TOPIC_SESSIONS
     description: "Give each stream topic its own conversation session (default: false)"
     prompt: "Per-topic sessions"
+  - name: ZULIP_STREAM_OVERRIDES
+    description: 'Per-stream chatmode overrides as a JSON object, e.g. {"bot lab": {"chatmode": "onmessage"}}'
+    prompt: "Per-stream chatmode overrides (JSON)"
