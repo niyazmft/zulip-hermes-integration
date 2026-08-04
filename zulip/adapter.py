@@ -1129,13 +1129,15 @@ class ZulipAdapter(BasePlatformAdapter):
 
         try:
             await self.handle_message(event)
-            await reactions.success()
         except Exception:
             await reactions.error()
             raise
         finally:
             await self._stop_typing(typing_params)
             await self._mark_read(message_id)
+
+        # Only reached on success — typing already stopped, now show success
+        await reactions.success()
 
     async def resolve_topic(self, stream_id: int, topic: str) -> dict[str, Any]:
         """Mark a topic as resolved by prepending ✔.
