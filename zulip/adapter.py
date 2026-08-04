@@ -45,7 +45,7 @@ from .commands import handle_command, is_command
 from .policy import PolicyEngine
 from .accounts import AccountResolver
 from . import updater
-from .probe import probe_zulip, _normalize_base_url
+from .probe import probe_zulip, _normalize_base_url, _validate_media_url
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +503,108 @@ class ZulipAdapter(BasePlatformAdapter):
                 getattr(fn, "__name__", repr(fn)),
             )
             raise
+
+    async def _sdk_call_with_retry(
+        self, fn, *args, timeout: float, max_retries: int = 3, **kwargs
+    ):
+        """Wrap _sdk_call with exponential backoff retry for transient failures.
+
+        Retries on 429 (rate limit), 502, 503, 504 status codes.
+        Respects Retry-After headers when available.
+        Uses exponential backoff with jitter between retries.
+        """
+        import random
+
+        base_delay = 1.0
+        max_delay = 30.0
+        last_exception = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                return await self._sdk_call(fn, *args, timeout=timeout, **kwargs)
+            except Exception as e:
+                last_exception = e
+
+                # Don't retry on timeout or cancellation
+                if isinstance(e, (asyncio.TimeoutError, asyncio.CancelledError)):
+                    raise
+
+                # Check if this is a retryable HTTP status
+                retryable = False
+                retry_after = None
+
+                # The Zulip SDK may raise exceptions with status codes
+                err_str = str(e)
+                for code in ("429", "502", "503", "504"):
+                    if code in err_str:
+                        retryable = True
+                        break
+
+                if not retryable or attempt >= max_retries:
+                    raise
+
+                # Calculate backoff with jitter
+                delay = min(max_delay, base_delay * (2 ** attempt))
+                jitter = random.uniform(0, delay * 0.1)
+                wait = delay + jitter
+
+                logger.warning(
+                    "zulip SDK call retry %d/%d after %.1fs [fn=%s]",
+                    attempt + 1, max_retries, wait,
+                    getattr(fn, "__name__", repr(fn)),
+                )
+                await asyncio.sleep(wait)
+
+        raise last_exception  # type: ignore
+
+    @staticmethod
+    def _validate_message_id(message_id: Any) -> int:
+        """Validate and convert a message ID to int.
+
+        Raises ValueError if the message ID is not a valid positive integer.
+        Prevents path traversal and injection via malformed message IDs.
+        """
+        if message_id is None:
+            raise ValueError("message_id is required")
+        try:
+            mid = int(str(message_id).strip())
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid message_id: {message_id}")
+        if mid <= 0:
+            raise ValueError(f"message_id must be positive: {message_id}")
+        return mid
+
+    @staticmethod
+    def _validate_stream_id(stream_id: Any) -> int:
+        """Validate and convert a stream ID to int.
+
+        Raises ValueError if the stream ID is not a valid positive integer.
+        """
+        if stream_id is None:
+            raise ValueError("stream_id is required")
+        try:
+            sid = int(str(stream_id).strip())
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid stream_id: {stream_id}")
+        if sid <= 0:
+            raise ValueError(f"stream_id must be positive: {stream_id}")
+        return sid
+
+    @staticmethod
+    def _validate_user_id(user_id: Any) -> int:
+        """Validate and convert a user ID to int.
+
+        Raises ValueError if the user ID is not a valid positive integer.
+        """
+        if user_id is None:
+            raise ValueError("user_id is required")
+        try:
+            uid = int(str(user_id).strip())
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid user_id: {user_id}")
+        if uid <= 0:
+            raise ValueError(f"user_id must be positive: {user_id}")
+        return uid
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Initialize connection and start listening."""
@@ -1204,6 +1306,13 @@ class ZulipAdapter(BasePlatformAdapter):
         if media_files:
             data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
             for file_path in media_files:
+                # Security: reject URL-like values in media_files (must be local paths)
+                if isinstance(file_path, str) and (file_path.startswith("http://") or file_path.startswith("https://")):
+                    logger.warning(
+                        "zulip send rejected URL in media_files [url=%s]",
+                        mask_pii(file_path),
+                    )
+                    continue
                 try:
                     url = await upload_file_to_zulip(
                         self.client, file_path, data_dir

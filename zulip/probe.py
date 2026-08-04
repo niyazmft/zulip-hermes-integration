@@ -8,6 +8,8 @@ import logging
 import urllib.request
 from typing import Optional
 
+from .logger import mask_pii
+
 logger = logging.getLogger(__name__)
 
 # Private IP ranges to reject (SSRF protection)
@@ -77,6 +79,49 @@ def _normalize_base_url(raw: str) -> Optional[str]:
 
     # Remove trailing slash for consistency
     return f"{scheme}://{rest.rstrip(chr(47))}"
+
+
+def _validate_media_url(url: str) -> bool:
+    """Validate a media URL for SSRF safety.
+
+    Returns True if the URL is safe to fetch (public HTTP(S) only).
+    Rejects:
+    - Non-HTTP(S) protocols (file://, ftp://, etc.)
+    - Internal/private IP addresses
+    - Localhost
+    - Empty URLs
+    """
+    if not url or not url.strip():
+        return False
+
+    url = url.strip()
+
+    # Only allow http and https schemes
+    lower = url.lower()
+    if not (lower.startswith("http://") or lower.startswith("https://")):
+        logger.warning("media URL rejected: non-HTTP scheme [url=%s]", mask_pii(url))
+        return False
+
+    # Extract hostname
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+    except Exception:
+        logger.warning("media URL rejected: unparseable [url=%s]", mask_pii(url))
+        return False
+
+    # Reject internal IPs
+    if _is_internal_host(hostname):
+        logger.warning("media URL rejected: internal host [url=%s]", mask_pii(url))
+        return False
+
+    # Reject localhost names
+    if hostname.lower() in ("localhost", "localhost.localdomain"):
+        logger.warning("media URL rejected: localhost [url=%s]", mask_pii(url))
+        return False
+
+    return True
 
 
 async def probe_zulip(

@@ -28,6 +28,14 @@ echo "════════════════════════�
 echo "  Zulip Hermes Pre-Push Checks"
 echo "═══════════════════════════════════════"
 
+# Auto-generate checksums.txt for updater integrity verification
+run_check "Checksums: checksums.txt" bash -c '
+  for f in zulip/*.py zulip/plugin.yaml zulip/__init__.py; do
+    [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d" " -f1)  ${f#zulip/}"
+  done > checksums.txt
+  echo "checksums.txt updated with $(wc -l < checksums.txt) entries"
+'
+
 run_check "Syntax: zulip/adapter.py" python3 -m py_compile zulip/adapter.py
 run_check "Syntax: zulip/__init__.py" python3 -m py_compile zulip/__init__.py
 run_check "Validate: zulip/plugin.yaml" python3 -c "import yaml; yaml.safe_load(open('zulip/plugin.yaml'))"
