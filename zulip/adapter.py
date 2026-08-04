@@ -180,6 +180,11 @@ DEFAULT_CONNECT_TIMEOUT = 30.0
 DEFAULT_READ_TIMEOUT = 60.0
 DEFAULT_SEND_TIMEOUT = 90.0
 
+# Typing indicator delay (seconds) — how long to keep typing visible after
+# the API confirms the message was sent, so the response is visible in the UI
+# before the typing indicator stops and the success reaction appears.
+DEFAULT_TYPING_DELAY = 2.0
+
 
 def _resolve_chunk_config() -> tuple[int, str]:
     """Read chunking config from environment."""
@@ -206,6 +211,20 @@ def _resolve_timeouts() -> tuple[float, float, float]:
     read = _parse(os.getenv("ZULIP_READ_TIMEOUT", ""), DEFAULT_READ_TIMEOUT)
     send = _parse(os.getenv("ZULIP_SEND_TIMEOUT", ""), DEFAULT_SEND_TIMEOUT)
     return connect, read, send
+
+
+def _resolve_typing_delay() -> float:
+    """Read typing indicator delay from environment.
+
+    After the message is accepted by the Zulip API, the typing indicator
+    stays active for this many seconds so the response has time to propagate
+    to all clients before the indicator stops and the success reaction fires.
+    """
+    try:
+        val = float(os.getenv("ZULIP_TYPING_DELAY_SECONDS", "").strip())
+        return max(0.0, val)
+    except (ValueError, AttributeError):
+        return DEFAULT_TYPING_DELAY
 
 
 def _resolve_streams_filter() -> set[str] | None:
@@ -449,6 +468,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Timeout configuration (Issue #62)
         self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
+
+        # Typing indicator delay (Issue #96)
+        self._typing_delay = _resolve_typing_delay()
 
         # Stream filtering (Issue #65) — None means all streams
         self._streams_filter = _resolve_streams_filter()
@@ -1131,12 +1153,17 @@ class ZulipAdapter(BasePlatformAdapter):
             await self.handle_message(event)
         except Exception:
             await reactions.error()
+            await self._stop_typing(typing_params)
             raise
         finally:
-            await self._stop_typing(typing_params)
             await self._mark_read(message_id)
 
-        # Only reached on success — typing already stopped, now show success
+        # Only reached on success.
+        # Wait for the configured delay so the response is visible in the UI
+        # before the typing indicator stops and the success reaction appears.
+        if self._typing_delay > 0:
+            await asyncio.sleep(self._typing_delay)
+        await self._stop_typing(typing_params)
         await reactions.success()
 
     async def resolve_topic(self, stream_id: int, topic: str) -> dict[str, Any]:
