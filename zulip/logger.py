@@ -10,7 +10,6 @@ PII masking rules:
 - Prefixed values: user:..., dm:..., stream:...
 """
 
-import re
 from typing import Optional
 
 
