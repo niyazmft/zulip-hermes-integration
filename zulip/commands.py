@@ -10,6 +10,8 @@ import os
 from typing import Callable, Any
 from dataclasses import dataclass
 
+from .logger import mask_pii
+
 logger = __import__("logging").getLogger(__name__)
 
 CommandHandler = Callable[[str, str, str, str], str]
@@ -83,8 +85,8 @@ def handle_command(
         reply = handler(args, chat_id, sender_email, sender_name)
         return CommandResult(handled=True, reply=reply)
     except Exception as e:
-        logger.warning("command error [cmd=%s sender=%s]: %s", cmd, sender_email, e)
-        return CommandResult(handled=True, reply=f"❌ Error processing /{cmd}: {e}")
+        logger.warning("command error [cmd=%s sender=%s]: %s", cmd, mask_pii(sender_email), e)
+        return CommandResult(handled=True, reply=f"❌ Error processing /{cmd}. Please try again later.")
 
 
 # ------------------------------------------------------------------
@@ -120,7 +122,6 @@ def _cmd_status(
         "**Bot Status**",
         f"Version: `{__version__}`",
         f"Repo: {__repo__}",
-        f"Sender: {sender_email}",
     ]
     return "\n".join(lines)
 
