@@ -315,8 +315,8 @@ def _format_zulip_table(table_lines: list[str]) -> list[str]:
         return table_lines
 
     # The second line should be the separator row
-    # Standard: |---|---|
-    # Zulip expects: | --- | --- |
+    # Standard: |---|---|  or  |:---|---:|
+    # Zulip expects: | --- | --- |  or  | :--- | ---: |
     formatted: list[str] = []
     for i, line in enumerate(table_lines):
         if i == 1:
@@ -324,10 +324,16 @@ def _format_zulip_table(table_lines: list[str]) -> list[str]:
             cells = [c.strip() for c in line.split("|") if c.strip()]
             new_cells = []
             for cell in cells:
-                # Ensure at least "---" in each cell
-                cleaned = cell.replace("-", "").replace(":", "").strip()
-                if not cleaned:
-                    new_cells.append("---")
+                # Preserve alignment markers (:), ensure dashes present
+                has_left = cell.startswith(":")
+                has_right = cell.endswith(":")
+                # Strip to just dashes and colons
+                cleaned = cell.replace("-", "").replace(" ", "").strip()
+                if cleaned in ("", ":", ":", ":"):
+                    # Rebuild with proper alignment
+                    prefix = ":" if has_left else ""
+                    suffix = ":" if has_right else ""
+                    new_cells.append(f"{prefix}---{suffix}")
                 else:
                     new_cells.append(cell)
             formatted.append("|" + "|".join(f" {c} " for c in new_cells) + "|")

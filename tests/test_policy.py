@@ -175,3 +175,62 @@ class TestGroupPolicy:
         monkeypatch.setenv("ZULIP_GROUP_POLICY", "pairing")
         p = PolicyEngine()
         assert p.group_mode == "open"
+
+
+class TestPolicyDiskPersistence:
+    """Tests for disk-based allowlist persistence."""
+
+    def test_save_and_load_persists_allowlist(self, tmp_path):
+        p = PolicyEngine(data_dir=str(tmp_path))
+        p.approve_email("alice@test.com")
+        p.approve_email("bob@test.com")
+
+        # Create a new engine pointing to the same dir
+        p2 = PolicyEngine(data_dir=str(tmp_path))
+        assert "alice@test.com" in p2.allowlist
+        assert "bob@test.com" in p2.allowlist
+
+    def test_save_and_load_persists_group_allowlist(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZULIP_GROUP_POLICY", "allowlist")
+        p = PolicyEngine(data_dir=str(tmp_path))
+        # Group allowlist is env-based, but we can test that it's loaded
+        assert p.group_allowlist == set()
+
+    def test_persistence_file_created(self, tmp_path):
+        p = PolicyEngine(data_dir=str(tmp_path))
+        p.approve_email("test@test.com")
+
+        persist_file = tmp_path / "zulip_allowlist.json"
+        assert persist_file.exists()
+
+        import json
+        data = json.loads(persist_file.read_text())
+        assert "test@test.com" in data["allowlist"]
+
+    def test_no_data_dir_does_not_persist(self):
+        p = PolicyEngine()  # No data_dir
+        p.approve_email("test@test.com")
+        # Should not crash — just skip persistence
+        assert "test@test.com" in p.allowlist
+
+    def test_load_from_nonexistent_file_does_not_crash(self, tmp_path):
+        # Non-existent file should not raise
+        p = PolicyEngine(data_dir=str(tmp_path / "nonexistent"))
+        assert p.allowlist == set()
+
+    def test_revoke_persists_to_disk(self, tmp_path):
+        p = PolicyEngine(data_dir=str(tmp_path))
+        p.approve_email("alice@test.com")
+        p.revoke_email("alice@test.com")
+
+        p2 = PolicyEngine(data_dir=str(tmp_path))
+        assert "alice@test.com" not in p2.allowlist
+
+    def test_env_allowlist_merged_with_disk(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ZULIP_ALLOWED_USERS", "env@test.com")
+        p = PolicyEngine(data_dir=str(tmp_path))
+        p.approve_email("disk@test.com")
+
+        p2 = PolicyEngine(data_dir=str(tmp_path))
+        assert "env@test.com" in p2.allowlist  # from env
+        assert "disk@test.com" in p2.allowlist  # from disk

@@ -33,7 +33,7 @@ _SANITIZED_ERRORS: dict[str, str] = {
     "download_failed": "Failed to download update. Please check network connectivity and try again.",
     "archive_corrupted": "Downloaded update is corrupted. Please try again.",
     "extraction_failed": "Update extraction failed. The archive may be incompatible.",
-    "checksum_mismatch": "Update integrity check failed. The downloaded files do not match the expected checksums.",
+    "checksum_mismatch": "Update integrity check failed: checksum mismatch. The downloaded files do not match the expected checksums.",
     "checksums_not_found": "Could not verify update integrity (checksums file not found). Update aborted for safety.",
     "missing_files": "Some plugin files were missing from the update. Update aborted.",
     "write_failed": "Failed to write updated files. Check filesystem permissions.",
