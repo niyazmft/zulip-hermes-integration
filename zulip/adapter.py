@@ -46,6 +46,7 @@ from .policy import PolicyEngine
 from .accounts import AccountResolver
 from . import updater
 from .probe import probe_zulip, _normalize_base_url, _validate_media_url
+from .recovery import recover_interrupted_messages
 
 logger = logging.getLogger(__name__)
 
@@ -727,6 +728,22 @@ class ZulipAdapter(BasePlatformAdapter):
         # Ensure queue is registered before starting listener
         await self._queue_mgr.ensure_queue()
 
+        # Recover interrupted messages from previous gateway instance
+        bot_user_id = str(probe_result.get("bot", {}).get("id", ""))
+        asyncio.create_task(
+            recover_interrupted_messages(
+                client=self.client,
+                bot_email=self.email,
+                bot_user_id=bot_user_id,
+                reaction_start=self._reaction_cfg.on_start,
+                reaction_success=self._reaction_cfg.on_success,
+                reaction_error=self._reaction_cfg.on_error,
+                handle_message=self._handle_message,
+                sdk_call=self._sdk_call,
+                send_timeout=self._send_timeout,
+            )
+        )
+
         self._listening = True
         self._event_task = asyncio.create_task(self._listen_for_events())
         self._mark_connected()
@@ -1317,6 +1334,133 @@ class ZulipAdapter(BasePlatformAdapter):
                 e,
             )
             return {"ok": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Zulip API Features: Search, Stream CRUD, User Management, Deletion
+    # ------------------------------------------------------------------
+
+    async def fetch_messages(
+        self,
+        stream: str,
+        topic: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Fetch recent messages from a stream, optionally filtered by topic.
+
+        Uses Zulip's /messages endpoint with narrow filters.
+        Returns a list of message dicts.
+        """
+        narrow = [{"operator": "stream", "operand": stream}]
+        if topic:
+            narrow.append({"operator": "topic", "operand": topic})
+
+        try:
+            result = await self._sdk_call(
+                self.client.get_messages,
+                {
+                    "anchor": "newest",
+                    "num_before": min(max(1, limit), 1000),
+                    "num_after": 0,
+                    "narrow": narrow,
+                },
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                return result.get("messages", [])
+            logger.warning("fetch_messages failed: %s", result.get("msg"))
+            return []
+        except Exception as e:
+            logger.error("fetch_messages error: %s", e)
+            return []
+
+    async def search_messages(
+        self,
+        query: str,
+        stream: Optional[str] = None,
+        topic: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Search messages by query, optionally scoped to stream/topic."""
+        narrow = [{"operator": "search", "operand": query}]
+        if stream:
+            narrow.append({"operator": "stream", "operand": stream})
+        if topic:
+            narrow.append({"operator": "topic", "operand": topic})
+
+        try:
+            result = await self._sdk_call(
+                self.client.get_messages,
+                {
+                    "anchor": "newest",
+                    "num_before": min(max(1, limit), 1000),
+                    "num_after": 0,
+                    "narrow": narrow,
+                },
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                return result.get("messages", [])
+            logger.warning("search_messages failed: %s", result.get("msg"))
+            return []
+        except Exception as e:
+            logger.error("search_messages error: %s", e)
+            return []
+
+    async def list_streams(self) -> list[dict]:
+        """List all streams the bot can see."""
+        try:
+            result = await self._sdk_call(
+                self.client.get_streams,
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                return result.get("streams", [])
+            return []
+        except Exception as e:
+            logger.error("list_streams error: %s", e)
+            return []
+
+    async def subscribe_stream(self, stream_name: str) -> bool:
+        """Subscribe the bot to a stream."""
+        try:
+            result = await self._sdk_call(
+                self.client.add_subscriptions,
+                {stream_name},
+                timeout=self._send_timeout,
+            )
+            return result.get("result") == "success"
+        except Exception as e:
+            logger.error("subscribe_stream error: %s", e)
+            return False
+
+    async def delete_message(self, message_id: int) -> bool:
+        """Delete a message by ID."""
+        try:
+            validated_id = self._validate_message_id(message_id)
+            result = await self._sdk_call(
+                self.client.delete_message,
+                validated_id,
+                timeout=self._send_timeout,
+            )
+            return result.get("result") == "success"
+        except Exception as e:
+            logger.error("delete_message error: %s", e)
+            return False
+
+    async def get_user_presence(self, user_id_or_email: str) -> Optional[dict]:
+        """Get presence status for a user."""
+        try:
+            result = await self._sdk_call(
+                self.client.get_user_presence,
+                user_id_or_email,
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                return result.get("presence")
+            return None
+        except Exception as e:
+            logger.error("get_user_presence error: %s", e)
+            return None
 
     async def send(
         self,
