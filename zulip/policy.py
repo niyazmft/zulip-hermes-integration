@@ -6,12 +6,15 @@ for secure onboarding.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import string
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 logger = __import__("logging").getLogger(__name__)
@@ -35,9 +38,9 @@ class PairingCode:
 
 
 class PolicyEngine:
-    """Manages DM and group/stream policies."""
+    """Manages DM and group/stream policies with disk persistence."""
 
-    def __init__(self, *, pairing_ttl: int = _PAIRING_CODE_TTL_SECONDS):
+    def __init__(self, *, pairing_ttl: int = _PAIRING_CODE_TTL_SECONDS, data_dir: Optional[str] = None):
         # DM policy
         self.mode = self._resolve_dm_mode()
         self.allowlist = self._parse_allowlist()
@@ -48,6 +51,61 @@ class PolicyEngine:
         # Group (stream) policy
         self.group_mode = self._resolve_group_mode()
         self.group_allowlist = self._parse_group_allowlist()
+
+        # Disk persistence for allowlist
+        self._data_dir = Path(data_dir).expanduser() if data_dir else None
+        self._load_from_disk()
+
+    def _persistence_path(self) -> Optional[Path]:
+        """Return path to allowlist persistence file."""
+        if not self._data_dir:
+            return None
+        return self._data_dir / "zulip_allowlist.json"
+
+    def _load_from_disk(self) -> None:
+        """Load persisted allowlist from disk."""
+        path = self._persistence_path()
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            disk_allowlist = set(data.get("allowlist", []))
+            disk_group_allowlist = set(data.get("group_allowlist", []))
+            # Merge with env-based allowlist (env takes precedence)
+            self.allowlist = self._parse_allowlist() | disk_allowlist
+            self.group_allowlist = self._parse_group_allowlist() | disk_group_allowlist
+            logger.info(
+                "policy allowlist loaded from disk [allowlist=%d group_allowlist=%d]",
+                len(self.allowlist),
+                len(self.group_allowlist),
+            )
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    def _save_to_disk(self) -> None:
+        """Persist allowlist to disk atomically."""
+        path = self._persistence_path()
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "allowlist": sorted(self.allowlist),
+                "group_allowlist": sorted(self.group_allowlist),
+            }
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                json.dump(data, f)
+                temp_path = f.name
+            os.replace(temp_path, path)
+        except OSError as e:
+            logger.warning("policy allowlist save failed: %s", e)
 
     @staticmethod
     def _resolve_dm_mode() -> str:
@@ -165,6 +223,7 @@ class PolicyEngine:
                 pc = self._pairing_codes.get(code)
                 if pc:
                     pc.used = True
+            self._save_to_disk()
             return True
         return False
 
@@ -173,6 +232,7 @@ class PolicyEngine:
         email = email.strip().lower()
         if email in self.allowlist:
             self.allowlist.discard(email)
+            self._save_to_disk()
             return True
         return False
 

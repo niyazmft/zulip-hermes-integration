@@ -437,6 +437,11 @@ class ZulipAdapter(BasePlatformAdapter):
         self._last_topic_cache: dict[str, str] = {}      # stream_id → previous topic
         self._message_counts: dict[str, int] = {}        # chat_id → message count
         self._last_message_time: dict[str, float] = {}   # chat_id → last message epoch
+        # DM session rotation: prevents context bloat in long conversations
+        self._dm_session_turn_limit = int(
+            os.getenv("ZULIP_DM_SESSION_TURN_LIMIT", "20").strip()
+        )
+        self._dm_base_message_counts: dict[str, int] = {}  # base_session_key → turn count
 
         # Placeholder editing config (default: true, set false to disable)
         self._edit_placeholder_enabled = (
@@ -479,7 +484,7 @@ class ZulipAdapter(BasePlatformAdapter):
         self._reaction_cfg = ReactionConfig.from_env()
 
         # DM policy engine (Issue #48 — controls who can DM the bot)
-        self._policy = PolicyEngine()
+        self._policy = PolicyEngine(data_dir=self._data_dir)
 
         self._listening = False
         self._event_task: Optional[asyncio.Task] = None
@@ -794,6 +799,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     continue
 
                 batch_max_event_id = queue.last_event_id
+                processing_tasks = []
                 for event in events.get("events", []):
                     event_id = event["id"]
                     if event_id > batch_max_event_id:
@@ -805,7 +811,15 @@ class ZulipAdapter(BasePlatformAdapter):
                         if self._dedupe.check(msg_id):
                             logger.debug("zulip dedupe hit [msg=%s]", msg_id)
                             continue
-                        await self._handle_message(msg)
+                        # Process messages concurrently so a slow model call
+                        # does not block the poll loop for unrelated messages.
+                        # Per-session serialization is handled by the gateway.
+                        task = asyncio.create_task(self._handle_message(msg))
+                        processing_tasks.append(task)
+
+                # Fire-and-forget: don't await processing tasks here so the
+                # poll loop keeps fetching events. Errors are logged inside
+                # _handle_message.
 
                 # Batch update event ID
                 if batch_max_event_id > queue.last_event_id:
@@ -1139,6 +1153,16 @@ class ZulipAdapter(BasePlatformAdapter):
         else:
             sender_id = message.get("sender_id")
             chat_id = f"dm:{sender_id}"
+
+            # DM session rotation: prevent context bloat by rotating
+            # the session key every N turns (default 20, 0 to disable).
+            if self._dm_session_turn_limit > 0:
+                base_key = chat_id
+                turn_count = self._dm_base_message_counts.get(base_key, 0) + 1
+                self._dm_base_message_counts[base_key] = turn_count
+                epoch = (turn_count - 1) // self._dm_session_turn_limit
+                if epoch > 0:
+                    chat_id = f"{base_key}:session:{epoch}"
 
             # Send placeholder if editing is enabled (DMs too)
             if self._edit_placeholder_enabled:
