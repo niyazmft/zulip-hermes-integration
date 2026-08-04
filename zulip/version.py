@@ -27,4 +27,5 @@ PLUGIN_FILES = [
     "updater.py",
     "version.py",
     "workspace.py",
+    "update.sh",
 ]

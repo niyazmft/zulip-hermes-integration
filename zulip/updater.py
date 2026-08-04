@@ -257,7 +257,78 @@ def startup_version_check(current_version: str, repo: str) -> None:
     if newer:
         logger.warning(
             "Plugin update available: v%s \u2192 v%s. "
-            "Type '@bot update' in Zulip to download, then restart Hermes.",
+            "Run `python -m zulip.updater` to download, then restart Hermes.",
             current_version,
             newer,
         )
+
+
+if __name__ == "__main__":
+    """CLI entry point for manual plugin updates.
+
+    Usage:
+        python -m zulip.updater              # check + update
+        python -m zulip.updater --check-only  # just check, don't update
+        python -m zulip.updater --help        # show help
+    """
+    import argparse
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        description="Update the Zulip Hermes plugin from GitHub.",
+        epilog="Files are verified via SHA-256 checksums before replacement.",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only check for updates, don't download",
+    )
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="GitHub repo (default: from version.py)",
+    )
+    parser.add_argument(
+        "--plugin-dir",
+        default=None,
+        help="Plugin directory (default: auto-detect)",
+    )
+    args = parser.parse_args()
+
+    # Import version info
+    from .version import __version__, __repo__, PLUGIN_FILES
+
+    repo = args.repo or __repo__
+    current = __version__
+
+    # Auto-detect plugin directory (parent of this file's zulip/ subdir)
+    plugin_dir = args.plugin_dir
+    if not plugin_dir:
+        plugin_dir = str(Path(__file__).resolve().parent)
+
+    print(f"Current version: v{current}")
+    print(f"Repo: {repo}")
+    print(f"Plugin dir: {plugin_dir}")
+    print()
+
+    newer = check_for_update(repo, current)
+    if not newer:
+        print("\u2705 Already up to date.")
+        sys.exit(0)
+
+    print(f"\u2191 Update available: v{current} \u2192 v{newer}")
+    print()
+
+    if args.check_only:
+        print("Run without --check-only to download and install.")
+        sys.exit(0)
+
+    print("Downloading and verifying...")
+    success, message = perform_update(repo, plugin_dir, PLUGIN_FILES)
+
+    if success:
+        print(f"\u2705 {message}")
+    else:
+        print(f"\u274c {message}")
+        sys.exit(1)
