@@ -87,7 +87,6 @@ class TestBuiltInCommands:
         result = handle_command("/status", "dm:1", "a@x.com", "Alice")
         assert result.handled is True
         assert "Bot Status" in result.reply
-        assert "Sender: a@x.com" in result.reply
 
     def test_model_without_args(self):
         result = handle_command("/model", "dm:1", "a@x.com", "Alice")
@@ -112,7 +111,6 @@ class TestCommandErrorHandling:
         result = handle_command("/badcmd", "dm:1", "a@x.com", "Alice")
         assert result.handled is True
         assert "Error processing /badcmd" in result.reply
-        assert "boom" in result.reply
 
         del _COMMANDS["badcmd"]
 

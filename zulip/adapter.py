@@ -391,9 +391,9 @@ def _safe_delete_temp_file(file_path: str) -> None:
         ws = tmp / "hermes_bot_workspace"
         if str(p).startswith(str(tmp)) or str(p).startswith(str(ws)):
             p.unlink()
-            logger.debug("cleaned up temp file [path=%s]", file_path)
+            logger.debug("cleaned up temp file [path=%s]", mask_pii(file_path))
     except OSError as e:
-        logger.warning("temp file cleanup failed [path=%s]: %s", file_path, e)
+        logger.warning("temp file cleanup failed [path=%s]: %s", mask_pii(file_path), e)
 
 
 class ZulipAdapter(BasePlatformAdapter):
@@ -648,7 +648,13 @@ class ZulipAdapter(BasePlatformAdapter):
                     f"Cannot reach Zulip server: {self.site}"
                 )
         except Exception as e:
-            logger.error("Zulip server unreachable: %s", e)
+            logger.error(
+                format_zulip_log(
+                    "zulip server unreachable",
+                    site=mask_pii(self.site),
+                    error=mask_pii(str(e)),
+                )
+            )
             raise ConnectionError(f"Cannot reach Zulip server: {self.site}") from e
 
         # 2. Validate credentials with lightweight profile call
@@ -668,7 +674,12 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
             )
         except Exception as e:
-            logger.error("Zulip authentication error: %s", e)
+            logger.error(
+                format_zulip_log(
+                    "zulip authentication error",
+                    error=mask_pii(str(e)),
+                )
+            )
             raise
 
         # 3. Log subscriptions so admins know what streams the bot sees
@@ -681,9 +692,8 @@ class ZulipAdapter(BasePlatformAdapter):
                 stream_names = [s["name"] for s in subs.get("subscriptions", [])]
                 if stream_names:
                     logger.info(
-                        "zulip bot subscribed to %d stream(s): %s",
+                        "zulip bot subscribed to %d stream(s)",
                         len(stream_names),
-                        ", ".join(stream_names),
                     )
                 else:
                     logger.warning(
@@ -809,7 +819,7 @@ class ZulipAdapter(BasePlatformAdapter):
                         msg_id = str(msg.get("id", ""))
                         # Dedupe check
                         if self._dedupe.check(msg_id):
-                            logger.debug("zulip dedupe hit [msg=%s]", msg_id)
+                            logger.debug("zulip dedupe hit [msg=%s]", mask_pii(msg_id))
                             continue
                         # Process messages concurrently so a slow model call
                         # does not block the poll loop for unrelated messages.
@@ -905,7 +915,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 should_process = False
 
             if not should_process:
-                logger.debug("zulip drop [mode=%s, no trigger] msg=%s", chatmode, message_id)
+                logger.debug("zulip drop [mode=%s, no trigger] msg=%s", chatmode, mask_pii(str(message_id)))
                 return
 
             # --- Stream filtering (Issue #65) ---
@@ -914,8 +924,8 @@ class ZulipAdapter(BasePlatformAdapter):
                 if stream_name not in self._streams_filter:
                     logger.debug(
                         "zulip drop [stream=%s not in filter] msg=%s",
-                        stream_name,
-                        message_id,
+                        mask_pii(stream_name),
+                        mask_pii(str(message_id)),
                     )
                     return
 
@@ -941,7 +951,7 @@ class ZulipAdapter(BasePlatformAdapter):
                         timeout=self._send_timeout,
                     )
                 except Exception as e:
-                    logger.warning("group policy rejection reply failed: %s", e)
+                    logger.warning("group policy rejection reply failed: %s", mask_pii(str(e)))
                 # Mark message as read and stop processing
                 try:
                     await self._sdk_call(
@@ -954,12 +964,8 @@ class ZulipAdapter(BasePlatformAdapter):
                 logger.info(
                     "zulip group message blocked [policy=%s sender=%s stream=%s]",
                     self._policy.group_mode,
-                    sender_email,
-                    # Read from the message. This previously used a local bound
-                    # only inside the stream-filter branch, so with no
-                    # ZULIP_STREAMS configured it raised UnboundLocalError and
-                    # took the handler down instead of logging the block.
-                    message.get("display_recipient", ""),
+                    mask_pii(sender_email),
+                    mask_pii(str(message.get("display_recipient", ""))),
                 )
                 return
 
@@ -1056,7 +1062,7 @@ class ZulipAdapter(BasePlatformAdapter):
                             timeout=self._send_timeout,
                         )
                 except Exception as e:
-                    logger.warning("command reply failed: %s", e)
+                    logger.warning("command reply failed: %s", mask_pii(str(e)))
                 # Mark message as read and stop processing
                 try:
                     await self._sdk_call(
@@ -1096,7 +1102,7 @@ class ZulipAdapter(BasePlatformAdapter):
                         timeout=self._send_timeout,
                     )
                 except Exception as e:
-                    logger.warning("DM policy rejection failed: %s", e)
+                    logger.warning("DM policy rejection failed: %s", mask_pii(str(e)))
 
                 # Mark message as read and stop processing
                 try:
@@ -1107,7 +1113,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-                logger.info("zulip DM blocked [policy=%s sender=%s]", self._policy.mode, sender_email)
+                logger.info("zulip DM blocked [policy=%s sender=%s]", self._policy.mode, mask_pii(sender_email))
                 return
 
         if msg_type == "stream":
@@ -1344,7 +1350,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     uploaded_urls.append(url)
                     uploaded_local_paths.append(file_path)
                 except Exception as e:
-                    logger.error("zulip upload failed [file=%s]: %s", file_path, e)
+                    logger.error("zulip upload failed [file=%s]: %s", mask_pii(file_path), e)
 
         # Clean up local temp files after upload (best-effort)
         for local_path in uploaded_local_paths:
@@ -1379,7 +1385,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     "zulip send failed on chunk %d/%d [chat=%s]",
                     idx + 1,
                     len(chunks),
-                    chat_id,
+                    mask_pii(chat_id),
                 )
 
         return last_result or SendResult(success=False, message_id="")
