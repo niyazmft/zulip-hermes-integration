@@ -6,8 +6,7 @@ Unknown commands fall through to the AI.
 
 from __future__ import annotations
 
-import os
-from typing import Callable, Any
+from typing import Callable
 from dataclasses import dataclass
 
 from .logger import mask_pii

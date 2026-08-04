@@ -1,8 +1,8 @@
 """Self-update mechanism for the Zulip Hermes plugin.
 
-Allows admins to update the plugin via Zulip chat commands without SSH:
-    @bot version   — show current version
-    @bot update    — download latest files from GitHub
+Allows admins to update the plugin via CLI without SSH:
+    python -m zulip.updater          # check + update
+    python -m zulip.updater --check-only  # just check
 
 Files are replaced in-place. A Hermes gateway restart is required
 after update to load the new code into memory.
