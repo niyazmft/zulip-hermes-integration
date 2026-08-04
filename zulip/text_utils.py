@@ -51,13 +51,17 @@ def chunk_text(text: str, limit: int = 4000, mode: str = "length") -> list[str]:
     Args:
         text: The text to split.
         limit: Maximum characters per chunk.
-        mode: "length" (hard split) or "newline" (split on newlines first).
+        mode: "length" (hard split), "newline" (split on newlines first),
+              or "markdown" (respects code blocks, blockquotes, lists).
 
     Returns:
         List of text chunks.
     """
     if not text or len(text) <= limit:
         return [text] if text else []
+
+    if mode == "markdown":
+        return _chunk_markdown_text(text, limit)
 
     chunks: list[str] = []
     remaining = text
@@ -105,6 +109,83 @@ def _chunk_by_length(text: str, limit: int) -> list[str]:
         while start < len(text) and text[start] == " ":
             start += 1
     return chunks
+
+
+def _chunk_markdown_text(text: str, limit: int) -> list[str]:
+    """Split text into chunks respecting markdown formatting boundaries.
+
+    Preserves:
+    - Code blocks (fenced with ```)
+    - Blockquotes (>)
+    - Lists (ordered and unordered)
+    - Tables
+
+    Falls back to _chunk_by_length for content that cannot be split
+    at a formatting boundary.
+    """
+    if not text or len(text) <= limit:
+        return [text] if text else []
+
+    chunks: list[str] = []
+    current = ""
+    lines = text.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Detect fenced code block start
+        if line.strip().startswith("```"):
+            block_lines = [line]
+            i += 1
+            while i < len(lines):
+                block_lines.append(lines[i])
+                if lines[i].strip().startswith("```"):
+                    i += 1
+                    break
+                i += 1
+            block = "\n".join(block_lines)
+            candidate = (current + "\n" + block).strip() if current else block
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                # If the block itself exceeds limit, split it
+                if len(block) > limit:
+                    chunks.extend(_chunk_by_length(block, limit))
+                else:
+                    current = block
+            continue
+
+        candidate = (current + "\n" + line).strip() if current else line
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # Try to break at a formatting boundary
+            # Check if this line is a list item, blockquote, or table
+            stripped = line.strip()
+            is_formatting = (
+                stripped.startswith("-")
+                or stripped.startswith("*")
+                or stripped.startswith(">")
+                or stripped.startswith("|")
+                or stripped[0:1].isdigit()
+            )
+            if is_formatting and len(line) <= limit:
+                current = line
+            else:
+                # Fall back to length-based split
+                chunks.extend(_chunk_by_length(line, limit))
+                current = ""
+        i += 1
+
+    if current:
+        chunks.append(current)
+
+    return [c for c in chunks if c]
 
 
 def extract_topic_directive(text: str) -> tuple[str, Optional[str]]:
