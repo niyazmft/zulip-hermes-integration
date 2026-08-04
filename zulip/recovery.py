@@ -6,7 +6,7 @@ and re-dispatches them with fresh session keys.
 
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
