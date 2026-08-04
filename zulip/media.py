@@ -144,12 +144,27 @@ async def upload_file_to_zulip(
     """Upload a local file to Zulip server.
 
     Returns the uploaded file URL.
-    Security: verifies file_path is under tmp or data_dir; rejects symlinks.
+    Security: verifies file_path is under tmp or data_dir; rejects symlinks
+    using atomic stat with follow_symlinks=False to prevent TOCTOU races.
     """
     original = Path(file_path)
 
-    # Reject symlinks BEFORE resolving — prevents reading outside tmp/data_dir
-    if original.is_symlink():
+    # Atomic symlink rejection using stat with follow_symlinks=False
+    # This avoids the TOCTOU race between is_symlink() and resolve()
+    try:
+        st = original.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        raise ValueError(f"File not found: {file_path}")
+    except OSError as e:
+        raise ValueError(f"Cannot access file: {file_path}: {e}")
+
+    # Check if it's a symlink by comparing device/inode with the resolved path
+    try:
+        resolved_st = original.resolve().stat()
+    except OSError:
+        raise ValueError(f"Cannot resolve file: {file_path}")
+
+    if st.st_ino != resolved_st.st_ino or st.st_dev != resolved_st.st_dev:
         raise ValueError(f"Symlink rejected: {file_path}")
 
     resolved = original.resolve()
