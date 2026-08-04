@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Any, overload
 
@@ -430,8 +430,6 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Track latest topic per stream so replies stay threaded
         self._topic_cache: dict[str, str] = {}
-        # Pending placeholder message IDs for editing (chat_id → deque of msg_ids)
-        self._pending_placeholders: dict[str, deque[int]] = {}
         # Context-mitigation state
         self._last_topic_cache: dict[str, str] = {}      # stream_id → previous topic
         self._message_counts: dict[str, int] = {}        # chat_id → message count
@@ -441,11 +439,6 @@ class ZulipAdapter(BasePlatformAdapter):
             os.getenv("ZULIP_DM_SESSION_TURN_LIMIT", "20").strip()
         )
         self._dm_base_message_counts: dict[str, int] = {}  # base_session_key → turn count
-
-        # Placeholder editing config (default: true, set false to disable)
-        self._edit_placeholder_enabled = (
-            os.getenv("ZULIP_EDIT_PLACEHOLDER", "").strip().lower() not in ("false", "0", "no", "off")
-        )
 
         # Block streaming config (Issue #49 — requires gateway-level streaming support)
         self._block_streaming = (
@@ -524,6 +517,32 @@ class ZulipAdapter(BasePlatformAdapter):
         if mid <= 0:
             raise ValueError(f"message_id must be positive: {message_id}")
         return mid
+
+    async def _stop_typing(self, typing_params: Optional[dict]) -> None:
+        """Stop typing indicator if it was started. Safe to call multiple times."""
+        if typing_params is None:
+            return
+        params = dict(typing_params)
+        params["op"] = "stop"
+        try:
+            await self._sdk_call(
+                self.client.set_typing_status,
+                params,
+                timeout=self._send_timeout,
+            )
+        except Exception:
+            pass
+
+    async def _mark_read(self, message_id: Any) -> None:
+        """Mark a message as read. Best-effort."""
+        try:
+            await self._sdk_call(
+                self.client.update_message_flags,
+                {"messages": [message_id], "op": "add", "flag": "read"},
+                timeout=self._send_timeout,
+            )
+        except Exception:
+            pass
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Initialize connection and start listening."""
@@ -948,7 +967,7 @@ class ZulipAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # typing is best-effort
 
-        # --- Command interception (before placeholders / AI dispatch) ---
+        # --- Command interception (before AI dispatch) ---
         if is_command(content):
             sender_email = message.get("sender_email", "")
             sender_full_name = message.get("sender_full_name", "")
@@ -993,15 +1012,9 @@ class ZulipAdapter(BasePlatformAdapter):
                         )
                 except Exception as e:
                     logger.warning("command reply failed: %s", mask_pii(str(e)))
-                # Mark message as read and stop processing
-                try:
-                    await self._sdk_call(
-                        self.client.update_message_flags,
-                        {"messages": [message_id], "op": "add", "flag": "read"},
-                        timeout=self._send_timeout,
-                    )
-                except Exception:
-                    pass
+                # Clean up: stop typing, mark as read
+                await self._stop_typing(typing_params)
+                await self._mark_read(message_id)
                 return
 
         # --- DM policy check (Issue #48) ---
@@ -1034,15 +1047,9 @@ class ZulipAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.warning("DM policy rejection failed: %s", mask_pii(str(e)))
 
-                # Mark message as read and stop processing
-                try:
-                    await self._sdk_call(
-                        self.client.update_message_flags,
-                        {"messages": [message_id], "op": "add", "flag": "read"},
-                        timeout=self._send_timeout,
-                    )
-                except Exception:
-                    pass
+                # Clean up: stop typing, mark as read
+                await self._stop_typing(typing_params)
+                await self._mark_read(message_id)
                 logger.info("zulip DM blocked [policy=%s sender=%s]", self._policy.mode, mask_pii(sender_email))
                 return
 
@@ -1054,26 +1061,6 @@ class ZulipAdapter(BasePlatformAdapter):
             # Cache topic for reply threading
             chat_id = str(stream_id)
             self._topic_cache[chat_id] = topic
-
-            # Send placeholder if editing is enabled
-            if self._edit_placeholder_enabled:
-                try:
-                    ph_result = await self._sdk_call(
-                        self.client.send_message,
-                        {
-                            "type": "stream",
-                            "to": stream_id,
-                            "topic": topic,
-                            "content": "🤔 Thinking...",
-                        },
-                        timeout=self._send_timeout,
-                    )
-                    if ph_result.get("result") == "success":
-                        self._pending_placeholders.setdefault(chat_id, deque()).append(
-                            ph_result["id"]
-                        )
-                except Exception:
-                    pass  # placeholder is best-effort
 
             source_kwargs: dict[str, Any] = {
                 "chat_id": chat_id,
@@ -1099,25 +1086,6 @@ class ZulipAdapter(BasePlatformAdapter):
                 epoch = (turn_count - 1) // self._dm_session_turn_limit
                 if epoch > 0:
                     chat_id = f"{base_key}:session:{epoch}"
-
-            # Send placeholder if editing is enabled (DMs too)
-            if self._edit_placeholder_enabled:
-                try:
-                    ph_result = await self._sdk_call(
-                        self.client.send_message,
-                        {
-                            "type": "private",
-                            "to": [sender_id],
-                            "content": "🤔 Thinking...",
-                        },
-                        timeout=self._send_timeout,
-                    )
-                    if ph_result.get("result") == "success":
-                        self._pending_placeholders.setdefault(chat_id, deque()).append(
-                            ph_result["id"]
-                        )
-                except Exception:
-                    pass  # placeholder is best-effort
 
             source = self.build_source(
                 chat_id=chat_id,
@@ -1164,39 +1132,10 @@ class ZulipAdapter(BasePlatformAdapter):
             await reactions.success()
         except Exception:
             await reactions.error()
-            # Clean up orphaned placeholder if present
-            orphaned_queue = self._pending_placeholders.get(chat_id)
-            if orphaned_queue:
-                try:
-                    orphaned_id = orphaned_queue.popleft()
-                    await self._sdk_call(
-                        self.client.update_message,
-                        {"message_id": orphaned_id, "content": "❌ Error — could not generate response"},
-                        timeout=self._send_timeout,
-                    )
-                except Exception:
-                    pass  # best-effort cleanup
             raise
         finally:
-            if typing_params:
-                typing_params["op"] = "stop"
-                try:
-                    await self._sdk_call(
-                        self.client.set_typing_status,
-                        typing_params,
-                        timeout=self._send_timeout,
-                    )
-                except Exception:
-                    pass
-            # Mark message as read (best-effort)
-            try:
-                await self._sdk_call(
-                    self.client.update_message_flags,
-                    {"messages": [message_id], "op": "add", "flag": "read"},
-                    timeout=self._send_timeout,
-                )
-            except Exception:
-                pass
+            await self._stop_typing(typing_params)
+            await self._mark_read(message_id)
 
     async def resolve_topic(self, stream_id: int, topic: str) -> dict[str, Any]:
         """Mark a topic as resolved by prepending ✔.
@@ -1458,30 +1397,6 @@ class ZulipAdapter(BasePlatformAdapter):
         # Prepend response prefix if configured (Issue #65)
         if self._response_prefix and content:
             content = self._response_prefix + content
-
-        # Check for pending placeholder to edit instead of sending new
-        placeholder_id: Optional[int] = None
-        orphaned_queue = self._pending_placeholders.get(chat_id)
-        if orphaned_queue:
-            try:
-                placeholder_id = orphaned_queue.popleft()
-            except IndexError:
-                placeholder_id = None
-        if placeholder_id is not None:
-            try:
-                result = await self._sdk_call(
-                    self.client.update_message,
-                    {"message_id": placeholder_id, "content": content},
-                    timeout=self._send_timeout,
-                )
-                if result.get("result") == "success":
-                    logger.debug("zulip placeholder edited for %s", chat_id)
-                    return SendResult(
-                        success=True, message_id=str(placeholder_id)
-                    )
-                # If edit fails, fall through to normal send
-            except Exception:
-                pass  # fall through to normal send
 
         try:
             target = _parse_target(chat_id)
