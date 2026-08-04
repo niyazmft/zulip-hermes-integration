@@ -263,3 +263,75 @@ def resolve_onchar_prefixes(env_value: Optional[str]) -> list[str]:
     parts = [p.strip() for p in env_value.split(",")]
     cleaned = [p for p in parts if p]
     return cleaned if cleaned else list(DEFAULT_ONCHAR_PREFIXES)
+
+
+def convert_markdown_tables(text: str) -> str:
+    """Convert standard markdown tables to Zulip-compatible format.
+
+    Zulip uses a different table syntax than standard markdown.
+    This function converts standard markdown tables to Zulip's format
+    by ensuring proper alignment and spacing.
+
+    Standard markdown:
+    | Header 1 | Header 2 |
+    |----------|----------|
+    | Cell 1   | Cell 2   |
+
+    Zulip format (same, but with proper alignment markers):
+    | Header 1 | Header 2 |
+    | --- | --- |
+    | Cell 1 | Cell 2 |
+    """
+    if "|" not in text:
+        return text
+
+    lines = text.split("\n")
+    result: list[str] = []
+    in_table = False
+    table_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            in_table = True
+            table_lines.append(line)
+        else:
+            if in_table:
+                # Process the collected table
+                result.extend(_format_zulip_table(table_lines))
+                table_lines = []
+                in_table = False
+            result.append(line)
+
+    if in_table and table_lines:
+        result.extend(_format_zulip_table(table_lines))
+
+    return "\n".join(result)
+
+
+def _format_zulip_table(table_lines: list[str]) -> list[str]:
+    """Format a single markdown table for Zulip compatibility."""
+    if len(table_lines) < 2:
+        return table_lines
+
+    # The second line should be the separator row
+    # Standard: |---|---|
+    # Zulip expects: | --- | --- |
+    formatted: list[str] = []
+    for i, line in enumerate(table_lines):
+        if i == 1:
+            # This is the separator row - ensure Zulip-compatible format
+            cells = [c.strip() for c in line.split("|") if c.strip()]
+            new_cells = []
+            for cell in cells:
+                # Ensure at least "---" in each cell
+                cleaned = cell.replace("-", "").replace(":", "").strip()
+                if not cleaned:
+                    new_cells.append("---")
+                else:
+                    new_cells.append(cell)
+            formatted.append("|" + "|".join(f" {c} " for c in new_cells) + "|")
+        else:
+            formatted.append(line)
+
+    return formatted
