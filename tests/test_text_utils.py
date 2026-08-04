@@ -180,3 +180,95 @@ class TestResolveOncharPrefixes:
 
     def test_whitespace_trimmed(self):
         assert resolve_onchar_prefixes(" > , ! ") == [">", "!"]
+
+
+class TestChunkMarkdownText:
+    """Tests for markdown-aware chunking."""
+
+    def test_short_text_no_split(self):
+        assert chunk_text("hello", limit=100, mode="markdown") == ["hello"]
+
+    def test_empty_text(self):
+        assert chunk_text("", limit=100, mode="markdown") == []
+
+    def test_preserves_code_block(self):
+        text = """Some text before
+```python
+print("hello")
+print("world")
+print("foo")
+```
+Some text after"""
+        chunks = chunk_text(text, limit=50, mode="markdown")
+        # Code block should not be split
+        assert len(chunks) >= 2
+        # The code block should be intact in one chunk
+        code_block_found = any("```python" in c and "```" in c for c in chunks)
+        assert code_block_found, f"Code block not preserved in chunks: {chunks}"
+
+    def test_preserves_blockquote(self):
+        text = "> This is a blockquote\n> that spans\n> multiple lines\nNormal text after"
+        chunks = chunk_text(text, limit=30, mode="markdown")
+        assert len(chunks) >= 2
+
+    def test_fallback_to_length_for_long_lines(self):
+        text = "a" * 100 + "\n" + "b" * 100
+        chunks = chunk_text(text, limit=50, mode="markdown")
+        assert len(chunks) >= 2
+        assert all(len(c) <= 50 for c in chunks)
+
+
+class TestConvertMarkdownTables:
+    """Tests for markdown table conversion."""
+
+    def test_no_tables_unchanged(self):
+        from zulip.text_utils import convert_markdown_tables
+        assert convert_markdown_tables("Hello world") == "Hello world"
+
+    def test_simple_table(self):
+        from zulip.text_utils import convert_markdown_tables
+        text = """| Header 1 | Header 2 |
+|---|---|
+| Cell 1 | Cell 2 |"""
+        result = convert_markdown_tables(text)
+        assert "| --- | --- |" in result
+        assert "| Header 1 | Header 2 |" in result
+        assert "| Cell 1 | Cell 2 |" in result
+
+    def test_table_with_alignment(self):
+        from zulip.text_utils import convert_markdown_tables
+        text = """| Left | Right |
+|:---|---:|
+| A | B |"""
+        result = convert_markdown_tables(text)
+        # Alignment markers should be preserved with proper spacing
+        assert "| :--- | ---: |" in result
+
+    def test_multiple_tables(self):
+        from zulip.text_utils import convert_markdown_tables
+        text = """Text before
+| A | B |
+|---|---|
+| 1 | 2 |
+
+Text between
+| C | D |
+|---|---|
+| 3 | 4 |"""
+        result = convert_markdown_tables(text)
+        assert result.count("| --- | --- |") == 2
+        assert "Text before" in result
+        assert "Text between" in result
+
+    def test_table_without_separator_unchanged(self):
+        from zulip.text_utils import convert_markdown_tables
+        text = """| A | B |
+| 1 | 2 |"""  # No separator row
+        result = convert_markdown_tables(text)
+        # Should pass through unchanged (no separator to convert)
+        assert "| A | B |" in result
+        assert "| 1 | 2 |" in result
+
+    def test_empty_text(self):
+        from zulip.text_utils import convert_markdown_tables
+        assert convert_markdown_tables("") == ""

@@ -150,3 +150,106 @@ class TestDownloadUpload:
                     max_bytes=1024,
                     base_url="https://z.com",
                 )
+
+
+class TestUploadFileToZulip:
+    """Tests for upload_file_to_zulip — outbound file upload with security."""
+
+    @pytest.mark.asyncio
+    async def test_upload_success(self, tmp_path):
+        from zulip.media import upload_file_to_zulip
+
+        # Create a real file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("hello")
+
+        mock_client = MagicMock()
+        mock_client.upload_file.return_value = {
+            "result": "success",
+            "uri": "/user_uploads/1/test.txt",
+        }
+        mock_client.base_url = "https://zulip.example.com"
+
+        url = await upload_file_to_zulip(mock_client, str(test_file), str(tmp_path))
+        assert url == "https://zulip.example.com/user_uploads/1/test.txt"
+
+    @pytest.mark.asyncio
+    async def test_rejects_symlink(self, tmp_path):
+        from zulip.media import upload_file_to_zulip
+
+        # Create a real file outside allowed dir
+        outside = tmp_path / ".." / "secret.txt"
+        outside.write_text("secret")
+
+        # Create a symlink inside allowed dir pointing outside
+        link = tmp_path / "link.txt"
+        link.symlink_to(outside.resolve())
+
+        mock_client = MagicMock()
+
+        with pytest.raises(ValueError, match="Symlink rejected"):
+            await upload_file_to_zulip(mock_client, str(link), str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_rejects_path_outside_allowed(self, tmp_path, monkeypatch):
+        from zulip.media import upload_file_to_zulip
+
+        # Create a data_dir that is NOT under system temp
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        # Create a file under a different non-temp directory
+        # Use a path that's clearly outside both tmp and data_dir
+        import tempfile
+        # Temporarily change tempdir to something else so the file isn't under it
+        original_temp = tempfile.tempdir
+        tempfile.tempdir = str(tmp_path / "other_temp")
+
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside")
+
+        mock_client = MagicMock()
+        mock_client.upload_file.return_value = {"result": "error"}
+
+        with pytest.raises(ValueError, match="unauthorized path"):
+            await upload_file_to_zulip(mock_client, str(outside), str(data_dir))
+        # Verify upload was never called
+        mock_client.upload_file.assert_not_called()
+
+        # Restore tempdir
+        tempfile.tempdir = original_temp
+
+    @pytest.mark.asyncio
+    async def test_rejects_nonexistent_file(self, tmp_path):
+        from zulip.media import upload_file_to_zulip
+
+        mock_client = MagicMock()
+
+        with pytest.raises(ValueError, match="File not found"):
+            await upload_file_to_zulip(mock_client, str(tmp_path / "nonexistent.txt"), str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_upload_failure_raises(self, tmp_path):
+        from zulip.media import upload_file_to_zulip
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("hello")
+
+        mock_client = MagicMock()
+        mock_client.upload_file.return_value = {"result": "error", "msg": "upload failed"}
+
+        with pytest.raises(RuntimeError, match="Upload failed"):
+            await upload_file_to_zulip(mock_client, str(test_file), str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_missing_uri_raises(self, tmp_path):
+        from zulip.media import upload_file_to_zulip
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("hello")
+
+        mock_client = MagicMock()
+        mock_client.upload_file.return_value = {"result": "success"}  # No uri
+
+        with pytest.raises(RuntimeError, match="missing uri"):
+            await upload_file_to_zulip(mock_client, str(test_file), str(tmp_path))

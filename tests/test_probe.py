@@ -108,3 +108,56 @@ class TestProbeZulip:
     async def test_probe_rejects_localhost(self):
         result = await probe_zulip("http://localhost", "bot@z.com", "key")
         assert result["ok"] is False
+
+
+class TestValidateMediaUrl:
+    """Tests for _validate_media_url — SSRF-safe media URL validation."""
+
+    def test_accepts_public_https_url(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("https://example.com/image.png") is True
+
+    def test_accepts_public_http_url(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("http://example.com/image.png") is True
+
+    def test_rejects_file_scheme(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("file:///etc/passwd") is False
+
+    def test_rejects_ftp(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("ftp://example.com/file") is False
+
+    def test_rejects_localhost(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("http://localhost:8080/image.png") is False
+
+    def test_rejects_localhost_localdomain(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("https://localhost.localdomain/image.png") is False
+
+    def test_rejects_private_ip_10(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("http://10.0.0.1/image.png") is False
+
+    def test_rejects_private_ip_192(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("https://192.168.1.1/image.png") is False
+
+    def test_rejects_aws_metadata(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_rejects_empty_url(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("") is False
+        assert _validate_media_url(None) is False
+
+    def test_rejects_javascript_scheme(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("javascript:alert(1)") is False
+
+    def test_rejects_data_uri(self):
+        from zulip.probe import _validate_media_url
+        assert _validate_media_url("data:image/png;base64,abc") is False

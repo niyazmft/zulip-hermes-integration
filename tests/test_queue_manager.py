@@ -29,24 +29,26 @@ class TestQueueMetadata:
         assert m.registered_at > 0
 
 
+@pytest.fixture
+def tmp_data_dir():
+    with tempfile.TemporaryDirectory() as d:
+        yield d
+
+
+@pytest.fixture
+def mock_register():
+    call_count = 0
+
+    def fn():
+        nonlocal call_count
+        call_count += 1
+        return {"queue_id": f"q{call_count}", "last_event_id": call_count * 10}
+
+    fn.call_count = lambda: call_count
+    return fn
+
+
 class TestZulipQueueManager:
-    @pytest.fixture
-    def tmp_data_dir(self):
-        with tempfile.TemporaryDirectory() as d:
-            yield d
-
-    @pytest.fixture
-    def mock_register(self):
-        call_count = 0
-
-        def fn():
-            nonlocal call_count
-            call_count += 1
-            return {"queue_id": f"q{call_count}", "last_event_id": call_count * 10}
-
-        fn.call_count = lambda: call_count
-        return fn
-
     def test_load_from_disk(self, tmp_data_dir, mock_register):
         # Pre-seed a queue file
         path = Path(tmp_data_dir) / "zulip_queue_test.json"
@@ -163,3 +165,85 @@ class TestZulipQueueManager:
         assert mgr.get_queue() is None
         # get_queue should not trigger registration
         assert mock_register.call_count() == 0
+
+
+class TestDebouncedSave:
+    """Tests for debounced queue event ID saves."""
+
+    @pytest.mark.asyncio
+    async def test_update_schedules_debounced_save(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        # Update should set dirty flag and schedule save
+        mgr.update_last_event_id(42)
+        assert mgr._dirty is True
+        assert mgr._save_timer is not None
+
+    @pytest.mark.asyncio
+    async def test_flush_writes_to_disk(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        mgr.update_last_event_id(99)
+        await mgr.flush()
+
+        # Reload and verify
+        mgr2 = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        q = await mgr2.ensure_queue()
+        assert q.last_event_id == 99
+
+    @pytest.mark.asyncio
+    async def test_multiple_updates_debounced(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        # Multiple updates should only schedule one save
+        # Use values greater than initial last_event_id (10)
+        mgr.update_last_event_id(100)
+        timer1 = mgr._save_timer
+        mgr.update_last_event_id(200)
+        timer2 = mgr._save_timer
+        mgr.update_last_event_id(300)
+        timer3 = mgr._save_timer
+
+        # Each update should cancel the previous timer and create a new one
+        assert timer1 is not None
+        assert timer2 is not None
+        assert timer3 is not None
+        assert timer1 is not timer2  # Different timer handles
+
+        await mgr.flush()
+        assert mgr._current_queue.last_event_id == 300
+
+    @pytest.mark.asyncio
+    async def test_flush_without_dirty_does_nothing(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        # Flush without any updates should not crash
+        await mgr.flush()
+        assert mgr._current_queue.last_event_id == 10  # initial value from registration
+
+    @pytest.mark.asyncio
+    async def test_flush_cancels_pending_timer(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        mgr.update_last_event_id(50)
+        assert mgr._save_timer is not None
+
+        await mgr.flush()
+        assert mgr._save_timer is None  # Timer should be cancelled
+        assert mgr._dirty is False  # Should be clean after flush
+
+    @pytest.mark.asyncio
+    async def test_lower_event_id_ignored(self, tmp_data_dir, mock_register):
+        mgr = ZulipQueueManager("test", tmp_data_dir, mock_register)
+        await mgr.ensure_queue()
+
+        mgr.update_last_event_id(100)
+        mgr.update_last_event_id(50)  # Lower, should be ignored
+
+        await mgr.flush()
+        assert mgr._current_queue.last_event_id == 100
