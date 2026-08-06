@@ -13,6 +13,9 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Max trajectory file size to prevent OOM (10 MB)
+_MAX_TRAJECTORY_FILE_BYTES = 10 * 1024 * 1024
+
 
 async def read_latest_assistant_texts(
     data_dir: str,
@@ -58,6 +61,14 @@ async def read_latest_assistant_texts(
 
     for entry in entries:
         try:
+            # Check file size before reading to prevent OOM
+            file_size = entry.stat().st_size
+            if file_size > _MAX_TRAJECTORY_FILE_BYTES:
+                log_func and log_func(
+                    f"[fallback-reader] skipping oversized file: {entry.name} "
+                    f"({file_size} > {_MAX_TRAJECTORY_FILE_BYTES} bytes)"
+                )
+                continue
             import asyncio
             content = await asyncio.to_thread(lambda: entry.read_text("utf-8"))
         except OSError:
