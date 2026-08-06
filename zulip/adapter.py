@@ -101,6 +101,32 @@ def _get_cached_client(site: str, email: str, api_key: str, *, _zulip_mod: Any =
 
     client = _zulip.Client(email=email, api_key=api_key, site=site)
 
+    # Configure connection pooling for the client's requests session.
+    # This reuses TCP connections across API calls, reducing latency.
+    try:
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        if hasattr(client, "ensure_session"):
+            client.ensure_session()
+        if hasattr(client, "session") and client.session is not None:
+            # Pool up to 10 connections per host, with retry on transient errors
+            retry_strategy = Retry(
+                total=2,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            adapter = HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=20,
+                max_retries=retry_strategy,
+            )
+            client.session.mount("https://", adapter)
+            client.session.mount("http://", adapter)
+    except ImportError:
+        pass  # requests not available; use default session
+
     if len(_client_cache) >= _MAX_CLIENT_CACHE:
         oldest = next(iter(_client_cache))
         del _client_cache[oldest]
