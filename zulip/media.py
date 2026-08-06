@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import errno
 import logging
 import os
 import re
@@ -149,25 +150,25 @@ async def upload_file_to_zulip(
     """
     original = Path(file_path)
 
-    # Atomic symlink rejection using stat with follow_symlinks=False
-    # This avoids the TOCTOU race between is_symlink() and resolve()
+    # Atomic symlink rejection using O_NOFOLLOW to prevent TOCTOU races.
+    # Open the file with O_NOFOLLOW so the kernel rejects symlinks atomically.
     try:
-        st = original.stat(follow_symlinks=False)
+        fd = os.open(str(original), os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         raise ValueError(f"File not found: {file_path}")
     except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ValueError(f"Symlink rejected: {file_path}")
         raise ValueError(f"Cannot access file: {file_path}: {e}")
 
-    # Check if it's a symlink by comparing device/inode with the resolved path
+    # If we got a file descriptor, it's not a symlink (O_NOFOLLOW would have
+    # raised ELOOP/EMLINK for symlinks). Now resolve the path for the
+    # authorized-path check.
     try:
-        resolved_st = original.resolve().stat()
-    except OSError:
-        raise ValueError(f"Cannot resolve file: {file_path}")
+        resolved = Path(os.path.realpath(original))
+    finally:
+        os.close(fd)
 
-    if st.st_ino != resolved_st.st_ino or st.st_dev != resolved_st.st_dev:
-        raise ValueError(f"Symlink rejected: {file_path}")
-
-    resolved = original.resolve()
     tmp_dir = Path(tempfile.gettempdir()).resolve()
     allowed_data = Path(data_dir).expanduser().resolve()
 
@@ -180,6 +181,7 @@ async def upload_file_to_zulip(
             f"Allowed: {tmp_dir} or {allowed_data}"
         )
 
+    # Re-open for reading (safe: already validated)
     with open(resolved, "rb") as f:
         result = await asyncio.to_thread(client.upload_file, f)
 

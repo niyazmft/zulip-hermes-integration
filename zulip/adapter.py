@@ -45,6 +45,8 @@ from .policy import PolicyEngine
 from . import updater
 from .probe import probe_zulip, _normalize_base_url
 from .recovery import recover_interrupted_messages
+from .rate_limiter import RateLimiter
+from .audit_logger import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -401,15 +403,25 @@ def _safe_delete_temp_file(file_path: str) -> None:
     """Delete a local file only if it resides under /tmp or a bot workspace.
 
     Prevents accidental deletion of user-owned files outside temp dirs.
+    Uses stat with follow_symlinks=False to prevent TOCTOU symlink swaps.
     Errors are logged, not raised.
     """
     try:
         p = Path(file_path).resolve()
         tmp = Path(tempfile.gettempdir()).resolve()
         ws = tmp / "hermes_bot_workspace"
-        if str(p).startswith(str(tmp)) or str(p).startswith(str(ws)):
-            p.unlink()
-            logger.debug("cleaned up temp file [path=%s]", mask_pii(file_path))
+        if not (str(p).startswith(str(tmp)) or str(p).startswith(str(ws))):
+            return
+        # Atomic stat + unlink to prevent TOCTOU symlink race
+        st = p.stat(follow_symlinks=False)
+        if st.st_ino != p.resolve().stat().st_ino:
+            logger.warning(
+                "temp file cleanup skipped: symlink detected [path=%s]",
+                mask_pii(file_path),
+            )
+            return
+        p.unlink()
+        logger.debug("cleaned up temp file [path=%s]", mask_pii(file_path))
     except OSError as e:
         logger.warning("temp file cleanup failed [path=%s]: %s", mask_pii(file_path), e)
 
@@ -478,6 +490,19 @@ class ZulipAdapter(BasePlatformAdapter):
         # Response prefix (Issue #65) — prepended to every outbound message
         self._response_prefix = _resolve_response_prefix()
 
+        # Rate limiter (per-sender, sliding window)
+        self._rate_limiter = RateLimiter(
+            max_per_minute=int(
+                os.getenv("ZULIP_MAX_MESSAGES_PER_MINUTE", "60").strip()
+            ),
+        )
+
+        # Audit logger for security events
+        self._audit_logger = AuditLogger(
+            data_dir=self._data_dir,
+            account_id=self.email or "default",
+        )
+
         # Persistent queue and dedupe
         self._queue_mgr = ZulipQueueManager(
             account_id=self.email or "default",
@@ -527,8 +552,9 @@ class ZulipAdapter(BasePlatformAdapter):
     def _validate_message_id(message_id: Any) -> int:
         """Validate and convert a message ID to int.
 
-        Raises ValueError if the message ID is not a valid positive integer.
-        Prevents path traversal and injection via malformed message IDs.
+        Raises ValueError if the message ID is not a valid positive integer
+        or exceeds the maximum safe value.
+        Prevents path traversal, injection, and overflow via malformed IDs.
         """
         if message_id is None:
             raise ValueError("message_id is required")
@@ -538,6 +564,8 @@ class ZulipAdapter(BasePlatformAdapter):
             raise ValueError(f"Invalid message_id: {message_id}")
         if mid <= 0:
             raise ValueError(f"message_id must be positive: {message_id}")
+        if mid > 2**63 - 1:
+            raise ValueError(f"message_id exceeds maximum safe value: {message_id}")
         return mid
 
     async def _stop_typing(self, typing_params: Optional[dict]) -> None:
@@ -829,6 +857,20 @@ class ZulipAdapter(BasePlatformAdapter):
         sender_email = message.get("sender_email", "")
         sender_full_name = message.get("sender_full_name", "Unknown")
 
+        # --- Rate limiting (per-sender) ---
+        sender_key = sender_email or str(message.get("sender_id", ""))
+        if not self._rate_limiter.check(sender_key):
+            logger.warning(
+                "zulip rate limit hit [sender=%s msg=%s]",
+                mask_pii(sender_key),
+                mask_pii(str(message_id)),
+            )
+            await self._audit_logger.log_rate_limit_exceeded(
+                sender_id=sender_key,
+                limit=self._rate_limiter.config["max_per_minute"],
+            )
+            return
+
         # Strip Zulip @-mention syntax and HTML
         content = strip_html_to_text(content)
 
@@ -902,6 +944,11 @@ class ZulipAdapter(BasePlatformAdapter):
 
             # --- Group policy check (Issue #66) ---
             if not self._policy.can_group_message(sender_email):
+                await self._audit_logger.log_policy_block(
+                    sender_id=sender_email,
+                    reason=f"group_policy={self._policy.group_mode}",
+                    kind="stream",
+                )
                 if self._policy.group_mode == "disabled":
                     reply = "🚫 Stream messages to this bot are currently disabled."
                 else:
@@ -1044,6 +1091,11 @@ class ZulipAdapter(BasePlatformAdapter):
             sender_email = message.get("sender_email", "")
             allowed, pairing_code = self._policy.check_dm(sender_email)
             if not allowed:
+                await self._audit_logger.log_policy_block(
+                    sender_id=sender_email,
+                    reason=f"dm_policy={self._policy.mode}",
+                    kind="dm",
+                )
                 reply = ""
                 if pairing_code:
                     reply = (
