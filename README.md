@@ -1,7 +1,7 @@
 # 📬 Zulip Plugin for Hermes
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
+[![Tests](https://img.shields.io/badge/tests-431%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
 [![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -71,16 +71,18 @@ Send a DM or @-mention your bot in a subscribed stream. Done! 🎉
 | 💬 **Streams + DMs** | Talk to the bot in public streams (with topic threading) or private messages |
 | 🤔 **"Thinking..." placeholder** | Bot shows it's working, then edits with the final answer. No awkward silence. |
 | 📎 **File uploads** | Send CSVs, PDFs, JSON — the bot downloads and can process them |
-| 🏓 **Admin commands** | Type `/help`, `/status`, `/model` for instant responses (no LLM call needed) |
+| 🏓 **Admin commands** | Type `/help`, `/status`, `/model`, `/streams`, `/user`, `/pin`, `/unpin` for instant responses (no LLM call needed) |
 
 ### For Admins
 
 | Feature | What it does |
 |---------|-------------|
 | 🔐 **DM Policies** | Control who can DM: `open`, `allowlist`, `pairing` (code-based onboarding), or `disabled` |
+| 🚦 **Rate limiting** | Per-sender sliding-window rate limiter (default 60 msg/min) prevents message floods |
+| 📋 **Audit logging** | Persistent JSON-line audit log with rotation for security forensics |
 | 🩺 **Health probe** | Pre-flight server check with SSRF protection + structured `health_status` logging |
-| 🛡️ **Security hardening** | SSRF validation, symlink rejection, path traversal blocking |
-| ⚡ **Performance caching** | LRU client + target caches reduce allocations and speed up sends |
+| 🛡️ **Security hardening** | SSRF validation, symlink rejection (O_NOFOLLOW), path traversal blocking, TOCTOU-free file ops |
+| ⚡ **Performance caching** | LRU client + target caches + connection pooling (10 connections, retry on 5xx) |
 | 📊 **Context metadata** | Every message carries `conversation_turn`, `session_gap_seconds`, `topic_changed` to help the AI avoid stale responses |
 | 🔄 **One-command updates** | `bash ~/.hermes/plugins/zulip/update.sh` pulls latest and restarts |
 
@@ -91,7 +93,7 @@ Send a DM or @-mention your bot in a subscribed stream. Done! 🎉
 | 🔌 **Pure plugin** | Zero changes to Hermes core. Drop in, enable, done. |
 | 🧩 **Extensible commands** | Add custom bot commands with `@register_command` decorator |
 | 📁 **Sandboxed workspace** | Bot can generate files (reports, JSON, CSV) in a temp workspace with auto-cleanup |
-| 🧪 **CI-tested** | 256 tests, pre-push hooks, GitHub Actions branch protection |
+| 🧪 **CI-tested** | 431 tests, pre-push hooks, GitHub Actions branch protection |
 
 ---
 
@@ -104,6 +106,10 @@ Type these in any stream or DM. They're handled instantly — no LLM call:
 | `/help` | List all available commands |
 | `/status` | Bot version, repo URL, your email |
 | `/model` | Current model status |
+| `/streams` | List streams (or ask AI for management) |
+| `/user` | Get user info (or ask AI) |
+| `/pin` | Star/pin a message (or ask AI) |
+| `/unpin` | Unstar/unpin a message (or ask AI) |
 
 Add your own:
 
@@ -192,6 +198,9 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 |----------|---------|-------------|
 | `ZULIP_ALLOWED_USERS` | *(empty)* | Comma-separated emails allowed to DM |
 | `ZULIP_DM_POLICY` | `open` | `open` / `allowlist` / `pairing` / `disabled` |
+| `ZULIP_GROUP_POLICY` | `open` | Group/stream policy: `open` / `allowlist` / `disabled` |
+| `ZULIP_GROUP_ALLOW_FROM` | *(empty)* | Comma-separated emails allowed for stream messages |
+| `ZULIP_MAX_MESSAGES_PER_MINUTE` | `60` | Per-sender rate limit (0 to disable) |
 
 ### Optional — Behavior
 
@@ -202,6 +211,12 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 | `ZULIP_EDIT_PLACEHOLDER` | `true` | Show "Thinking..." placeholder while AI generates |
 | `ZULIP_REACTIONS_ENABLED` | `true` | Emoji reactions (👀/✅/⚠️) for status |
 | `ZULIP_CHUNK_LIMIT` | `4000` | Max chars per message chunk |
+| `ZULIP_TOPIC_SESSIONS` | `false` | Per-topic conversation sessions (opt-in) |
+| `ZULIP_DM_SESSION_TURN_LIMIT` | `20` | DM session rotation after N turns (0 to disable) |
+| `ZULIP_TYPING_DELAY_SECONDS` | `2.0` | Typing indicator delay after send |
+| `ZULIP_STREAMS` | `*` | Comma-separated stream names to monitor |
+| `ZULIP_RESPONSE_PREFIX` | *(empty)* | Prepended to every outbound message |
+| `ZULIP_STREAM_OVERRIDES` | *(empty)* | JSON object mapping stream names to per-stream chatmode overrides |
 
 #### How mentions are detected
 
@@ -233,6 +248,9 @@ local-part.
 | `ZULIP_BLOCK_STREAMING` | `false` | Experimental block streaming |
 | `ZULIP_MEDIA_MAX_MB` | `5` | Max inbound attachment size (MB) |
 | `ZULIP_ALLOW_ALL_USERS` | `false` | Disable all authorization (dev only) |
+| `ZULIP_CONNECT_TIMEOUT` | `30` | Connection timeout (seconds) |
+| `ZULIP_READ_TIMEOUT` | `60` | Read timeout (seconds) |
+| `ZULIP_SEND_TIMEOUT` | `90` | Send timeout (seconds) |
 
 ---
 
@@ -286,7 +304,7 @@ bash .githooks/pre-push
 # 5. Submit PR (squash merge, branch protection enforced)
 ```
 
-- **256 tests** — run via `pytest tests/`
+- **431 tests** — run via `pytest tests/`
 - **Pre-push hook** — runs syntax checks + tests before every push
 - **CI** — GitHub Actions `zulip-bridge` job must pass before merge
 - **Branch protection** — requires PR + linear history + squash merge

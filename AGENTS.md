@@ -62,9 +62,13 @@ Messages starting with `/` are intercepted **before** they reach you:
 | `/help` | ✅ Yes | ❌ No |
 | `/status` | ✅ Yes | ❌ No |
 | `/model` | ✅ Yes | ❌ No |
+| `/streams` | ✅ Yes (delegates to AI) | ❌ No |
+| `/user` | ✅ Yes (delegates to AI) | ❌ No |
+| `/pin` | ✅ Yes (delegates to AI) | ❌ No |
+| `/unpin` | ✅ Yes (delegates to AI) | ❌ No |
 | `/weather` | ❌ No — falls through | ✅ Yes (treat as normal message) |
 
-**Do not silently drop `/` messages.** If it's not one of the three commands above, it's a user question for you.
+**Do not silently drop `/` messages.** If it's not one of the commands above, it's a user question for you. The admin commands (`/streams`, `/user`, `/pin`, `/unpin`) delegate to you — if a user asks you to manage streams or pin a message, use the adapter's `star_message()`, `list_streams()`, `get_user_info()` methods.
 
 ---
 
