@@ -5,6 +5,7 @@ and re-dispatches them with fresh session keys.
 """
 
 import asyncio
+import hashlib
 import logging
 from typing import Any, Callable
 
@@ -117,9 +118,12 @@ async def recover_interrupted_messages(
             )
 
             # Create a fresh session key to avoid the dead session from the
-            # previous gateway instance
+            # previous gateway instance.
+            # Hash the sender email to avoid leaking PII in session keys.
+            email_hash = hashlib.sha256(sender_email.encode()).hexdigest()[:16]
             recovery_key = (
-                f"agent:main:zulip:direct:{sender_email}:recovery:{int(asyncio.get_event_loop().time() * 1000)}"
+                f"agent:main:zulip:direct:{email_hash}:recovery:"
+                f"{int(asyncio.get_event_loop().time() * 1000)}"
             )
             msg["_recovery_session_key"] = recovery_key
 

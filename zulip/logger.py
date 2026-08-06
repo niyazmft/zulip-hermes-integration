@@ -10,7 +10,17 @@ PII masking rules:
 - Prefixed values: user:..., dm:..., stream:...
 """
 
+import re
 from typing import Optional
+
+# Patterns for detecting sensitive data in log messages
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_API_KEY_RE = re.compile(r"\b([A-Za-z0-9]{32,}|[A-Za-z0-9+/=]{40,})\b")
+_IPV6_RE = re.compile(
+    r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|"
+    r"(?:[0-9a-fA-F]{1,4}:){1,7}:|"
+    r"(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b"
+)
 
 
 def format_zulip_log(message: str, **fields) -> str:
@@ -72,6 +82,19 @@ def mask_pii(value: Optional[str | int]) -> str:
         if len(s) <= 5:
             return f"{s[0]}***{s[-1]}"
         return f"{s[:2]}***{s[-2:]}"
+
+    # API key (32+ alphanumeric or 40+ base64 characters)
+    if _API_KEY_RE.fullmatch(s):
+        return f"{s[:4]}***{s[-4:]}" if len(s) > 8 else "***"
+
+    # IPv4 address
+    if _IPV4_RE.fullmatch(s):
+        parts = s.split(".")
+        return f"{parts[0]}.{parts[1]}.***.***"
+
+    # IPv6 address
+    if _IPV6_RE.fullmatch(s):
+        return "ipv6:***"
 
     # General string
     if len(s) <= 2:

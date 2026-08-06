@@ -103,6 +103,11 @@ class PolicyEngine:
                 json.dump(data, f)
                 temp_path = f.name
             os.replace(temp_path, path)
+            # Restrict file permissions to owner-only (0600)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
         except OSError as e:
             logger.warning("policy allowlist save failed: %s", e)
 

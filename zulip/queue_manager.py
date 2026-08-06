@@ -97,6 +97,11 @@ class ZulipQueueManager:
                 json.dump(metadata.to_dict(), f)
                 temp_path = f.name
             os.replace(temp_path, path)
+            # Restrict file permissions to owner-only (0600)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
         except OSError as e:
             logger.error(
                 "zulip queue save failed [account=%s error=%s]",
