@@ -1395,6 +1395,52 @@ class ZulipAdapter(BasePlatformAdapter):
             logger.error("get_user_presence error: %s", e)
             return None
 
+    async def star_message(self, message_id: int, starred: bool = True) -> bool:
+        """Star or unstar a message."""
+        try:
+            validated_id = self._validate_message_id(message_id)
+            op = "add" if starred else "remove"
+            result = await self._sdk_call(
+                self.client.update_message_flags,
+                {"messages": [validated_id], "op": op, "flag": "starred"},
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                logger.debug(
+                    "message %s [id=%d]",
+                    "starred" if starred else "unstarred",
+                    validated_id,
+                )
+                return True
+            logger.warning("star_message failed: %s", result.get("msg"))
+            return False
+        except Exception as e:
+            logger.error("star_message error: %s", e)
+            return False
+
+    async def get_user_info(self, user_id_or_email: str) -> Optional[dict]:
+        """Get information about a user."""
+        try:
+            result = await self._sdk_call(
+                self.client.get_user,
+                user_id_or_email,
+                timeout=self._send_timeout,
+            )
+            if result.get("result") == "success":
+                user = result.get("user", {})
+                return {
+                    "user_id": user.get("user_id"),
+                    "email": user.get("email"),
+                    "full_name": user.get("full_name"),
+                    "is_admin": user.get("is_admin", False),
+                    "is_bot": user.get("is_bot", False),
+                }
+            logger.warning("get_user_info failed: %s", result.get("msg"))
+            return None
+        except Exception as e:
+            logger.error("get_user_info error: %s", e)
+            return None
+
     async def send(
         self,
         chat_id: str,
