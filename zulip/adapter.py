@@ -50,6 +50,22 @@ from .audit_logger import AuditLogger
 
 logger = logging.getLogger(__name__)
 
+# Max input string length to prevent DoS via huge query strings
+_MAX_INPUT_LENGTH = 10000
+_MAX_JSON_OVERRIDES_BYTES = 10240  # 10KB max for ZULIP_STREAM_OVERRIDES
+
+
+def _validate_string_length(value: Any, name: str, max_length: int = _MAX_INPUT_LENGTH) -> str:
+    """Validate and truncate a string input to prevent DoS.
+
+    Raises ValueError if the value is not a string or exceeds max_length.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    if len(value) > max_length:
+        raise ValueError(f"{name} exceeds maximum length ({len(value)} > {max_length})")
+    return value
+
 # Module-level SDK handle — updated by _import_zulip_sdk()
 zulip = None  # type: ignore
 
@@ -268,6 +284,13 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
     logged and ignored rather than raised.
     """
     raw = os.getenv("ZULIP_STREAM_OVERRIDES", "").strip()
+    if len(raw.encode("utf-8")) > _MAX_JSON_OVERRIDES_BYTES:
+        logger.warning(
+            "ZULIP_STREAM_OVERRIDES exceeds max size (%d > %d bytes); ignoring overrides",
+            len(raw.encode("utf-8")),
+            _MAX_JSON_OVERRIDES_BYTES,
+        )
+        return _remember({})
     cached_raw, cached = _stream_overrides_cache
     if raw == cached_raw:
         return cached
@@ -1283,6 +1306,10 @@ class ZulipAdapter(BasePlatformAdapter):
         Uses Zulip's /messages endpoint with narrow filters.
         Returns a list of message dicts.
         """
+        stream = _validate_string_length(stream, "stream")
+        if topic:
+            topic = _validate_string_length(topic, "topic")
+
         narrow = [{"operator": "stream", "operand": stream}]
         if topic:
             narrow.append({"operator": "topic", "operand": topic})
@@ -1314,6 +1341,11 @@ class ZulipAdapter(BasePlatformAdapter):
         limit: int = 50,
     ) -> list[dict]:
         """Search messages by query, optionally scoped to stream/topic."""
+        query = _validate_string_length(query, "query")
+        if stream:
+            stream = _validate_string_length(stream, "stream")
+        if topic:
+            topic = _validate_string_length(topic, "topic")
         narrow = [{"operator": "search", "operand": query}]
         if stream:
             narrow.append({"operator": "stream", "operand": stream})
@@ -1355,6 +1387,7 @@ class ZulipAdapter(BasePlatformAdapter):
 
     async def subscribe_stream(self, stream_name: str) -> bool:
         """Subscribe the bot to a stream."""
+        stream_name = _validate_string_length(stream_name, "stream_name")
         try:
             result = await self._sdk_call(
                 self.client.add_subscriptions,
