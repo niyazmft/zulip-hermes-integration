@@ -58,7 +58,7 @@ class ZulipQueueManager:
         # Debounced save state
         self._dirty = False
         self._save_timer: Optional[asyncio.TimerHandle] = None
-        self._debounce_delay = 2.0  # seconds
+        self._debounce_delay = 5.0  # seconds (increased from 2.0 for lower write frequency)
 
     def _persistence_path(self) -> Path:
         safe_id = "".join(c if c.isalnum() else "_" for c in self.account_id)
