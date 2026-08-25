@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - **Cron delivery**: register `cron_deliver_env_var="ZULIP_HOME_CHANNEL"` on the platform entry so Hermes cron accepts `deliver: zulip[:<stream_id>]` targets. Previously preflight blocked such jobs with "delivery platform 'zulip' is not a known cron delivery target" and never ran them.
+- **Queue re-registration test coverage**: restored test coverage for the `BAD_EVENT_QUEUE_ID` recovery path in `tests/test_integration.py`. The queue-expiration test is now parametrized to cover both `BAD_EVENT_QUEUE_ID` and the `BAD_REQUEST` "pruned" cases.
 ### Added
 - **Out-of-process delivery**: register a `standalone_sender_fn` (`_standalone_send`) on the Hermes `PlatformEntry` so `deliver: zulip[:<stream_id>[:<topic>]]` cron jobs can send when no gateway adapter is live in the calling process (`hermes cron run <job>`, cron in its own process). Previously such sends failed with `No live adapter for platform 'zulip'`. Supports streams (`<stream_id>`), DMs (`dm:<user_id>`), the `zulip:<stream>:<topic>` thread segment as topic, inline `[[zulip_topic: …]]` directives, `ZULIP_RESPONSE_PREFIX`, media uploads, and `ZULIP_SEND_TIMEOUT`.
 ### Fixed

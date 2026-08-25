@@ -101,20 +101,29 @@ class TestFullFlow:
         await adapter.disconnect()
 
     @pytest.mark.asyncio
-    async def test_queue_expiration_recovery(self, adapter):
+    @pytest.mark.parametrize(
+        "error_payload",
+        [
+            # Case 1: the queue ID itself is no longer valid
+            {"result": "error", "code": "BAD_EVENT_QUEUE_ID", "msg": "bad queue"},
+            # Case 2: the queue exists but events were pruned before we read them
+            {
+                "result": "error",
+                "code": "BAD_REQUEST",
+                "msg": "An event newer than 105 has already been pruned!",
+            },
+        ],
+        ids=["bad_event_queue_id", "pruned"],
+    )
+    async def test_queue_expiration_recovery(self, adapter, error_payload):
         # Simulate queue expiration on get_events
         call_count = 0
-        original_get_events = adapter.client.get_events
 
         def fake_get_events(**kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return {
-                    "result": "error",
-                    "code": "BAD_REQUEST",
-                    "msg": "An event newer than 105 has already been pruned!",
-                }
+                return error_payload
             return {"result": "success", "events": []}
 
         adapter.client.get_events = fake_get_events
