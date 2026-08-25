@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **Session-scoped DM parsing**: `_parse_target()` now strips the `:session:N` suffix from DM chat IDs (e.g. `dm:1032616:session:1`) so replies to rotated DM sessions are delivered correctly. Previously `int()` choked on the extra colons and silently dropped the message. (Issue #111)
+
 ## [1.8.0] - 2026-08-06
 
 ### Added

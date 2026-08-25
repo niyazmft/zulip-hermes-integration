@@ -163,6 +163,23 @@ class TestTargetCache:
         with pytest.raises(ValueError):
             _parse_target("dm:invalid")
 
+    # Regression tests for Issue #111
+    def test_parse_dm_target_with_session_suffix(self):
+        info = _parse_target("dm:1032616:session:1")
+        assert info["type"] == "dm"
+        assert info["user_id"] == 1032616
+
+    def test_parse_dm_target_session_epoch_zero(self):
+        info = _parse_target("dm:42:session:0")
+        assert info["type"] == "dm"
+        assert info["user_id"] == 42
+
+    def test_parse_dm_target_session_suffix_cache_hit(self):
+        _parse_target("dm:1032616:session:1")
+        cached = _parse_target("dm:1032616:session:1")
+        assert cached["type"] == "dm"
+        assert cached["user_id"] == 1032616
+
 
 class TestCacheClear:
     def test_clear_caches(self):
