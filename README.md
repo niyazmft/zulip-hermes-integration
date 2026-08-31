@@ -9,6 +9,14 @@
 
 > 💡 **What this does:** Your Zulip bot becomes a doorway to your Hermes AI. Users type in Zulip, the AI thinks, the bot replies — all while keeping conversations threaded by topic.
 
+> 🔗 **Part of a single Zulip adapter family for open-source AI agents.**
+> This repo is the **Hermes (Nous Research)** adapter. Its sibling,
+> [`openclaw-zulip-bridge`](https://github.com/niyazmft/openclaw-zulip-bridge), does the
+> same thing for the **OpenClaw** agent (TypeScript). Same thesis, two runtimes:
+> bring a self-hosted AI agent into threaded, topic-first Zulip chat as a full teammate —
+> sovereign, no chat-vendor lock-in. The pattern Slack and Block's Buzz are racing to
+> productize, delivered **open source** and **self-hosted**.
+
 ---
 
 ## 🚀 Quickstart — Running in 2 Minutes
@@ -316,6 +324,7 @@ bash .githooks/pre-push
 - [Hermes Plugin Docs](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters)
 - [Zulip API Documentation](https://zulip.com/api/)
 - [CHANGELOG.md](CHANGELOG.md)
+- Related: [openclaw-zulip-bridge](https://github.com/niyazmft/openclaw-zulip-bridge) — the OpenClaw (TypeScript) sibling adapter
 
 ## License
 
