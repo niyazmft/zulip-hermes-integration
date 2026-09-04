@@ -132,3 +132,15 @@ class TestSendImageFileAndDocument:
             result = await adapter.send_image_file("dm:42", "/etc/passwd")
         assert result.success is True
         assert "Couldn't deliver the image attachment" in adapter.client._calls[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_upload_failure_preserves_caption(self, adapter, monkeypatch):
+        """The failure fallback keeps the caller's caption as a prefix so the
+        context of what failed isn't lost."""
+        monkeypatch.setenv("HERMES_DATA_DIR", tempfile.gettempdir())
+        with patch("zulip.adapter.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
+            result = await adapter.send_image_file("dm:42", "/etc/passwd", caption="Screenshot")
+        assert result.success is True
+        content = adapter.client._calls[0]["content"]
+        assert content.startswith("Screenshot\n")
+        assert "Couldn't deliver the image attachment" in content

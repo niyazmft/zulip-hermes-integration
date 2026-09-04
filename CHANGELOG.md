@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Native `MEDIA:` image/file delivery**: `ZulipAdapter` now overrides `send_image_file()` and `send_document()` (shared `_send_uploaded_media()` helper). Hermes core's `MEDIA:<path>` pipeline previously fell through to the base class's "Couldn't deliver the image attachment" stub for every screenshot/attachment; images/files are now uploaded via `upload_file_to_zulip()` and embedded inline (`![name](url)` for images, `[name](url)` for documents). Also hardens `upload_file_to_zulip()`: honors the `HERMES_MEDIA_ALLOW_DIRS` allowlist, replaces the `str.startswith()` containment check with `Path.relative_to()` (closes the sibling-directory prefix hole), and strips the `/api` suffix from `base_url` before appending the server-root-relative upload URI (fixes the double-slash 404). ([#121](https://github.com/niyazmft/zulip-hermes-integration/pull/121), [#123](https://github.com/niyazmft/zulip-hermes-integration/issues/123))
+
 ## [1.8.1] - 2026-08-25
 
 ### Added

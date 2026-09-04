@@ -1516,8 +1516,8 @@ class ZulipAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a local image as a native Zulip attachment (overrides the
-        base class's "unavailable" stub — see upstream Hermes issue about
-        MEDIA:<path> screenshots silently failing to deliver on Zulip).
+        base class's "unavailable" stub — MEDIA:<path> screenshots were
+        silently failing to deliver on Zulip; see #123).
 
         Zulip has no separate "photo" primitive: an uploaded file becomes an
         inline image automatically when its URL is embedded in message
