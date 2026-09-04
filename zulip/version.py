@@ -4,13 +4,14 @@ This module is the single source of truth for the plugin version.
 When releasing, bump __version__ and create a matching Git tag.
 """
 
-__version__ = "1.8.1"
+__version__ = "1.9.0"
 __repo__ = "niyazmft/zulip-hermes-integration"
 __min_hermes__ = "0.18.2"
 
 # Files that make up the plugin — used by self-updater
 PLUGIN_FILES = [
     "__init__.py",
+    "accounts.py",
     "adapter.py",
     "admin_actions.py",
     "audit_logger.py",
