@@ -252,6 +252,7 @@ local-part.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ZULIP_CHUNK_MODE` | `length` | Chunking strategy: `length` or `newline` |
+| `ZULIP_MAX_MESSAGE_LENGTH` | `20000` | Hard cap on a single outbound message, applied before chunking (`0` disables). Prevents very long content from breaking downstream consumers (e.g. memory plugins). Truncated content gets a `[...message truncated]` marker. |
 | `ZULIP_ONCHAR_PREFIXES` | `!,>` | Custom onchar triggers |
 | `ZULIP_BLOCK_STREAMING` | `false` | Experimental block streaming |
 | `ZULIP_MEDIA_MAX_MB` | `5` | Max inbound attachment size (MB) |

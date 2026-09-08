@@ -357,3 +357,93 @@ class TestUploadFileToZulip:
 
         with pytest.raises(RuntimeError, match="missing uri"):
             await upload_file_to_zulip(mock_client, str(test_file), str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_relative_path_resolves_against_workspace(self, tmp_path, monkeypatch):
+        """A bare relative filename (e.g. 'haiku.txt' from the agent workspace)
+        must resolve against the bot workspace root, mirroring the sibling
+        OpenClaw plugin's relative-attachment resolution (#268). Previously
+        path.resolve() tied it to the process CWD and it was silently dropped."""
+        from zulip.media import upload_file_to_zulip
+
+        # Isolate the workspace root under tmp_path so it's inside the
+        # always-allowed system temp dir.
+        workspace = tmp_path / "hermes_bot_workspace"
+        workspace.mkdir(parents=True)
+        (workspace / "haiku.txt").write_text("a haiku")
+
+        # Point tempfile.gettempdir() at tmp_path so the workspace root
+        # (tmp_path/hermes_bot_workspace) is under the allowed tmp root.
+        original_temp = tempfile.tempdir
+        tempfile.tempdir = str(tmp_path)
+        try:
+            mock_client = MagicMock()
+            mock_client.upload_file.return_value = {
+                "result": "success",
+                "uri": "/user_uploads/1/haiku.txt",
+            }
+            mock_client.base_url = "https://z.com"
+
+            url = await upload_file_to_zulip(mock_client, "haiku.txt", str(tmp_path / "data"))
+            assert url == "https://z.com/user_uploads/1/haiku.txt"
+            mock_client.upload_file.assert_called_once()
+        finally:
+            tempfile.tempdir = original_temp
+
+    @pytest.mark.asyncio
+    async def test_relative_path_resolves_against_data_dir(self, tmp_path, monkeypatch):
+        """If the file isn't in the workspace, a relative name should resolve
+        against the data dir next."""
+        from zulip.media import upload_file_to_zulip
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "report.csv").write_text("id,value\n1,42")
+
+        original_temp = tempfile.tempdir
+        tempfile.tempdir = str(tmp_path / "other_temp")
+        try:
+            mock_client = MagicMock()
+            mock_client.upload_file.return_value = {
+                "result": "success",
+                "uri": "/user_uploads/1/report.csv",
+            }
+            mock_client.base_url = "https://z.com"
+
+            url = await upload_file_to_zulip(mock_client, "report.csv", str(data_dir))
+            assert url == "https://z.com/user_uploads/1/report.csv"
+            mock_client.upload_file.assert_called_once()
+        finally:
+            tempfile.tempdir = original_temp
+
+    @pytest.mark.asyncio
+    async def test_relative_path_traversal_still_rejected(self, tmp_path, monkeypatch):
+        """Relative traversal that escapes the sandbox must remain refused
+        even with candidate resolution — a path resolving outside every
+        allowed root (tmp, data dir, workspace) must not upload."""
+        from zulip.media import upload_file_to_zulip
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+
+        # Isolate tempdir so the workspace root is under tmp_path, and create
+        # the workspace dir so candidate resolution can traverse through it.
+        original_temp = tempfile.tempdir
+        tempfile.tempdir = str(tmp_path / "other_temp")
+        workspace = tmp_path / "other_temp" / "hermes_bot_workspace"
+        workspace.mkdir(parents=True)
+        # A real secret OUTSIDE the isolated tempdir (and outside data_dir),
+        # reachable only by climbing out of the workspace.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        try:
+            # From the workspace, ../../secret.txt resolves to tmp_path/secret.txt,
+            # which is outside every allowed root → must be refused.
+            mock_client = MagicMock()
+            mock_client.upload_file.return_value = {"result": "error"}
+
+            with pytest.raises(ValueError, match="unauthorized path"):
+                await upload_file_to_zulip(mock_client, "../../secret.txt", str(data_dir))
+            mock_client.upload_file.assert_not_called()
+        finally:
+            tempfile.tempdir = original_temp

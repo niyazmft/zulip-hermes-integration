@@ -128,3 +128,38 @@ class TestSendChunking:
         # All chunks should use the same topic
         for call in adapter.client._calls:
             assert call["topic"] == "Thread"
+
+    @pytest.mark.asyncio
+    async def test_max_message_length_truncates_before_chunking(self, adapter, monkeypatch):
+        """A hard cap (ZULIP_MAX_MESSAGE_LENGTH) truncates the content before
+        chunking, mirroring the sibling plugin's maxMessageLength guard."""
+        monkeypatch.setenv("ZULIP_MAX_MESSAGE_LENGTH", "100")
+        long = "x" * 5000
+        result = await adapter.send("dm:42", long)
+        assert result.success is True
+        # Truncated to 100 chars with the marker, then sent as one message.
+        assert len(adapter.client._calls) == 1
+        content = adapter.client._calls[0]["content"]
+        assert len(content) == 100
+        assert content.endswith("[...message truncated]")
+
+    @pytest.mark.asyncio
+    async def test_max_message_length_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("ZULIP_MAX_MESSAGE_LENGTH", "0")
+        long = "x" * 5000
+        result = await adapter.send("dm:42", long)
+        assert result.success is True
+        # No truncation; chunked normally.
+        all_content = "".join(c["content"] for c in adapter.client._calls)
+        assert len(all_content) == 5000
+
+    @pytest.mark.asyncio
+    async def test_max_message_length_default_applied(self, adapter, monkeypatch):
+        """Default cap (20000) applies when env is unset."""
+        monkeypatch.delenv("ZULIP_MAX_MESSAGE_LENGTH", raising=False)
+        long = "x" * 50000
+        result = await adapter.send("dm:42", long)
+        assert result.success is True
+        all_content = "".join(c["content"] for c in adapter.client._calls)
+        assert len(all_content) == 20000
+        assert all_content.endswith("[...message truncated]")

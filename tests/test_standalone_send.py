@@ -127,6 +127,17 @@ class TestStreamDelivery:
             await _standalone_send(_pconfig(), "20", "hello")
         assert client.send_message.call_args[0][0]["content"] == "🤖 hello"
 
+    @pytest.mark.asyncio
+    async def test_max_message_length_truncates(self, env, monkeypatch):
+        monkeypatch.setenv("ZULIP_MAX_MESSAGE_LENGTH", "100")
+        client = _fake_client()
+        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+            result = await _standalone_send(_pconfig(), "20", "x" * 5000)
+        assert result["success"] is True
+        content = client.send_message.call_args[0][0]["content"]
+        assert len(content) == 100
+        assert content.endswith("[...message truncated]")
+
 
 class TestDmDelivery:
     @pytest.mark.asyncio

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Hard outbound message-length cap**: `ZulipAdapter.send()` and `_standalone_send()` now truncate content to `ZULIP_MAX_MESSAGE_LENGTH` (default 20000, `0` disables) *before* chunking, appending a `[...message truncated]` marker. Mirrors the sibling OpenClaw plugin's `maxMessageLength` guard — prevents very long content from breaking downstream consumers (e.g. memory plugins) that fail on oversized messages. ([#272](https://github.com/niyazmft/openclaw-zulip-bridge/pull/280))
+- **Relative-path resolution for file uploads**: `upload_file_to_zulip()` now resolves bare relative filenames (e.g. `haiku.txt` from the agent workspace) against candidate roots in order — the given path, the bot workspace, the data dir, then tmpdir — each still gated by the allowlist and the `O_NOFOLLOW` symlink check. Previously a relative path resolved against the process CWD and was silently dropped. Mirrors the sibling OpenClaw plugin's relative-attachment resolution. ([#268](https://github.com/niyazmft/openclaw-zulip-bridge/pull/283))
+
 ## [1.9.0] - 2026-09-04
 
 ### Added

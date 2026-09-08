@@ -7,6 +7,7 @@ import pytest
 from zulip.text_utils import (
     strip_html_to_text,
     chunk_text,
+    truncate_text,
     extract_topic_directive,
     create_mention_regex,
     normalize_mention,
@@ -14,6 +15,38 @@ from zulip.text_utils import (
     resolve_onchar_prefixes,
     DEFAULT_ONCHAR_PREFIXES,
 )
+
+
+class TestTruncateText:
+    def test_short_text_unchanged(self):
+        assert truncate_text("hello", 20000) == "hello"
+
+    def test_empty_unchanged(self):
+        assert truncate_text("", 20000) == ""
+
+    def test_disabled_when_zero(self):
+        long = "x" * 50000
+        assert truncate_text(long, 0) == long
+
+    def test_disabled_when_negative(self):
+        long = "x" * 50000
+        assert truncate_text(long, -1) == long
+
+    def test_truncates_with_marker(self):
+        long = "x" * 50000
+        result = truncate_text(long, 20000)
+        assert len(result) == 20000
+        assert result.endswith("[...message truncated]")
+        assert result.count("x") == 20000 - len("\n\n[...message truncated]")
+
+    def test_exact_length_unchanged(self):
+        text = "y" * 20000
+        assert truncate_text(text, 20000) == text
+
+    def test_marker_longer_than_limit_slices(self):
+        # If the marker itself exceeds the limit, just hard-slice.
+        result = truncate_text("z" * 10, 5)
+        assert result == "zzzzz"
 
 
 class TestStripHtmlToText:

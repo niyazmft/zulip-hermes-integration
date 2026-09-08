@@ -45,6 +45,25 @@ def strip_html_to_text(html: str) -> str:
     return text.strip()
 
 
+TRUNCATION_MARKER = "\n\n[...message truncated]"
+
+
+def truncate_text(text: str, max_length: int) -> str:
+    """Truncate text to a maximum length, appending a marker if truncated.
+
+    Mirrors the sibling OpenClaw plugin's ``maxMessageLength`` guard: a hard
+    cap applied *before* chunking so a single message never exceeds the limit
+    (downstream consumers such as memory plugins can fail on very long
+    content). ``max_length <= 0`` disables truncation.
+    """
+    if max_length <= 0 or not text or len(text) <= max_length:
+        return text
+    max_content_length = max_length - len(TRUNCATION_MARKER)
+    if max_content_length <= 0:
+        return text[:max_length]
+    return text[:max_content_length] + TRUNCATION_MARKER
+
+
 def chunk_text(text: str, limit: int = 4000, mode: str = "length") -> list[str]:
     """Split text into chunks that fit within Zulip's message limit.
 

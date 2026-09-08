@@ -28,6 +28,7 @@ from gateway.config import Platform, PlatformConfig
 from .logger import format_zulip_log, mask_pii
 from .text_utils import (
     chunk_text,
+    truncate_text,
     extract_topic_directive,
     strip_onchar_prefix,
     resolve_onchar_prefixes,
@@ -222,6 +223,26 @@ def _import_zulip_sdk():
 # Chunking defaults (overridable via env)
 DEFAULT_CHUNK_LIMIT = 10000  # Hermes registry max_message_length
 DEFAULT_CHUNK_MODE = "length"
+
+# Hard cap on a single outbound message, applied before chunking. Mirrors the
+# sibling OpenClaw plugin's ``maxMessageLength`` (default 20000): downstream
+# consumers (e.g. memory plugins) can fail on very long content. 0 disables.
+DEFAULT_MAX_MESSAGE_LENGTH = 20000
+
+
+def _resolve_max_message_length() -> int:
+    """Read the hard outbound message-length cap from the environment.
+
+    ``ZULIP_MAX_MESSAGE_LENGTH`` (default 20000, ``0`` disables). Applied in
+    :meth:`ZulipAdapter.send` and :func:`_standalone_send` before chunking.
+    """
+    raw = os.getenv("ZULIP_MAX_MESSAGE_LENGTH", "").strip()
+    if not raw:
+        return DEFAULT_MAX_MESSAGE_LENGTH
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_MESSAGE_LENGTH
 
 # Timeout defaults (seconds) — Issue #62
 DEFAULT_CONNECT_TIMEOUT = 30.0
@@ -1636,6 +1657,11 @@ class ZulipAdapter(BasePlatformAdapter):
         # Extract inline topic directive if present
         content, topic_override = extract_topic_directive(content)
 
+        # Hard cap before chunking (mirrors sibling plugin's maxMessageLength).
+        max_length = _resolve_max_message_length()
+        if max_length > 0:
+            content = truncate_text(content, max_length)
+
         limit, mode = _resolve_chunk_config()
         chunks = chunk_text(content, limit=limit, mode=mode)
 
@@ -1927,6 +1953,11 @@ async def _standalone_send(
         content = f"{content}\n\n{file_links}" if content else file_links
 
     content, topic_directive = extract_topic_directive(content)
+
+    # Hard cap before chunking (mirrors sibling plugin's maxMessageLength).
+    max_length = _resolve_max_message_length()
+    if max_length > 0:
+        content = truncate_text(content, max_length)
 
     prefix = _resolve_response_prefix()
     if prefix and content:

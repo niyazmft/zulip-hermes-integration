@@ -145,32 +145,19 @@ async def upload_file_to_zulip(
     """Upload a local file to Zulip server.
 
     Returns the uploaded file URL.
-    Security: verifies file_path is under tmp or data_dir; rejects symlinks
-    using atomic stat with follow_symlinks=False to prevent TOCTOU races.
+    Security: verifies the resolved file is under tmp, data_dir, or an
+    operator allowlist dir; rejects symlinks using atomic stat with
+    follow_symlinks=False to prevent TOCTOU races.
+
+    Relative paths (e.g. a bare ``haiku.txt`` from the agent workspace) are
+    resolved against candidate roots in order — the given path, the bot
+    workspace, the data dir, then tmpdir — mirroring the sibling OpenClaw
+    plugin's relative-attachment resolution (#268). Each candidate is still
+    gated by the allowlist and the O_NOFOLLOW symlink check.
     """
-    original = Path(file_path)
-
-    # Atomic symlink rejection using O_NOFOLLOW to prevent TOCTOU races.
-    # Open the file with O_NOFOLLOW so the kernel rejects symlinks atomically.
-    try:
-        fd = os.open(str(original), os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        raise ValueError(f"File not found: {file_path}")
-    except OSError as e:
-        if e.errno == errno.ELOOP:
-            raise ValueError(f"Symlink rejected: {file_path}")
-        raise ValueError(f"Cannot access file: {file_path}: {e}")
-
-    # If we got a file descriptor, it's not a symlink (O_NOFOLLOW would have
-    # raised ELOOP/EMLINK for symlinks). Now resolve the path for the
-    # authorized-path check.
-    try:
-        resolved = Path(os.path.realpath(original))
-    finally:
-        os.close(fd)
-
     tmp_dir = Path(tempfile.gettempdir()).resolve()
     allowed_data = Path(data_dir).expanduser().resolve()
+    workspace_dir = Path(tempfile.gettempdir()).resolve() / "hermes_bot_workspace"
     allowed_roots = [tmp_dir, allowed_data]
 
     # HERMES_MEDIA_ALLOW_DIRS: same operator allowlist env var the gateway
@@ -203,11 +190,59 @@ async def upload_file_to_zulip(
         except ValueError:
             return False
 
-    if not any(_is_within(resolved, root) for root in allowed_roots):
-        raise ValueError(
-            f"Refusing to upload from unauthorized path: {file_path}. "
-            f"Allowed: {', '.join(str(r) for r in allowed_roots)}"
-        )
+    def _resolve_candidate(candidate: str) -> Path:
+        """Resolve one candidate path, rejecting symlinks and unauthorized roots."""
+        original = Path(candidate)
+
+        # Atomic symlink rejection using O_NOFOLLOW to prevent TOCTOU races.
+        # Open the file with O_NOFOLLOW so the kernel rejects symlinks atomically.
+        try:
+            fd = os.open(str(original), os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            raise ValueError(f"File not found: {candidate}")
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise ValueError(f"Symlink rejected: {candidate}")
+            raise ValueError(f"Cannot access file: {candidate}: {e}")
+
+        # If we got a file descriptor, it's not a symlink (O_NOFOLLOW would have
+        # raised ELOOP/EMLINK for symlinks). Now resolve the path for the
+        # authorized-path check.
+        try:
+            resolved = Path(os.path.realpath(original))
+        finally:
+            os.close(fd)
+
+        if not any(_is_within(resolved, root) for root in allowed_roots):
+            raise ValueError(
+                f"Refusing to upload from unauthorized path: {candidate}. "
+                f"Allowed: {', '.join(str(r) for r in allowed_roots)}"
+            )
+        return resolved
+
+    # Candidate resolution: try the given path first, then (for relative
+    # paths) the bot workspace, data dir, and tmpdir. Each is gated by the
+    # allowlist + O_NOFOLLOW check above.
+    candidates = [file_path]
+    if not os.path.isabs(file_path):
+        candidates += [
+            str(workspace_dir / file_path),
+            str(allowed_data / file_path),
+            str(tmp_dir / file_path),
+        ]
+
+    resolved = None
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            resolved = _resolve_candidate(candidate)
+            break
+        except ValueError as e:
+            last_error = e
+            continue
+
+    if resolved is None:
+        raise last_error or ValueError(f"Unable to read file: {file_path}")
 
     # Re-open for reading (safe: already validated)
     with open(resolved, "rb") as f:
