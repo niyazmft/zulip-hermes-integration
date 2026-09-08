@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.9.1] - 2026-09-08
 
 ### Added
 - **Hard outbound message-length cap**: `ZulipAdapter.send()` and `_standalone_send()` now truncate content to `ZULIP_MAX_MESSAGE_LENGTH` (default 20000, `0` disables) *before* chunking, appending a `[...message truncated]` marker. Mirrors the sibling OpenClaw plugin's `maxMessageLength` guard — prevents very long content from breaking downstream consumers (e.g. memory plugins) that fail on oversized messages. ([#272](https://github.com/niyazmft/openclaw-zulip-bridge/pull/280))

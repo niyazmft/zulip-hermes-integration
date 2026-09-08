@@ -1,7 +1,7 @@
 # 📬 Zulip Plugin for Hermes
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-431%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
+[![Tests](https://img.shields.io/badge/tests-480%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
 [![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -101,7 +101,7 @@ Send a DM or @-mention your bot in a subscribed stream. Done! 🎉
 | 🔌 **Pure plugin** | Zero changes to Hermes core. Drop in, enable, done. |
 | 🧩 **Extensible commands** | Add custom bot commands with `@register_command` decorator |
 | 📁 **Sandboxed workspace** | Bot can generate files (reports, JSON, CSV) in a temp workspace with auto-cleanup |
-| 🧪 **CI-tested** | 431 tests, pre-push hooks, GitHub Actions branch protection |
+| 🧪 **CI-tested** | 480 tests, pre-push hooks, GitHub Actions branch protection |
 
 ---
 
@@ -313,7 +313,7 @@ bash .githooks/pre-push
 # 5. Submit PR (squash merge, branch protection enforced)
 ```
 
-- **431 tests** — run via `pytest tests/`
+- **480 tests** — run via `pytest tests/`
 - **Pre-push hook** — runs syntax checks + tests before every push
 - **CI** — GitHub Actions `zulip-bridge` job must pass before merge
 - **Branch protection** — requires PR + linear history + squash merge
