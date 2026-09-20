@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **CI verifies `checksums.txt`**: CI now regenerates the checksums exactly as `.githooks/pre-push` does and fails if the committed file is stale, closing the gap that let [#131](https://github.com/niyazmft/zulip-hermes-integration/pull/131) ship a broken updater manifest. ([#133](https://github.com/niyazmft/zulip-hermes-integration/pull/133))
 
 ### Contributors
+- [@niyazmft](https://github.com/niyazmft) — [#132](https://github.com/niyazmft/zulip-hermes-integration/pull/132), [#133](https://github.com/niyazmft/zulip-hermes-integration/pull/133)
 - [@AungDev](https://github.com/AungDev) — [#131](https://github.com/niyazmft/zulip-hermes-integration/pull/131)
 
 ## [1.9.1] - 2026-09-08
@@ -37,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sibling-adapter cross-link**: README banner now points at the related `openclaw-zulip-bridge` project. ([#120](https://github.com/niyazmft/zulip-hermes-integration/pull/120))
 
 ### Contributors
+- [@niyazmft](https://github.com/niyazmft) — [#120](https://github.com/niyazmft/zulip-hermes-integration/pull/120)
 - [@oxedom](https://github.com/oxedom) — [#121](https://github.com/niyazmft/zulip-hermes-integration/pull/121)
 
 ## [1.8.1] - 2026-08-25

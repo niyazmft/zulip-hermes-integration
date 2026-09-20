@@ -1,0 +1,47 @@
+# Configuration for GitHub's automatically generated release notes.
+#
+# Every release body is two layers:
+#   1. the curated CHANGELOG section (scripts/release_notes.py), prepended
+#   2. these generated notes: "What's Changed" + "New Contributors"
+#      + the "Full Changelog" compare link
+#
+# Layer 2 is what credits contributors mechanically. "What's Changed" lists
+# every merged PR author in the range — maintainer included — and
+# "New Contributors" highlights first-timers. That is why CHANGELOG.md does not
+# need a hand-maintained Contributors list in the release body (see
+# docs/RELEASING.md).
+#
+# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+
+changelog:
+  exclude:
+    # The release PR only bumps the version and moves the CHANGELOG entry, so it
+    # must not appear in its own release. docs/RELEASING.md labels it `release`.
+    labels:
+      - release
+      - ignore-for-release
+    # Dependency bumps would otherwise add noise to "What's Changed".
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    # PRs are sparse with labels today, so most entries land in "Other Changes".
+    # The curated CHANGELOG section above carries the real Added/Fixed/Docs/
+    # Internal structure; these categories only shape the mechanical list.
+    - title: Added
+      labels:
+        - enhancement
+        - feature
+    - title: Fixed
+      labels:
+        - bug
+    - title: Docs
+      labels:
+        - documentation
+    - title: Internal
+      labels:
+        - ci-cd
+        - infrastructure
+    - title: Other Changes
+      labels:
+        - "*"
