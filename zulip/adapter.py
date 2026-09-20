@@ -17,11 +17,21 @@ from typing import Optional, Any, overload
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    ExecApprovalPrompt,
     MessageEvent,
     MessageType,
     SendResult,
 )
+
+# Native exec-approval buttons (ExecApprovalPrompt + _send_exec_approval_prompt)
+# first shipped in Hermes 0.21.3. Import the type defensively so the adapter
+# still loads on older gateways: there the gateway never calls the hook and
+# keeps using its plain-text approval prompt, instead of the whole plugin
+# failing to import.
+try:
+    from gateway.platforms.base import ExecApprovalPrompt
+except ImportError:  # pragma: no cover - gateways < 0.21.3
+    ExecApprovalPrompt = Any  # type: ignore[assignment,misc]
+
 from gateway.config import Platform, PlatformConfig
 
 # Use relative imports for internal modules so the plugin works

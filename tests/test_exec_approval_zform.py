@@ -7,11 +7,17 @@ the same path as typing it.
 """
 
 import json
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 
 import zulip.adapter as adapter_module
 from gateway.platforms.base import ExecApprovalPrompt
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 FULL_ACTIONS = [
     ("Allow Once", "once", "primary"),
@@ -304,3 +310,65 @@ class TestNativeButtonModeEnabled:
             ZulipAdapter._send_exec_approval_prompt
             is not BasePlatformAdapter.__dict__.get("_send_exec_approval_prompt")
         )
+
+
+class TestGatewayVersionCompatibility:
+    """The exec-approval hook only exists on Hermes >= 0.21.3. On older
+    gateways the adapter must still import (feature inactive, gateway keeps its
+    plain-text approval prompt) rather than failing to load entirely."""
+
+    def test_imports_on_gateway_without_exec_approval_prompt(self):
+        script = textwrap.dedent(
+            '''
+            import sys, types
+            from dataclasses import dataclass
+
+            gateway = types.ModuleType("gateway")
+            platforms = types.ModuleType("gateway.platforms")
+            base = types.ModuleType("gateway.platforms.base")
+
+            @dataclass
+            class SendResult:
+                success: bool
+                message_id: str = ""
+
+            class MessageType:
+                TEXT = "text"
+
+            @dataclass
+            class MessageEvent:
+                text: str = ""
+
+            class BasePlatformAdapter:
+                pass
+
+            base.SendResult = SendResult
+            base.MessageType = MessageType
+            base.MessageEvent = MessageEvent
+            base.BasePlatformAdapter = BasePlatformAdapter
+
+            # Deliberately NO ExecApprovalPrompt / send_exec_approval here,
+            # mirroring Hermes < 0.21.3.
+            gateway.platforms = platforms
+            platforms.base = base
+            sys.modules["gateway"] = gateway
+            sys.modules["gateway.platforms"] = platforms
+            sys.modules["gateway.platforms.base"] = base
+
+            config = types.ModuleType("gateway.config")
+            config.Platform = type("Platform", (), {})
+            config.PlatformConfig = type("PlatformConfig", (), {})
+            sys.modules["gateway.config"] = config
+
+            import zulip.adapter  # must not raise ImportError
+            print("OK")
+            '''
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "OK"
