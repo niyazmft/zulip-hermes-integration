@@ -188,6 +188,15 @@ ZulipAdapter.send() → Zulip REST API
 
 All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gateway event loop responsive.
 
+### Gateway compatibility
+
+| Hermes gateway | Native exec-approval buttons |
+|----------------|------------------------------|
+| **≥ 0.21.3** (`v2026.9.14`) | ✅ Clickable `zform` buttons — Allow Once / Allow Session / Always Allow / Deny |
+| ≤ 0.21.2 | ➖ Not available — approval prompts fall back to the gateway's plain-text `/approve` / `/deny` instructions. The plugin loads and works normally. |
+
+Native approval buttons rely on the gateway's `_send_exec_approval_prompt` hook, introduced in Hermes 0.21.3. The adapter imports it defensively, so older gateways are unaffected.
+
 ---
 
 ## 🔧 Environment Variables
