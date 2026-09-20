@@ -31,6 +31,20 @@ jobs:
       - name: Validate plugin.yaml
         run: python -c "import yaml; yaml.safe_load(open('zulip/plugin.yaml'))"
 
+      - name: Verify checksums.txt is current
+        run: |
+          # checksums.txt backs the self-updater's integrity check: updater.py
+          # verifies downloaded files against the copy in the repo, so a stale
+          # entry makes `zulip update` abort with a checksum mismatch for every
+          # user. Regenerate exactly as .githooks/pre-push does and diff.
+          for f in zulip/*.py zulip/plugin.yaml zulip/__init__.py; do
+            [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d" " -f1)  ${f#zulip/}"
+          done > /tmp/checksums.expected
+          if ! diff -u checksums.txt /tmp/checksums.expected; then
+            echo "::error::checksums.txt is out of date. Regenerate it (see .githooks/pre-push) and commit the result."
+            exit 1
+          fi
+
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
