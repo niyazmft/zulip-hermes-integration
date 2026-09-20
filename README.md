@@ -1,7 +1,7 @@
 # 📬 Zulip Plugin for Hermes
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-480%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
+[![Tests](https://img.shields.io/badge/tests-517%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
 [![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 

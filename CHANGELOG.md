@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.2] - 2026-09-20
+
+### Added
+- **Native exec-approval buttons (zform widget)**: exec-approval prompts for dangerous commands now render as clickable **Allow Once / Allow Session / Always Allow / Deny** buttons in Zulip web/desktop. `ZulipAdapter` overrides the gateway's `_send_exec_approval_prompt` hook — which is what flips `supports_exec_approval_buttons()` to native-button mode — and attaches a `zform` choices widget via the message-send `widget_content` parameter (the same mechanism the official `trivia_bot` uses). Each button's canned reply is the equivalent plain-text command (`/approve`, `/approve session`, `/approve always`, `/deny`), so a click resolves through the existing authorization path with identical permissions. The approval text (command + reason) is sent as a separate message because a rendered widget replaces its own message body; clients without widget support show both messages as plain text. Requires **Hermes ≥ 0.21.3**. ([#131](https://github.com/niyazmft/zulip-hermes-integration/pull/131), fixes [#130](https://github.com/niyazmft/zulip-hermes-integration/issues/130))
+
+### Fixed
+- **Plugin failed to load on gateways predating the exec-approval hook**: `ExecApprovalPrompt` was imported unconditionally, so on Hermes ≤ 0.21.2 the entire adapter raised `ImportError` instead of merely disabling the new buttons (reproduced on a Hermes 0.20.0 gateway). The type is now imported defensively — older gateways keep the plain-text `/approve` prompt and load normally. ([#132](https://github.com/niyazmft/zulip-hermes-integration/pull/132))
+- **Stale `checksums.txt`**: `adapter.py` changed without regenerating `checksums.txt`, which would have made `zulip update` abort with a checksum mismatch for every user. ([#132](https://github.com/niyazmft/zulip-hermes-integration/pull/132))
+
+### Docs
+- **Gateway compatibility**: README table documenting the Hermes ≥ 0.21.3 requirement for native approval buttons and the plain-text fallback on older gateways. ([#132](https://github.com/niyazmft/zulip-hermes-integration/pull/132))
+
+### Internal
+- **CI verifies `checksums.txt`**: CI now regenerates the checksums exactly as `.githooks/pre-push` does and fails if the committed file is stale, closing the gap that let [#131](https://github.com/niyazmft/zulip-hermes-integration/pull/131) ship a broken updater manifest. ([#133](https://github.com/niyazmft/zulip-hermes-integration/pull/133))
+
+### Contributors
+- [@AungDev](https://github.com/AungDev) — [#131](https://github.com/niyazmft/zulip-hermes-integration/pull/131)
+
 ## [1.9.1] - 2026-09-08
 
 ### Added
