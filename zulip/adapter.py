@@ -451,6 +451,27 @@ def _message_with_flags(event: dict) -> dict:
     return message
 
 
+def _metadata_topic(metadata: Any) -> Optional[str]:
+    """Outbound routing topic from gateway send metadata.
+
+    The gateway core routes replies by ``thread_id`` — the session origin's
+    topic (``gateway.platforms.base._thread_metadata_for_source``) — so a reply
+    generated for one topic lands there even if other topics have seen traffic
+    since. ``topic`` is read too for parity with the adapter's own event
+    metadata. First non-empty value wins; None when neither is set.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("thread_id", "topic"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
 def _topic_sessions_enabled() -> bool:
     """Whether each Zulip topic should get its own conversation session.
 
@@ -525,7 +546,10 @@ class ZulipAdapter(BasePlatformAdapter):
         # Use cached client if available (avoids repeated base64 encoding + object creation)
         self.client = _get_cached_client(self.site, self.email, self.api_key, _zulip_mod=_zulip)
 
-        # Track latest topic per stream so replies stay threaded
+        # Fallback topic per stream, used only when a send carries no routing
+        # metadata (e.g. TOPIC_SESSIONS off, or metadata-less callers). With
+        # topic sessions on, the gateway routes replies by metadata thread_id —
+        # the session's own topic — never by this cache.
         self._topic_cache: dict[str, str] = {}
         # Context-mitigation state
         self._last_topic_cache: dict[str, str] = {}      # stream_id → previous topic
@@ -646,12 +670,15 @@ class ZulipAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    def _typing_params_for_chat(self, chat_id: str, op: str) -> Optional[dict]:
+    def _typing_params_for_chat(
+        self, chat_id: str, op: str, topic: Optional[str] = None
+    ) -> Optional[dict]:
         """Map a gateway chat_id to Zulip set_typing_status params.
 
         DM session rotation can suffix chat ids ("dm:<id>:session:<n>") —
         strip to the raw numeric sender id. Streams are numeric stream ids;
-        the topic comes from the reply-threading cache.
+        ``topic`` (the routing metadata's thread_id) wins over the per-stream
+        reply cache, so typing shows in the session's own topic.
         """
         if not chat_id:
             return None
@@ -662,11 +689,12 @@ class ZulipAdapter(BasePlatformAdapter):
                 return None
             return {"op": op, "type": "direct", "to": [int(user_id)]}
         if chat_id.isdigit():
+            resolved = (topic or "").strip() or self._topic_cache.get(chat_id, "")
             return {
                 "op": op,
                 "type": "stream",
                 "stream_id": int(chat_id),
-                "topic": self._topic_cache.get(chat_id, ""),
+                "topic": resolved,
             }
         return None
 
@@ -674,7 +702,9 @@ class ZulipAdapter(BasePlatformAdapter):
         """Core typing hook: the gateway calls this every ~2s while the agent
         runs (platform typing state expires after ~5s). Best-effort."""
         try:
-            params = self._typing_params_for_chat(str(chat_id), "start")
+            params = self._typing_params_for_chat(
+                str(chat_id), "start", topic=_metadata_topic(metadata)
+            )
             if params:
                 await self._sdk_call(
                     self.client.set_typing_status,
@@ -684,10 +714,17 @@ class ZulipAdapter(BasePlatformAdapter):
         except Exception:
             pass  # typing is best-effort
 
-    async def stop_typing(self, chat_id: str) -> None:
-        """Core typing hook: called when the agent run finishes. Best-effort."""
+    async def stop_typing(self, chat_id: str, metadata: Any = None) -> None:
+        """Core typing hook: called when the agent run finishes. Best-effort.
+
+        Accepts ``metadata`` so the gateway base's introspecting
+        ``_stop_typing_with_metadata`` forwards the run's routing metadata
+        (a thread-scoped clear must not depend on the last-seen topic).
+        """
         try:
-            params = self._typing_params_for_chat(str(chat_id), "stop")
+            params = self._typing_params_for_chat(
+                str(chat_id), "stop", topic=_metadata_topic(metadata)
+            )
             if params:
                 await self._sdk_call(
                     self.client.set_typing_status,
@@ -1736,9 +1773,10 @@ class ZulipAdapter(BasePlatformAdapter):
         if target["type"] == "dm":
             base: dict[str, Any] = {"type": "private", "to": [target["user_id"]]}
         else:
-            topic = (
-                (prompt.metadata or {}).get("topic")
-                or self._topic_cache.get(prompt.chat_id, "general")
+            # prompt.metadata carries the turn's routing metadata (thread_id =
+            # the session's topic) from the runner; the cache is only a fallback.
+            topic = _metadata_topic(prompt.metadata) or self._topic_cache.get(
+                prompt.chat_id, "general"
             )
             base = {"type": "stream", "to": target["stream_id"], "topic": topic}
 
@@ -1888,7 +1926,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
             else:
                 stream_id = target["stream_id"]
-                topic = topic_override or metadata.get("topic")
+                topic = topic_override or _metadata_topic(metadata)
                 if not topic:
                     topic = self._topic_cache.get(chat_id, "general")
 

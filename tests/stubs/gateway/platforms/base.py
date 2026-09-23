@@ -77,8 +77,39 @@ class BasePlatformAdapter:
     async def handle_message(self, event: MessageEvent):
         pass
 
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """No-op typing hook (the real base's default)."""
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        """No-op typing hook (the real base's default)."""
+
     def _mark_connected(self):
         self._connected = True
 
     def _mark_disconnected(self):
         self._connected = False
+
+    def _accepts_kwarg(self, func, name: str, *, var_kw: bool = False, unknown: bool = False) -> bool:
+        """Mirror of gateway.platforms.base.BasePlatformAdapter._accepts_kwarg:
+        True when ``func`` accepts the keyword ``name`` (explicitly, via
+        **kwargs when var_kw, or — when unknown — via an unknown-kwargs
+        catch-all). Kept in sync with the real gateway base so introspection
+        behavior (e.g. _stop_typing_with_metadata) is testable."""
+        import inspect
+
+        try:
+            params = inspect.signature(func).parameters
+        except (TypeError, ValueError):
+            return unknown
+        return name in params or (var_kw and any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()))
+
+    async def _stop_typing_with_metadata(self, chat_id: str, metadata=None) -> None:
+        """Mirror of the real gateway base hook: stop typing, forwarding
+        ``metadata`` only when ``stop_typing`` accepts it. Legacy
+        ``stop_typing(chat_id)`` adapters keep working via introspection."""
+        if metadata and self._accepts_kwarg(
+                self.stop_typing, "metadata", var_kw=True, unknown=False):
+            await self.stop_typing(chat_id, metadata=metadata)
+            return
+        await self.stop_typing(chat_id)
