@@ -105,6 +105,36 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         except Exception:
             # A trace must never interfere with the agent's tool call.
             continue
+
+
+def _zulip_progress_handler(args: Any) -> str:
+    """``zulip_progress`` tool handler — agent-authored trace steps (#160).
+
+    Synchronous: the tool registry calls the handler directly and this only
+    records state (the trace's own coalesced flush does the I/O). Returns a
+    short acknowledgement so the model sees a result either way — a run without
+    an active trace must not look like a failure.
+    """
+    note = ""
+    if isinstance(args, dict):
+        for field in ("note", "step", "message"):
+            candidate = args.get(field)
+            if isinstance(candidate, str) and candidate.strip():
+                note = candidate.strip()
+                break
+    if not note:
+        return "error: zulip_progress requires a non-empty 'note'"
+
+    shown = False
+    for adapter in list(_LIVE_ADAPTERS):
+        try:
+            if adapter.record_progress_step(note):
+                shown = True
+        except Exception:
+            continue
+    if shown:
+        return "noted"
+    return "no activity trace is active for this conversation; note not shown"
 from .secret_guard import (
     KnownSecret,
     block_secret_leaks_enabled,
@@ -1026,6 +1056,29 @@ class ZulipAdapter(BasePlatformAdapter):
             aliases.append(f"route:{chat_id}\x00{thread}")
         return aliases
 
+    def _trace_for_current_session(self) -> Optional[ActivityTrace]:
+        """The trace for the task we are running inside, or None.
+
+        Shared by the tool hook (mode A) and the progress tool (mode B) so both
+        attribute through exactly **one** code path — two would drift.
+        """
+        if not self._trace_cfg.enabled or not self._trace_sessions:
+            return None
+        for alias in self._session_aliases_from_context():
+            key = self._trace_sessions.get(alias)
+            if key is not None:
+                return self._traces.get(key)
+        return None
+
+    def record_progress_step(self, note: str) -> bool:
+        """Add an agent-authored step (mode B). True when it was shown."""
+        trace = self._trace_for_current_session()
+        if trace is None:
+            return False
+        step = trace.step(str(note))
+        trace.complete(step, ok=True)
+        return step is not None
+
     def record_tool_step(
         self,
         *,
@@ -1041,18 +1094,7 @@ class ZulipAdapter(BasePlatformAdapter):
         some other topic: a trace that narrates another conversation's work is
         worse than a trace with a gap.
         """
-        if not self._trace_cfg.enabled or not self._trace_sessions:
-            return
-
-        key = None
-        for alias in self._session_aliases_from_context():
-            key = self._trace_sessions.get(alias)
-            if key is not None:
-                break
-        if key is None:
-            return  # unattributable: drop rather than guess
-
-        trace = self._traces.get(key)
+        trace = self._trace_for_current_session()
         if trace is None:
             return
 
@@ -2853,6 +2895,40 @@ def register(ctx):
             ctx.register_hook("post_tool_call", _on_post_tool_call)
         except Exception as e:
             logger.warning("zulip: could not register post_tool_call hook: %s", e)
+
+    # Mode B (epic #139 / #160): let the agent narrate intent that hooks cannot
+    # infer. Registered only when the trace is enabled — registration is what
+    # exposes the tool to the model, so a disabled trace must not advertise one.
+    if TraceConfig.from_env().enabled:
+        try:
+            ctx.register_tool(
+                name="zulip_progress",
+                toolset="zulip",
+                schema={
+                    "name": "zulip_progress",
+                    "description": (
+                        "Show a short progress note on this conversation's activity "
+                        "board while you work. Use it for intent that a tool call does "
+                        "not reveal, e.g. 'about to ask a clarifying question' or "
+                        "'switching approach'."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "note": {
+                                "type": "string",
+                                "description": "Short status line, e.g. 'checking the logs'.",
+                            }
+                        },
+                        "required": ["note"],
+                    },
+                },
+                handler=_zulip_progress_handler,
+                description="Show a short progress note on the activity trace",
+                emoji="\U0001f4dd",
+            )
+        except Exception as e:
+            logger.warning("zulip: could not register zulip_progress tool: %s", e)
 
     ctx.register_platform(
         name="zulip",

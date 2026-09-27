@@ -68,6 +68,18 @@ optional_env:
   - name: ZULIP_ALLOW_INSECURE_HTTP
     description: "Allow an http:// (or private-host) ZULIP_SITE, where the API key is sent unencrypted. Default false"
     prompt: "Allow insecure http (trusted self-hosted only)"
+  - name: ZULIP_ACTIVITY_TRACE
+    description: "Post one status message per request and edit it in place while the agent works (default: false)"
+    prompt: "Show an activity trace"
+  - name: ZULIP_TRACE_COALESCE_MS
+    description: "Coalesce trace edits over this window in ms (default: 400)"
+    prompt: "Trace coalesce window (ms)"
+  - name: ZULIP_TRACE_MAX_RATE
+    description: "Hard ceiling on trace edits per second (default: 2)"
+    prompt: "Trace edits per second"
+  - name: ZULIP_TRACE_MAX_CONTENT
+    description: "Maximum characters in a trace message before older steps are trimmed (default: 3500)"
+    prompt: "Trace max content"
   - name: ZULIP_RESPONSE_PREFIX
     description: 'Prefix prepended to every outbound message (default: empty)'
     prompt: "Response prefix"
