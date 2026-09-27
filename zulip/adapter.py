@@ -314,6 +314,24 @@ DEFAULT_CONNECT_TIMEOUT = 30.0
 DEFAULT_READ_TIMEOUT = 60.0
 DEFAULT_SEND_TIMEOUT = 90.0
 
+# --- Event polling (Issue #146) ---
+#
+# A /events long-poll that returns faster than this did not hold the poll, so
+# the server is answering immediately and re-polling at full speed would spin
+# (and, on the constrained hosts this runs on, fill the log with poll noise).
+# A response at or above it was really held, meaning the server is pacing us,
+# so it must gain no added delay.
+POLL_FAST_RETURN_SECONDS = 2.5
+POLL_BACKOFF_START = 1.0
+POLL_BACKOFF_MAX = 5.0
+# Zulip documents ``event_queue_longpoll_timeout_seconds`` as 1-90s, and only
+# returns the field when /register asks for ``fetch_event_types: ["realm"]``.
+LONGPOLL_MIN_SECONDS = 1.0
+LONGPOLL_MAX_SECONDS = 90.0
+# Headroom over the server's own budget, so our client-side abort can never
+# pre-empt a healthy long-poll.
+LONGPOLL_GRACE_SECONDS = 10.0
+
 
 def _resolve_chunk_config() -> tuple[int, str]:
     """Read chunking config from environment."""
@@ -340,6 +358,35 @@ def _resolve_timeouts() -> tuple[float, float, float]:
     read = _parse(os.getenv("ZULIP_READ_TIMEOUT", ""), DEFAULT_READ_TIMEOUT)
     send = _parse(os.getenv("ZULIP_SEND_TIMEOUT", ""), DEFAULT_SEND_TIMEOUT)
     return connect, read, send
+
+
+def _clamp_longpoll_budget(value: Any) -> Optional[float]:
+    """Clamp a server long-poll budget to Zulip's documented 1-90s window.
+
+    Returns ``None`` when the value is missing or unusable, which leaves the
+    caller's configured timeout in place rather than guessing. (Issue #146)
+    """
+    try:
+        budget = float(value)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    return min(max(budget, LONGPOLL_MIN_SECONDS), LONGPOLL_MAX_SECONDS)
+
+
+def _next_poll_backoff(elapsed: float, had_message: bool, current: float) -> float:
+    """Return the delay before the next /events poll (0.0 = poll at once).
+
+    Latency-gated (Issue #146): the question is not "were there events?" but
+    "did the server hold the long-poll?". A poll that came back quickly did
+    not, so the loop has to insert its own delay or it will spin as fast as
+    the API answers; a poll that was genuinely held is already paced by the
+    server and must not gain any latency.
+    """
+    if had_message or elapsed >= POLL_FAST_RETURN_SECONDS:
+        return 0.0
+    return min(max(current * 2, POLL_BACKOFF_START), POLL_BACKOFF_MAX)
 
 
 def _resolve_streams_filter() -> set[str] | None:
@@ -625,6 +672,12 @@ class ZulipAdapter(BasePlatformAdapter):
         # Timeout configuration (Issue #62)
         self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
 
+        # Abort budget for /events, raised once we learn the server's own
+        # long-poll budget from /register. Our 60s default is shorter than
+        # Zulip's 90s default, so without this we abort every idle long-poll
+        # client-side. (Issue #146)
+        self._events_timeout = self._read_timeout
+
         # Stream filtering (Issue #65) — None means all streams
         self._streams_filter = _resolve_streams_filter()
 
@@ -648,9 +701,7 @@ class ZulipAdapter(BasePlatformAdapter):
         self._queue_mgr = ZulipQueueManager(
             account_id=self.email or "default",
             data_dir=self._data_dir,
-            register_fn=lambda: self.client.register(
-                event_types=["message"], fetch_event_id=0
-            ),
+            register_fn=self._register_queue,
         )
         self._dedupe = ZulipDedupeStore(
             account_id=self.email or "default",
@@ -973,6 +1024,44 @@ class ZulipAdapter(BasePlatformAdapter):
             mask_pii(self.email),
         )
 
+    def _register_queue(self) -> dict:
+        """Register the event queue, learning the server's long-poll budget.
+
+        ``fetch_event_types: ["realm"]`` is what makes Zulip include
+        ``event_queue_longpoll_timeout_seconds`` in the response; without it
+        the field is omitted and there is no way to know how long the server
+        intends to hold a /events long-poll. Knowing it lets the poll loop
+        abort *after* the server's own budget instead of pre-empting a healthy
+        idle poll with our shorter generic read timeout. (Issue #146)
+        """
+        result = self.client.register(
+            event_types=["message"],
+            fetch_event_id=0,
+            fetch_event_types=["realm"],
+        )
+
+        raw_budget = None
+        if isinstance(result, dict):
+            raw_budget = result.get("event_queue_longpoll_timeout_seconds")
+        budget = _clamp_longpoll_budget(raw_budget)
+        if budget is not None:
+            self._events_timeout = max(
+                self._read_timeout, budget + LONGPOLL_GRACE_SECONDS
+            )
+            logger.info(
+                "zulip long-poll budget learned [server=%.0fs client_abort=%.0fs]",
+                budget,
+                self._events_timeout,
+            )
+        else:
+            logger.debug(
+                "zulip long-poll budget absent from /register; "
+                "keeping client abort budget at %.0fs",
+                self._events_timeout,
+            )
+
+        return result
+
     async def _presence_heartbeat(self):
         """Keep bot presence active while connected."""
         while self._listening:
@@ -990,16 +1079,22 @@ class ZulipAdapter(BasePlatformAdapter):
         """Listen for incoming Zulip messages via persistent event queue."""
         logger.info("zulip adapter listening [account=%s]", mask_pii(self.email))
 
+        # Latency-gated backoff state (Issue #146). Stays 0.0 while the server
+        # holds the long-poll — the healthy case, which must not slow down.
+        backoff = 0.0
+
         while self._listening:
             try:
                 queue = await self._queue_mgr.ensure_queue()
 
+                poll_started = time.monotonic()
                 events = await self._sdk_call(
                     self.client.get_events,
                     queue_id=queue.queue_id,
                     last_event_id=queue.last_event_id,
-                    timeout=self._read_timeout,
+                    timeout=self._events_timeout,
                 )
+                poll_elapsed = time.monotonic() - poll_started
 
                 if events.get("result") == "error":
                     msg = events.get("msg", "")
@@ -1024,11 +1119,15 @@ class ZulipAdapter(BasePlatformAdapter):
 
                 batch_max_event_id = queue.last_event_id
                 processing_tasks = []
+                had_message = False
                 for event in events.get("events", []):
                     event_id = event["id"]
                     if event_id > batch_max_event_id:
                         batch_max_event_id = event_id
                     if event.get("type") == "message":
+                        # Any delivered message means this poll had work to do,
+                        # so it is a real return even when dedupe drops it.
+                        had_message = True
                         msg = _message_with_flags(event)
                         msg_id = str(msg.get("id", ""))
                         # Dedupe check
@@ -1048,6 +1147,16 @@ class ZulipAdapter(BasePlatformAdapter):
                 # Batch update event ID
                 if batch_max_event_id > queue.last_event_id:
                     self._queue_mgr.update_last_event_id(batch_max_event_id)
+
+                # Pace only a poll the server did not hold (Issue #146).
+                backoff = _next_poll_backoff(poll_elapsed, had_message, backoff)
+                if backoff:
+                    logger.debug(
+                        "zulip poll backoff [delay=%.1fs last_poll=%.2fs]",
+                        backoff,
+                        poll_elapsed,
+                    )
+                    await asyncio.sleep(backoff)
 
             except asyncio.CancelledError:
                 raise
