@@ -224,9 +224,12 @@ class TestUploadFileToZulip:
     async def test_rejects_symlink(self, tmp_path):
         from zulip.media import upload_file_to_zulip
 
-        # Create a real file outside allowed dir
-        outside = tmp_path / ".." / "secret.txt"
-        outside.write_text("secret")
+        # Create a real file outside allowed dir. Deliberately not named
+        # "secret.txt": a credential-shaped name is refused by the upload
+        # denylist (Issue #138) before the symlink check runs, so the test would
+        # pass for the wrong reason.
+        outside = tmp_path / ".." / "payload.txt"
+        outside.write_text("payload")
 
         # Create a symlink inside allowed dir pointing outside
         link = tmp_path / "link.txt"
@@ -310,7 +313,7 @@ class TestUploadFileToZulip:
         allowed_root.mkdir()
         sibling = tmp_path / "allowed-but-not-really"
         sibling.mkdir()
-        outside = sibling / "secret.txt"
+        outside = sibling / "payload.txt"
         outside.write_text("nope")
 
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(allowed_root))
@@ -432,18 +435,21 @@ class TestUploadFileToZulip:
         tempfile.tempdir = str(tmp_path / "other_temp")
         workspace = tmp_path / "other_temp" / "hermes_bot_workspace"
         workspace.mkdir(parents=True)
-        # A real secret OUTSIDE the isolated tempdir (and outside data_dir),
-        # reachable only by climbing out of the workspace.
-        secret = tmp_path / "secret.txt"
-        secret.write_text("secret")
+        # A real file OUTSIDE the isolated tempdir (and outside data_dir),
+        # reachable only by climbing out of the workspace. Named benignly on
+        # purpose — a credential-shaped name would be caught by the upload
+        # denylist (Issue #138) first, and this test is about path traversal.
+        outside_file = tmp_path / "payload.txt"
+        outside_file.write_text("payload")
         try:
-            # From the workspace, ../../secret.txt resolves to tmp_path/secret.txt,
-            # which is outside every allowed root → must be refused.
+            # From the workspace, ../../payload.txt resolves to
+            # tmp_path/payload.txt, which is outside every allowed root → must
+            # be refused for that reason.
             mock_client = MagicMock()
             mock_client.upload_file.return_value = {"result": "error"}
 
             with pytest.raises(ValueError, match="unauthorized path"):
-                await upload_file_to_zulip(mock_client, "../../secret.txt", str(data_dir))
+                await upload_file_to_zulip(mock_client, "../../payload.txt", str(data_dir))
             mock_client.upload_file.assert_not_called()
         finally:
             tempfile.tempdir = original_temp

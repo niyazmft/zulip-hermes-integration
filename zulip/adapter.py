@@ -1847,7 +1847,9 @@ class ZulipAdapter(BasePlatformAdapter):
     ) -> SendResult:
         data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
         try:
-            url = await upload_file_to_zulip(self.client, file_path, data_dir)
+            url = await upload_file_to_zulip(
+                self.client, file_path, data_dir, account_id=self.email
+            )
         except Exception as e:
             logger.error(
                 "[%s] native media upload failed [file=%s]: %s",
@@ -2111,7 +2113,7 @@ class ZulipAdapter(BasePlatformAdapter):
                     continue
                 try:
                     url = await upload_file_to_zulip(
-                        self.client, file_path, data_dir
+                        self.client, file_path, data_dir, account_id=self.email
                     )
                     uploaded_urls.append(url)
                     uploaded_local_paths.append(file_path)
@@ -2470,7 +2472,9 @@ async def _standalone_send(
                 continue
             try:
                 uploaded_urls.append(
-                    await upload_file_to_zulip(client, file_path, data_dir)
+                    await upload_file_to_zulip(
+                        client, file_path, data_dir, account_id=email
+                    )
                 )
             except Exception as e:
                 logger.error(

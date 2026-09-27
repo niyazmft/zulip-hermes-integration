@@ -16,12 +16,110 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse, unquote
 
+from .logger import mask_pii
+
 logger = logging.getLogger(__name__)
 
 # Match Zulip upload paths in HTML
 UPLOAD_PATH_RE = re.compile(r"/user_uploads/\d+/[a-zA-Z0-9_/-]+/[^\s\"'<>]+")
 
 DEFAULT_MAX_MB = 5
+
+
+# --- Upload denylist (Issue #138) ---
+#
+# The allowlist is a *root* check, and the data dir is an allowed root on
+# purpose (the bot workspace lives under it), so a root check can never refuse
+# the files that matter most: the audit log, the queue/dedupe state and the
+# persisted allowlist all sit inside an allowed root. The threat is prompt
+# injection — an agent reads a config file and attaches it — so the fix has to
+# be an explicit, name-based refusal evaluated *before* the allowlist.
+#
+# Matching is deliberately conservative: a false refusal costs one refused
+# upload plus an audit line, while a false accept can publish a credential.
+_DENY_NAME_SUBSTRINGS = (
+    "credential",
+    "api_key",
+    "apikey",
+    "api-key",
+    "secret",
+    "token",
+    "passwd",
+    "password",
+)
+_DENY_NAME_PATTERNS = (
+    # .env, config.env, .env.local
+    re.compile(r"(^|\.)env($|\.)", re.IGNORECASE),
+    # the audit log and its rotated siblings ({account}.audit.log.N)
+    re.compile(r"\.audit\.log($|\.)", re.IGNORECASE),
+    # our own persisted state, by the names the stores actually use
+    re.compile(r"^zulip_allowlist\.json$", re.IGNORECASE),
+    re.compile(r"^zulip_(dedupe|queue)_.+\.json$", re.IGNORECASE),
+)
+_DENY_DIR_PARTS = frozenset({"credentials", "sessions", "transcripts"})
+
+
+class SensitiveUploadRefused(ValueError):
+    """An upload named a credential, config or state file (Issue #138).
+
+    Subclasses ValueError so existing callers and tests keep catching it, but
+    the candidate loop re-raises it explicitly rather than treating it as a
+    miss — see :func:`upload_file_to_zulip`.
+    """
+
+
+def deny_reason(path: Path) -> Optional[str]:
+    """Why ``path`` must never be attached, or None if it is acceptable.
+
+    Checks sensitive directory components anywhere in the path, then the
+    basename against the credential-shaped substrings and the explicit state
+    file patterns.
+    """
+    for part in path.parts:
+        if part.lower() in _DENY_DIR_PARTS:
+            return f"sensitive directory: {part}"
+
+    name = path.name.lower()
+    for fragment in _DENY_NAME_SUBSTRINGS:
+        if fragment in name:
+            return f"credential-shaped filename: {fragment}"
+    for pattern in _DENY_NAME_PATTERNS:
+        if pattern.search(name):
+            return f"matches {pattern.pattern}"
+    return None
+
+
+async def _audit_refused_upload(
+    data_dir: str,
+    account_id: Optional[str],
+    file_path: str,
+    error: Exception,
+) -> None:
+    """Record a refused upload. Best-effort: auditing cannot change the outcome.
+
+    The path is masked and no file content is ever read for the event — the
+    whole point is that this material must not leave the host.
+    """
+    try:
+        from .audit_logger import AuditLogger
+
+        await AuditLogger(
+            data_dir=data_dir, account_id=account_id or "default"
+        ).log_event(
+            "media_upload_blocked",
+            {
+                "file": mask_pii(str(file_path)),
+                "reason": str(error),
+                "direction": "outbound",
+            },
+        )
+    except Exception as e:
+        # Never silent: a swallowed failure here is exactly how a refusal goes
+        # unrecorded. (This bit during development — a missing import in this
+        # helper was invisible because the exception vanished.)
+        logger.warning(
+            "could not audit refused upload [err=%s]", mask_pii(str(e))
+        )
 
 
 def extract_upload_urls(html_content: str, base_url: str) -> list[str]:
@@ -141,13 +239,17 @@ async def upload_file_to_zulip(
     client: Any,
     file_path: str,
     data_dir: str,
+    account_id: Optional[str] = None,
 ) -> str:
     """Upload a local file to Zulip server.
 
     Returns the uploaded file URL.
-    Security: verifies the resolved file is under tmp, data_dir, or an
-    operator allowlist dir; rejects symlinks using atomic stat with
-    follow_symlinks=False to prevent TOCTOU races.
+    Security: refuses credential/config/state files by name (Issue #138) before
+    the allowlist roots are consulted, then verifies the resolved file is under
+    tmp, data_dir, or an operator allowlist dir; rejects symlinks using atomic
+    stat with follow_symlinks=False to prevent TOCTOU races.
+
+    ``account_id`` only affects where a refused-upload audit event is written.
 
     Relative paths (e.g. a bare ``haiku.txt`` from the agent workspace) are
     resolved against candidate roots in order — the given path, the bot
@@ -213,6 +315,16 @@ async def upload_file_to_zulip(
         finally:
             os.close(fd)
 
+        # Denylist BEFORE the allowlist (Issue #138): the data dir is itself an
+        # allowed root and holds the audit log, queue/dedupe state and the
+        # persisted allowlist, so a root check can never refuse them — and an
+        # operator allow dir must not be able to authorize a credential file.
+        reason = deny_reason(resolved)
+        if reason:
+            raise SensitiveUploadRefused(
+                f"Refusing to upload sensitive file: {candidate} ({reason})"
+            )
+
         if not any(_is_within(resolved, root) for root in allowed_roots):
             raise ValueError(
                 f"Refusing to upload from unauthorized path: {candidate}. "
@@ -233,13 +345,22 @@ async def upload_file_to_zulip(
 
     resolved = None
     last_error: Optional[Exception] = None
-    for candidate in candidates:
-        try:
-            resolved = _resolve_candidate(candidate)
-            break
-        except ValueError as e:
-            last_error = e
-            continue
+    try:
+        for candidate in candidates:
+            try:
+                resolved = _resolve_candidate(candidate)
+                break
+            except SensitiveUploadRefused:
+                # Fail fast: do not go looking for another root with the same
+                # name — the name is exactly what made it sensitive, and a
+                # fallback would turn a refusal into a *different* file.
+                raise
+            except ValueError as e:
+                last_error = e
+                continue
+    except SensitiveUploadRefused as refused:
+        await _audit_refused_upload(data_dir, account_id, file_path, refused)
+        raise
 
     if resolved is None:
         raise last_error or ValueError(f"Unable to read file: {file_path}")
