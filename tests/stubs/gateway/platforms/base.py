@@ -15,6 +15,19 @@ class SendResult:
     message_id: str = ""
 
 
+class ProcessingOutcome(Enum):
+    """Mirror of gateway.platforms.base.ProcessingOutcome (Hermes >= 0.21.3).
+
+    The result classification a message-processing lifecycle hook receives —
+    what lets the activity trace tell a successful run from a failed or
+    cancelled one (epic #139 / issue #158).
+    """
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class ExecApprovalPrompt:
     """Mirror of gateway.platforms.base.ExecApprovalPrompt — input to the

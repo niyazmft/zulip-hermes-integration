@@ -32,6 +32,16 @@ try:
 except ImportError:  # pragma: no cover - gateways < 0.21.3
     ExecApprovalPrompt = Any  # type: ignore[assignment,misc]
 
+# Processing lifecycle hooks (on_processing_start / on_processing_complete) and
+# their outcome enum first shipped alongside ExecApprovalPrompt. Guarded for the
+# same reason: on an older gateway the hooks are simply never called, so the
+# activity trace does not run — rather than the whole plugin failing to import.
+# (epic #139 / issue #158)
+try:
+    from gateway.platforms.base import ProcessingOutcome
+except ImportError:  # pragma: no cover - gateways without lifecycle hooks
+    ProcessingOutcome = None  # type: ignore[assignment,misc]
+
 from gateway.config import Platform, PlatformConfig
 
 # Use relative imports for internal modules so the plugin works
@@ -64,6 +74,7 @@ from .probe import (
 from .recovery import recover_interrupted_messages
 from .rate_limiter import RateLimiter
 from .audit_logger import AuditLogger
+from .activity_trace import ActivityTrace, TraceConfig
 from .secret_guard import (
     KnownSecret,
     block_secret_leaks_enabled,
@@ -749,6 +760,19 @@ class ZulipAdapter(BasePlatformAdapter):
         self._event_task: Optional[asyncio.Task] = None
         self._presence_task: Optional[asyncio.Task] = None
 
+        # Activity trace (epic #139 / #158): one bot-owned status message per
+        # work item, edited in place. Disabled unless ZULIP_ACTIVITY_TRACE is set.
+        self._trace_cfg = TraceConfig.from_env()
+        self._traces: dict[str, ActivityTrace] = {}
+        self._trace_start_tasks: dict[str, asyncio.Task] = {}
+        self._trace_started: dict[str, float] = {}
+        self._trace_replied: set[str] = set()
+        if self._trace_cfg.enabled and ProcessingOutcome is None:
+            logger.warning(
+                "ZULIP_ACTIVITY_TRACE is enabled but this gateway does not expose "
+                "the processing lifecycle hooks; the trace will not run"
+            )
+
     async def _sdk_call(self, fn, *args, timeout: float, **kwargs):
         """Wrap a synchronous SDK call in asyncio.to_thread + asyncio.wait_for.
 
@@ -874,6 +898,155 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
         except Exception:
             pass  # typing is best-effort
+
+    # --- activity trace lifecycle (epic #139 / #158) ---
+
+    @staticmethod
+    def _trace_key(chat_id: str, metadata: Any) -> str:
+        """Session key for a trace: the chat *plus* the topic it lands in.
+
+        Topic sessions share a chat_id across topics, so keying on chat_id alone
+        would let two concurrent topics in one stream edit each other's trace.
+        """
+        return f"{chat_id}\x00{_metadata_topic(metadata) or ''}"
+
+    def _trace_payload(
+        self, chat_id: str, metadata: Any, content: str
+    ) -> Optional[dict]:
+        """Send payload for a trace message, using the *reply* routing.
+
+        Deliberately the same resolution the reply uses (``_metadata_topic`` and
+        ``_parse_target``). Issue #143 was a second, drifting topic resolution,
+        and a trace that lands in the wrong topic is worse than no trace.
+        """
+        try:
+            target = _parse_target(chat_id)
+        except (TypeError, ValueError):
+            return None
+        if target["type"] == "dm":
+            return {"type": "private", "to": target["user_ids"], "content": content}
+        topic = _metadata_topic(metadata) or self._topic_cache.get(chat_id, "general")
+        return {
+            "type": "stream",
+            "to": target["stream_id"],
+            "topic": topic,
+            "content": content,
+        }
+
+    def _note_trace_reply(self, chat_id: str, metadata: Any) -> None:
+        """Record that this work item actually produced a reply."""
+        if self._traces:
+            self._trace_replied.add(self._trace_key(chat_id, metadata))
+
+    def _start_trace(self, event: Any) -> None:
+        """Begin a trace for a work item. Never raises, never blocks the run."""
+        if not self._trace_cfg.enabled:
+            return
+        source = getattr(event, "source", None)
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        metadata = getattr(event, "metadata", None)
+        if not chat_id:
+            return
+
+        key = self._trace_key(chat_id, metadata)
+        if key in self._traces:
+            return  # already tracing this work item
+
+        async def post(content: str) -> Optional[int]:
+            payload = self._trace_payload(chat_id, metadata, content)
+            if payload is None:
+                return None
+            result = await self._sdk_call(
+                self.client.send_message, payload, timeout=self._send_timeout
+            )
+            if not isinstance(result, dict) or result.get("result") != "success":
+                return None
+            try:
+                return int(result.get("id"))
+            except (TypeError, ValueError):
+                return None
+
+        async def edit(message_id: int, content: str) -> bool:
+            result = await self._sdk_call(
+                self.client.update_message,
+                {"message_id": message_id, "content": content},
+                timeout=self._send_timeout,
+            )
+            return isinstance(result, dict) and result.get("result") == "success"
+
+        trace = ActivityTrace(post, edit, self._trace_cfg)
+        self._traces[key] = trace
+        self._trace_started[key] = time.monotonic()
+        # Posted in the background: that is one API round-trip and the agent run
+        # must not wait on it. ``_finish_trace`` awaits this task before
+        # finalizing, so a fast turn cannot leave a stale "Working" board.
+        try:
+            self._trace_start_tasks[key] = asyncio.get_running_loop().create_task(
+                trace.start()
+            )
+        except RuntimeError:  # no running loop (sync caller): the trace is inert
+            pass
+
+    async def _finish_trace(self, event: Any, outcome: Any) -> None:
+        """Finalize a work item's trace. Never raises into the gateway loop."""
+        if not self._trace_cfg.enabled:
+            return
+        source = getattr(event, "source", None)
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        metadata = getattr(event, "metadata", None)
+        key = self._trace_key(chat_id, metadata)
+        trace = self._traces.pop(key, None)
+        if trace is None:
+            return
+
+        task = self._trace_start_tasks.pop(key, None)
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass  # a failed post already dropped the trace
+
+        started = self._trace_started.pop(key, None)
+        elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+        replied = key in self._trace_replied
+        self._trace_replied.discard(key)
+
+        status = getattr(outcome, "value", outcome)
+        try:
+            if status == "cancelled":
+                note = f"cancelled after {elapsed:.0f}s"
+                if not replied:
+                    note += " — no reply sent"
+                await trace.finish(note=note)
+            elif status == "failure":
+                note = f"run failed after {elapsed:.0f}s"
+                if not replied:
+                    note += " — no reply sent"
+                await trace.fail(note)
+            elif replied:
+                await trace.finish(note=f"replied in {elapsed:.0f}s")
+            else:
+                # The case that used to be invisible: the run produced nothing.
+                await trace.finish(
+                    note=f"run finished in {elapsed:.0f}s — no reply sent"
+                )
+        except Exception as e:
+            logger.warning("activity trace finalize failed (dropped): %s", e)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Gateway lifecycle hook: a work item started. (epic #139 / #158)"""
+        self._start_trace(event)
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: Any = None
+    ) -> None:
+        """Gateway lifecycle hook: a work item finished, with its outcome.
+
+        The gateway supplies SUCCESS / FAILURE / CANCELLED, which is what makes
+        error and abort distinguishable at all — and therefore what lets a run
+        that produced nothing say so instead of staying silent.
+        """
+        await self._finish_trace(event, outcome)
 
     async def _mark_read(self, message_id: Any) -> None:
         """Mark a message as read. Best-effort."""
@@ -2206,6 +2379,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
             if result.get("result") == "success":
                 logger.debug("zulip message sent to %s", chat_id)
+                # This work item produced a reply, so its trace can say so
+                # instead of reporting a silent run (epic #139 / #158).
+                self._note_trace_reply(chat_id, metadata)
                 return SendResult(
                     success=True, message_id=str(result.get("id", ""))
                 )
