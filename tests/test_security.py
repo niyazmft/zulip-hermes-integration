@@ -32,9 +32,19 @@ class TestSsrfUrlValidation:
     def test_rejects_aws_metadata(self):
         assert _normalize_base_url("http://169.254.169.254") is None
 
-    def test_accepts_public_urls(self):
+    def test_accepts_public_https_urls(self):
         assert _normalize_base_url("https://example.zulipchat.com") == "https://example.zulipchat.com"
-        assert _normalize_base_url("http://public.example.com/") == "http://public.example.com"
+
+    def test_refuses_public_http_by_default(self, monkeypatch):
+        """Issue #137: https is required unless the operator opts in."""
+        monkeypatch.delenv("ZULIP_ALLOW_INSECURE_HTTP", raising=False)
+        assert _normalize_base_url("http://public.example.com/") is None
+
+    def test_accepts_public_http_with_the_opt_in(self):
+        assert (
+            _normalize_base_url("http://public.example.com/", allow_insecure_http=True)
+            == "http://public.example.com"
+        )
 
     def test_adapter_rejects_bad_site(self, mock_platform_config, monkeypatch):
         monkeypatch.setenv("ZULIP_SITE", "http://127.0.0.1")
@@ -45,7 +55,7 @@ class TestSsrfUrlValidation:
         monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
 
         from zulip.adapter import ZulipAdapter
-        with pytest.raises(ValueError, match="Invalid or unsafe"):
+        with pytest.raises(ValueError, match="refused insecure ZULIP_SITE"):
             ZulipAdapter(mock_platform_config)
 
     def test_adapter_rejects_file_scheme(self, mock_platform_config, monkeypatch):
@@ -57,7 +67,7 @@ class TestSsrfUrlValidation:
         monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
 
         from zulip.adapter import ZulipAdapter
-        with pytest.raises(ValueError, match="Invalid or unsafe"):
+        with pytest.raises(ValueError, match="invalid ZULIP_SITE"):
             ZulipAdapter(mock_platform_config)
 
 

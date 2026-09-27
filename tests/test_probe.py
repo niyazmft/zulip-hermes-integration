@@ -16,8 +16,16 @@ class TestNormalizeBaseUrl:
     def test_accepts_https(self):
         assert _normalize_base_url("https://example.zulipchat.com") == "https://example.zulipchat.com"
 
-    def test_accepts_http(self):
-        assert _normalize_base_url("http://internal.local") == "http://internal.local"
+    def test_rejects_http_by_default(self, monkeypatch):
+        """Issue #137: http would send the API key in cleartext."""
+        monkeypatch.delenv("ZULIP_ALLOW_INSECURE_HTTP", raising=False)
+        assert _normalize_base_url("http://internal.local") is None
+
+    def test_accepts_http_with_the_opt_in(self):
+        assert (
+            _normalize_base_url("http://internal.local", allow_insecure_http=True)
+            == "http://internal.local"
+        )
 
     def test_removes_trailing_slash(self):
         assert _normalize_base_url("https://example.com/") == "https://example.com"
@@ -102,7 +110,16 @@ class TestProbeZulip:
     async def test_probe_rejects_internal_url(self):
         result = await probe_zulip("http://127.0.0.1", "bot@z.com", "key")
         assert result["ok"] is False
-        assert "internal" in result["error"].lower() or "invalid" in result["error"].lower()
+        # Refused for the insecure scheme before the internal-host check is
+        # reached (Issue #137); either way the message names the opt-in so an
+        # operator learns the switch exists rather than guessing.
+        assert "ZULIP_ALLOW_INSECURE_HTTP" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_probe_rejects_internal_url_over_https(self):
+        result = await probe_zulip("https://192.168.1.10", "bot@z.com", "key")
+        assert result["ok"] is False
+        assert "ZULIP_ALLOW_INSECURE_HTTP" in result["error"]
 
     @pytest.mark.asyncio
     async def test_probe_rejects_localhost(self):

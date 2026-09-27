@@ -55,7 +55,12 @@ from .version import __version__, __repo__
 from .commands import handle_command, is_command
 from .policy import PolicyEngine
 from . import updater
-from .probe import probe_zulip, _normalize_base_url
+from .probe import (
+    INSECURE_HTTP_ENV,
+    base_url_error,
+    probe_zulip,
+    _normalize_base_url,
+)
 from .recovery import recover_interrupted_messages
 from .rate_limiter import RateLimiter
 from .audit_logger import AuditLogger
@@ -642,12 +647,21 @@ class ZulipAdapter(BasePlatformAdapter):
         # not the email local-part, so mention matching needs it.
         self.bot_full_name = ""
 
-        # Validate site URL to prevent SSRF before creating client
+        # Validate site URL before creating client: https-only unless the
+        # operator opted in, so the API key cannot leave in cleartext by
+        # accident. (Issue #137)
         if self.site:
             validated = _normalize_base_url(self.site)
             if not validated:
-                raise ValueError(f"Invalid or unsafe ZULIP_SITE: {self.site}")
+                raise ValueError(base_url_error(self.site))
             self.site = validated
+            if self.site.startswith("http://"):
+                logger.warning(
+                    "zulip: %s is set — the bot API key is sent unencrypted as "
+                    "HTTP Basic on every request [site=%s]",
+                    INSECURE_HTTP_ENV,
+                    mask_pii(self.site),
+                )
 
         _zulip = _import_zulip_sdk()
         if not _zulip:
@@ -2275,7 +2289,16 @@ def interactive_setup() -> None:
     if not site:
         print_warning("Site URL is required — skipping Zulip setup")
         return
-    save_env_value("ZULIP_SITE", site.rstrip("/").strip())
+
+    # https only, unless the operator already opted into insecure http
+    # (Issue #137). The opt-in is read at validation time rather than captured
+    # here, so a self-hosted http:// realm keeps working on later calls — the
+    # sibling's bug was the flag being discarded after this point.
+    normalized_site = _normalize_base_url(site)
+    if not normalized_site:
+        print_warning(base_url_error(site))
+        return
+    save_env_value("ZULIP_SITE", normalized_site)
 
     email = prompt(
         "Bot email address (e.g. hermes-bot@your-org.zulipchat.com)",

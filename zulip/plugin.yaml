@@ -65,6 +65,9 @@ optional_env:
   - name: ZULIP_BLOCK_SECRET_LEAKS
     description: "Refuse to send messages containing host credential values (default: true)"
     prompt: "Block outbound secret leaks"
+  - name: ZULIP_ALLOW_INSECURE_HTTP
+    description: "Allow an http:// (or private-host) ZULIP_SITE, where the API key is sent unencrypted. Default false"
+    prompt: "Allow insecure http (trusted self-hosted only)"
   - name: ZULIP_RESPONSE_PREFIX
     description: 'Prefix prepended to every outbound message (default: empty)'
     prompt: "Response prefix"
