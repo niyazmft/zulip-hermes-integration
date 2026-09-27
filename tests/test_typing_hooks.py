@@ -55,6 +55,15 @@ class TestTypingParamsForChat:
         params = adapter._typing_params_for_chat("dm:42:session:2", "start")
         assert params == {"op": "start", "type": "direct", "to": [42]}
 
+    def test_group_dm_chat_id_maps_to_every_recipient(self, adapter):
+        """Issue #154: a comma-separated recipient list must not kill typing."""
+        params = adapter._typing_params_for_chat("dm:7,42,99", "start")
+        assert params == {"op": "start", "type": "direct", "to": [7, 42, 99]}
+
+    def test_group_dm_session_rotation_suffix_is_stripped(self, adapter):
+        params = adapter._typing_params_for_chat("dm:7,42,99:session:3", "start")
+        assert params == {"op": "start", "type": "direct", "to": [7, 42, 99]}
+
     def test_stream_chat_id_maps_to_stream_typing_with_cached_topic(self, adapter):
         adapter._topic_cache["573423"] = "api-review"
         params = adapter._typing_params_for_chat("573423", "start")

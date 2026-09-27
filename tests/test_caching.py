@@ -120,7 +120,7 @@ class TestTargetCache:
     def test_parse_dm_target(self):
         info = _parse_target("dm:42")
         assert info["type"] == "dm"
-        assert info["user_id"] == 42
+        assert info["user_ids"] == [42]
 
     def test_parse_stream_target(self):
         info = _parse_target("573423")
@@ -131,7 +131,7 @@ class TestTargetCache:
         _parse_target("dm:99")
         cached = _parse_target("dm:99")
         assert cached["type"] == "dm"
-        assert cached["user_id"] == 99
+        assert cached["user_ids"] == [99]
 
     def test_stream_cache_hit(self):
         _parse_target("12345")
@@ -142,14 +142,14 @@ class TestTargetCache:
     def test_target_cache_lru_eviction(self):
         _clear_caches()
         for i in range(_MAX_TARGET_CACHE + 5):
-            _set_cached_target(f"dm:{i}", {"type": "dm", "user_id": i})
+            _set_cached_target(f"dm:{i}", {"type": "dm", "user_ids": [i]})
 
         assert len(_target_cache) == _MAX_TARGET_CACHE
 
     def test_target_access_moves_to_front(self):
         _clear_caches()
-        _set_cached_target("dm:1", {"type": "dm", "user_id": 1})
-        _set_cached_target("dm:2", {"type": "dm", "user_id": 2})
+        _set_cached_target("dm:1", {"type": "dm", "user_ids": [1]})
+        _set_cached_target("dm:2", {"type": "dm", "user_ids": [2]})
 
         # Access dm:1 (MRU)
         _parse_target("dm:1")
@@ -167,18 +167,44 @@ class TestTargetCache:
     def test_parse_dm_target_with_session_suffix(self):
         info = _parse_target("dm:1032616:session:1")
         assert info["type"] == "dm"
-        assert info["user_id"] == 1032616
+        assert info["user_ids"] == [1032616]
 
     def test_parse_dm_target_session_epoch_zero(self):
         info = _parse_target("dm:42:session:0")
         assert info["type"] == "dm"
-        assert info["user_id"] == 42
+        assert info["user_ids"] == [42]
 
     def test_parse_dm_target_session_suffix_cache_hit(self):
         _parse_target("dm:1032616:session:1")
         cached = _parse_target("dm:1032616:session:1")
         assert cached["type"] == "dm"
-        assert cached["user_id"] == 1032616
+        assert cached["user_ids"] == [1032616]
+
+    # Regression tests for Issue #154 — a group DM's address is the whole
+    # recipient set, or the reply starts a new 1:1 DM with just the sender.
+    def test_parse_group_dm_target(self):
+        info = _parse_target("dm:7,42,99")
+        assert info["type"] == "dm"
+        assert info["user_ids"] == [7, 42, 99]
+
+    def test_parse_group_dm_target_with_session_suffix(self):
+        info = _parse_target("dm:7,42,99:session:2")
+        assert info["type"] == "dm"
+        assert info["user_ids"] == [7, 42, 99]
+
+    def test_parse_group_dm_target_is_cached(self):
+        _parse_target("dm:7,42,99")
+        cached = _parse_target("dm:7,42,99")
+        assert cached["user_ids"] == [7, 42, 99]
+
+    def test_parse_empty_dm_target_rejected(self):
+        with pytest.raises(ValueError):
+            _parse_target("dm:")
+
+    def test_parse_dm_target_with_trailing_comma(self):
+        """Blank segments are ignored rather than producing a bogus id."""
+        info = _parse_target("dm:42,")
+        assert info["user_ids"] == [42]
 
 
 class TestCacheClear:
@@ -192,7 +218,7 @@ class TestCacheClear:
 
         mod = FakeZulipModule()
         _get_cached_client("https://x.com", "a@test.com", "key", _zulip_mod=mod)
-        _set_cached_target("dm:1", {"type": "dm", "user_id": 1})
+        _set_cached_target("dm:1", {"type": "dm", "user_ids": [1]})
 
         assert len(_client_cache) > 0
         assert len(_target_cache) > 0

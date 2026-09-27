@@ -157,6 +157,49 @@ class TestAdapterIntegration:
         assert "Bot Commands:" in last_msg["content"]
 
     @pytest.mark.asyncio
+    async def test_command_reply_preserves_group_dm_recipients(
+        self, mock_platform_config, monkeypatch
+    ):
+        """Issue #154: /help in a group DM must answer the whole conversation."""
+        import zulip.adapter as adapter_module
+        from zulip.adapter import ZulipAdapter
+        from tests.conftest import MockZulipClient
+
+        monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
+        monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
+        monkeypatch.setenv("ZULIP_API_KEY", "key")
+        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+
+        class MockZulipModule:
+            class Client:
+                def __init__(self, **kwargs):
+                    self._client = MockZulipClient(**kwargs)
+                def __getattr__(self, name):
+                    return getattr(self._client, name)
+
+        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        adapter = ZulipAdapter(mock_platform_config)
+
+        await adapter._handle_message(
+            {
+                "id": 123,
+                "type": "private",
+                "sender_id": 42,
+                "sender_email": "user@test.com",
+                "sender_full_name": "User",
+                "display_recipient": [
+                    {"id": 7, "email": "bot@test.com"},
+                    {"id": 42, "email": "user@test.com"},
+                    {"id": 99, "email": "other@test.com"},
+                ],
+                "content": "/help",
+            }
+        )
+
+        last_msg = adapter.client._sent_messages[-1]
+        assert last_msg["to"] == [7, 42, 99]
+
+    @pytest.mark.asyncio
     async def test_non_command_goes_to_ai(self, mock_platform_config, monkeypatch):
         import zulip.adapter as adapter_module
         from zulip.adapter import ZulipAdapter

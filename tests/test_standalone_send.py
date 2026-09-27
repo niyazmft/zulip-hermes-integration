@@ -152,6 +152,18 @@ class TestDmDelivery:
             {"type": "private", "to": [8], "content": "ping"}
         )
 
+    @pytest.mark.asyncio
+    async def test_group_dm_target_addresses_every_recipient(self, env):
+        """Issue #154: ``deliver: zulip:dm:7,42,99`` reaches the whole group."""
+        client = _fake_client()
+        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+            result = await _standalone_send(_pconfig(), "dm:7,42,99", "ping")
+
+        assert result == {"success": True, "message_id": "4242"}
+        client.send_message.assert_called_once_with(
+            {"type": "private", "to": [7, 42, 99], "content": "ping"}
+        )
+
 
 class TestCredentials:
     @pytest.mark.asyncio
