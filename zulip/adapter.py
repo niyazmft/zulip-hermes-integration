@@ -59,6 +59,13 @@ from .probe import probe_zulip, _normalize_base_url
 from .recovery import recover_interrupted_messages
 from .rate_limiter import RateLimiter
 from .audit_logger import AuditLogger
+from .secret_guard import (
+    KnownSecret,
+    block_secret_leaks_enabled,
+    collect_known_secrets,
+    describe_leaked_secrets,
+    find_leaked_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -624,6 +631,13 @@ class ZulipAdapter(BasePlatformAdapter):
         self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
         self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
         self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
+
+        # Outbound secret guard (Issue #136): the platform extra is walked for
+        # credential-shaped keys, and the adapter's own api_key is registered
+        # explicitly — those are exactly the values a prompt-injected agent
+        # would paste into the room.
+        self._platform_extra = extra
+        self._known_secrets_cache: Optional[list[KnownSecret]] = None
         # Populated on connect. Zulip renders mentions from the display name,
         # not the email local-part, so mention matching needs it.
         self.bot_full_name = ""
@@ -1998,6 +2012,53 @@ class ZulipAdapter(BasePlatformAdapter):
             return widget_result
         return context_result or SendResult(success=False, message_id="")
 
+    def _known_secrets(self) -> list[KnownSecret]:
+        """Credential values that must never be transmitted (Issue #136).
+
+        Memoised: the credential set does not change at runtime, and re-walking
+        the config and environment on every send would be wasted work.
+        """
+        if self._known_secrets_cache is None:
+            self._known_secrets_cache = collect_known_secrets(
+                self._platform_extra,
+                extra=[("zulip.api_key", self.api_key)],
+                env=os.environ,
+            )
+        return self._known_secrets_cache
+
+    def _detect_secret_leak(self, content: str) -> list[KnownSecret]:
+        """Credentials ``content`` would transmit, if the guard is enabled."""
+        if not block_secret_leaks_enabled():
+            return []
+        return find_leaked_secrets(content, self._known_secrets())
+
+    async def _refuse_secret_leak(
+        self, hits: list[KnownSecret], chat_id: str
+    ) -> str:
+        """Audit a refused send, naming only *where* the credential came from.
+
+        The value itself is never logged or audited: a message describing a
+        leak must not become one. (Issue #136)
+        """
+        summary = describe_leaked_secrets(hits)
+        logger.error(
+            format_zulip_log(
+                "zulip outbound blocked: message contained host credentials",
+                chat_id=mask_pii(str(chat_id)),
+                leaked=summary,
+            )
+        )
+        await self._audit_logger.log_event(
+            "secret_leak_blocked",
+            {
+                "chat_id": mask_pii(str(chat_id)),
+                "direction": "outbound",
+                "sources": [hit.name for hit in hits],
+                "count": len(hits),
+            },
+        )
+        return summary
+
     async def send(
         self,
         chat_id: str,
@@ -2009,6 +2070,17 @@ class ZulipAdapter(BasePlatformAdapter):
         """Send message to a Zulip stream or DM, with chunking, topic directives, and files."""
         metadata = metadata or {}
         media_files = media_files or []
+
+        # Outbound secret guard (Issue #136). Checked before media upload, so a
+        # message we are about to refuse cannot leave a stray upload behind.
+        leaked = self._detect_secret_leak(content)
+        if leaked:
+            summary = await self._refuse_secret_leak(leaked, chat_id)
+            logger.error(
+                "zulip send refused: %s. Remove it and rotate the credential.",
+                summary,
+            )
+            return SendResult(success=False, message_id="")
 
         # Upload files first
         uploaded_urls = []
@@ -2312,6 +2384,49 @@ async def _standalone_send(
                 f"or 'dm:<user_id>[,<user_id>…]'"
             )
         }
+
+    # Outbound secret guard (Issue #136). The out-of-process path needs this
+    # just as much as send(): cron-injected text can carry a credential too.
+    if block_secret_leaks_enabled():
+        leaked = find_leaked_secrets(
+            message,
+            collect_known_secrets(
+                getattr(pconfig, "extra", None),
+                extra=[("zulip.api_key", api_key)],
+                env=os.environ,
+            ),
+        )
+        if leaked:
+            summary = describe_leaked_secrets(leaked)
+            logger.error(
+                "zulip standalone delivery blocked: message contained host "
+                "credentials [%s]",
+                summary,
+            )
+            try:
+                await AuditLogger(
+                    data_dir=os.environ.get(
+                        "HERMES_DATA_DIR", os.path.expanduser("~/.hermes")
+                    ),
+                    account_id=email or "default",
+                ).log_event(
+                    "secret_leak_blocked",
+                    {
+                        "chat_id": mask_pii(str(chat_id)),
+                        "direction": "outbound",
+                        "transport": "standalone",
+                        "sources": [hit.name for hit in leaked],
+                        "count": len(leaked),
+                    },
+                )
+            except Exception:
+                pass  # auditing must never break the refusal itself
+            return {
+                "error": (
+                    f"Refusing to deliver: the message contains {summary}. "
+                    f"Remove it and rotate the credential."
+                )
+            }
 
     _connect_timeout, _read_timeout, send_timeout = _resolve_timeouts()
     content = message or ""
