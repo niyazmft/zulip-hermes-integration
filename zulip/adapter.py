@@ -11,6 +11,7 @@ import logging
 import os
 import tempfile
 import time
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Any, overload
@@ -75,6 +76,35 @@ from .recovery import recover_interrupted_messages
 from .rate_limiter import RateLimiter
 from .audit_logger import AuditLogger
 from .activity_trace import ActivityTrace, TraceConfig
+
+# Per-task session context published by the gateway (epic #139 / #159). Guarded
+# like every other host symbol: on a gateway without it, tool steps simply
+# cannot be attributed and are dropped rather than guessed at.
+try:
+    from gateway.session_context import get_session_env as _host_get_session_env
+except ImportError:  # pragma: no cover - gateways without session context
+    _host_get_session_env = None  # type: ignore[assignment]
+
+# Live adapters, so the plugin-level ``post_tool_call`` callback — registered in
+# ``register(ctx)``, before any adapter exists — can find the one whose trace
+# owns the current work item.
+_LIVE_ADAPTERS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def _on_post_tool_call(**kwargs: Any) -> None:
+    """Observer for finished tool calls (epic #139 / #159).
+
+    Deliberately **synchronous**: the host dispatches this hook through the sync
+    ``invoke_hook``, so an ``async def`` here would return a coroutine nobody
+    awaits and silently do nothing. It only records state — the trace's own
+    coalesced flush performs the I/O.
+    """
+    for adapter in list(_LIVE_ADAPTERS):
+        try:
+            adapter.record_tool_step(**kwargs)
+        except Exception:
+            # A trace must never interfere with the agent's tool call.
+            continue
 from .secret_guard import (
     KnownSecret,
     block_secret_leaks_enabled,
@@ -767,6 +797,10 @@ class ZulipAdapter(BasePlatformAdapter):
         self._trace_start_tasks: dict[str, asyncio.Task] = {}
         self._trace_started: dict[str, float] = {}
         self._trace_replied: set[str] = set()
+        # Aliases (host session key, chat+topic route) -> trace key, so a tool
+        # callback running in another thread/task can still find its trace.
+        self._trace_sessions: dict[str, str] = {}
+        _LIVE_ADAPTERS.add(self)
         if self._trace_cfg.enabled and ProcessingOutcome is None:
             logger.warning(
                 "ZULIP_ACTIVITY_TRACE is enabled but this gateway does not expose "
@@ -938,6 +972,99 @@ class ZulipAdapter(BasePlatformAdapter):
         if self._traces:
             self._trace_replied.add(self._trace_key(chat_id, metadata))
 
+    def _session_key_for_event(self, event: Any) -> Optional[str]:
+        """The host's own session key for an event, when it exposes one.
+
+        Reused rather than reimplemented: a second key derivation would drift
+        from the host's, which is the #143 lesson. Returns None when the host
+        offers no such method, so callers fall back to the route alias.
+        """
+        getter = getattr(self, "_event_session_key", None)
+        if not callable(getter):
+            return None
+        try:
+            key = getter(event)
+        except Exception:
+            return None
+        return str(key) if key else None
+
+    def _session_aliases(self, event: Any) -> list[str]:
+        """Aliases that identify this event's run, as seen from the adapter."""
+        aliases: list[str] = []
+        session_key = self._session_key_for_event(event)
+        if session_key:
+            aliases.append(f"key:{session_key}")
+        source = getattr(event, "source", None)
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if chat_id:
+            thread = _metadata_topic(getattr(event, "metadata", None)) or ""
+            aliases.append(f"route:{chat_id}\x00{thread}")
+        return aliases
+
+    @staticmethod
+    def _session_aliases_from_context() -> list[str]:
+        """The same aliases, read from the *current* task's session context.
+
+        Tool callbacks run outside the adapter, so this is how they recover
+        which run they belong to. The hook payload's ``session_id`` is the
+        agent-side durable id and is deliberately **not** used: it is derived
+        differently from the adapter session key, so matching on it would be a
+        guess.
+        """
+        if _host_get_session_env is None:
+            return []
+        try:
+            key = _host_get_session_env("HERMES_SESSION_KEY") or ""
+            chat_id = _host_get_session_env("HERMES_SESSION_CHAT_ID") or ""
+            thread = _host_get_session_env("HERMES_SESSION_THREAD_ID") or ""
+        except Exception:
+            return []
+        aliases: list[str] = []
+        if key:
+            aliases.append(f"key:{key}")
+        if chat_id:
+            aliases.append(f"route:{chat_id}\x00{thread}")
+        return aliases
+
+    def record_tool_step(
+        self,
+        *,
+        tool_name: str = "",
+        status: Optional[str] = None,
+        duration_ms: int = 0,
+        error_type: Optional[str] = None,
+        **_: Any,
+    ) -> None:
+        """Attach a finished tool call to its work item's trace.
+
+        A step whose run cannot be identified is **dropped**, never guessed into
+        some other topic: a trace that narrates another conversation's work is
+        worse than a trace with a gap.
+        """
+        if not self._trace_cfg.enabled or not self._trace_sessions:
+            return
+
+        key = None
+        for alias in self._session_aliases_from_context():
+            key = self._trace_sessions.get(alias)
+            if key is not None:
+                break
+        if key is None:
+            return  # unattributable: drop rather than guess
+
+        trace = self._traces.get(key)
+        if trace is None:
+            return
+
+        ok = (status or "ok") != "error"
+        detail = ""
+        if ok and duration_ms:
+            detail = f"{duration_ms} ms"
+        elif not ok:
+            detail = error_type or "failed"
+        step = trace.step(str(tool_name or "tool"))
+        trace.complete(step, ok=ok, detail=detail)
+
     def _start_trace(self, event: Any) -> None:
         """Begin a trace for a work item. Never raises, never blocks the run."""
         if not self._trace_cfg.enabled:
@@ -977,6 +1104,8 @@ class ZulipAdapter(BasePlatformAdapter):
         trace = ActivityTrace(post, edit, self._trace_cfg)
         self._traces[key] = trace
         self._trace_started[key] = time.monotonic()
+        for alias in self._session_aliases(event):
+            self._trace_sessions[alias] = key
         # Posted in the background: that is one API round-trip and the agent run
         # must not wait on it. ``_finish_trace`` awaits this task before
         # finalizing, so a fast turn cannot leave a stale "Working" board.
@@ -1007,6 +1136,9 @@ class ZulipAdapter(BasePlatformAdapter):
                 pass  # a failed post already dropped the trace
 
         started = self._trace_started.pop(key, None)
+        for alias, mapped in list(self._trace_sessions.items()):
+            if mapped == key:
+                self._trace_sessions.pop(alias, None)
         elapsed = max(0.0, time.monotonic() - started) if started else 0.0
         replied = key in self._trace_replied
         self._trace_replied.discard(key)
@@ -2707,6 +2839,21 @@ async def _standalone_send(
 
 def register(ctx):
     """Plugin entry point — called by the Hermes plugin system."""
+    # Activity-trace tool checkpoints (epic #139 / #159).
+    #
+    # Registered ONLY when the trace is enabled: any registration flips
+    # has_hook("post_tool_call") true and switches on host-side dispatch, so
+    # gating by *not registering* is what keeps a disabled trace free.
+    #
+    # ``pre_tool_call`` is deliberately never registered — it is fail-closed
+    # (it returns (block_message, modified_args)), so a status observer could
+    # block the agent's own tool call.
+    if TraceConfig.from_env().enabled:
+        try:
+            ctx.register_hook("post_tool_call", _on_post_tool_call)
+        except Exception as e:
+            logger.warning("zulip: could not register post_tool_call hook: %s", e)
+
     ctx.register_platform(
         name="zulip",
         label="Zulip",
