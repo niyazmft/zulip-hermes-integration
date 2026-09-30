@@ -1,0 +1,69 @@
+name: compat
+
+# Real-host compatibility gate (issue #141).
+#
+# Kept out of ci.yml on purpose: it installs a real Hermes host (network + a
+# large dependency tree), so it must not slow the fast unit lane. The cheap
+# half of the same guarantee — guarded optional imports and manifest ↔ code env
+# parity — runs there instead. ci.yml is intentionally untouched.
+#
+# The host ref comes from repository variable/secret HERMES_COMPAT_REF (or the
+# hermes_ref dispatch input). If no ref is configured the job fails with a
+# message saying so rather than silently passing.
+#
+# Note: public PyPI currently stops below this plugin's __min_hermes__ (0.18.2),
+# so configure HERMES_COMPAT_REPO (a git repo, e.g. the private host repo) if
+# the floor build is not on the default upstream.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: "Hermes ref (tag/commit) to install; overrides HERMES_COMPAT_REF"
+        required: false
+        type: string
+  schedule:
+    # Weekly drift check: a host change under a fixed ref must fail here, not
+    # in production.
+    - cron: "0 6 * * 1"
+
+jobs:
+  real-host-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve Hermes ref
+        id: hermes-ref
+        env:
+          INPUT_REF: ${{ inputs.hermes_ref }}
+          VAR_REF: ${{ vars.HERMES_COMPAT_REF }}
+          SECRET_REF: ${{ secrets.HERMES_COMPAT_REF }}
+        run: |
+          ref="${INPUT_REF:-${VAR_REF:-${SECRET_REF}}}"
+          if [ -z "$ref" ]; then
+            echo "::error::HERMES_COMPAT_REF is not set. Set the repository variable or secret HERMES_COMPAT_REF (or pass the hermes_ref input) to the Hermes tag/commit to test against."
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Testing against Hermes ref: ${ref}"
+
+      - name: Install pinned Hermes host
+        env:
+          HERMES_COMPAT_REPO: ${{ vars.HERMES_COMPAT_REPO || 'NousResearch/hermes-agent' }}
+          HERMES_REF: ${{ steps.hermes-ref.outputs.ref }}
+        run: |
+          python -m pip install --upgrade pip
+          # PEP 508 direct reference: installs the host at the pinned ref and
+          # pulls its dependencies, so gateway.* imports resolve for real.
+          pip install "hermes-agent @ git+https://github.com/${HERMES_COMPAT_REPO}@${HERMES_REF}"
+
+      - name: Run real-host compatibility gate
+        # Exits non-zero with an actionable message naming the missing gateway
+        # symbol when the host is present but incompatible.
+        run: python scripts/check_compat.py

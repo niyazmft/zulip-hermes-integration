@@ -101,3 +101,27 @@ optional_env:
   - name: ZULIP_STREAM_OVERRIDES
     description: 'Per-stream chatmode overrides as a JSON object, e.g. {"bot lab": {"chatmode": "onmessage"}}'
     prompt: "Per-stream chatmode overrides (JSON)"
+  - name: ZULIP_DM_POLICY
+    description: 'Who can DM the bot: open, allowlist, disabled (default: open)'
+    prompt: "DM policy"
+  - name: ZULIP_ALLOW_ALL_USERS
+    description: "Skip the allowed-users check and accept any Zulip user (default: false)"
+    prompt: "Allow all users"
+  - name: ZULIP_HOME_CHANNEL
+    description: "Default stream id for cron `deliver: zulip` targets (e.g. 573423)"
+    prompt: "Default cron stream id"
+  - name: ZULIP_MAX_MESSAGE_LENGTH
+    description: "Hard cap on a single outbound message in characters, 0 disables (default: 20000)"
+    prompt: "Max outbound message length"
+  - name: ZULIP_MAX_MESSAGES_PER_MINUTE
+    description: "Maximum outbound messages per minute (default: 60)"
+    prompt: "Max messages per minute"
+  - name: ZULIP_DM_SESSION_TURN_LIMIT
+    description: "Rotate the DM session every N turns to limit context growth, 0 disables (default: 20)"
+    prompt: "DM session turn limit"
+  - name: ZULIP_TYPING_DELAY_SECONDS
+    description: "Legacy typing-indicator duration in seconds; typing is now owned by the gateway keep-typing loop"
+    prompt: "Typing delay (seconds)"
+  - name: HERMES_MEDIA_ALLOW_DIRS
+    description: "Extra directories the gateway may read inbound media from (os.pathsep- or comma-separated absolute paths)"
+    prompt: "Media allow dirs"

@@ -1,0 +1,492 @@
+# Parity matrix: zulip-hermes-integration (Python) <-> openclaw-zulip-bridge (TypeScript).
+#
+# Machine-readable source of truth. The prose spec and the rendered table live in
+# docs/PARITY.md; scripts/parity_check.py validates this file and prints the
+# sister-only / hermes-only delta. See "keyed off merge state on main" below.
+#
+# Status is keyed off *merge state on `main`*, never releases. On both sides a
+# feature can be merged and unreleased (the sibling's v2026.9.1 pre-release notes
+# described work that was not in that tag), so "released" is not a safe proxy:
+#
+#   both         merged on `main` in both repos
+#   sister-only  merged on `main` in openclaw-zulip-bridge (or a tracked fork),
+#                not yet merged here
+#   hermes-only  merged on `main` here, not verified on `main` in the sibling
+#
+# Update the status the moment a parity item lands (or is verified), not at
+# release time. Keep the rendered table in docs/PARITY.md in sync.
+
+spec_version: "0.1.0"
+keyed_off: merge-state-on-main
+hermes_repo: zulip-hermes-integration
+sister_repo: openclaw-zulip-bridge
+statuses: [both, sister-only, hermes-only]
+last_reviewed: "2026-09-30"
+
+# Capability matrix ------------------------------------------------------------
+# `refs.hermes` / `refs.sister` point at the issue or file that proves the
+# capability is on `main` on that side.
+capabilities:
+  - id: message-length-cap
+    title: Outbound message-length cap and chunking
+    status: both
+    refs:
+      hermes: "zulip/adapter.py#_resolve_max_message_length"
+      sister: "src/config-schema.ts#maxMessageLength"
+    notes: "Ported from the sibling in 1.9.1 (#126)."
+
+  - id: relative-upload-resolution
+    title: Relative markdown upload paths resolved against the realm base URL
+    status: both
+    refs:
+      hermes: "#126"
+      sister: "src/zulip/uploads.ts"
+    notes: "Ported from the sibling in 1.9.1 (#126)."
+
+  - id: secret-guard
+    title: Outbound secret guard — refuse to transmit host credential values
+    status: both
+    refs:
+      hermes: "#136"
+      sister: "src/zulip/secret-guard.ts"
+    notes: "Sibling shipped first; landed here in #171."
+
+  - id: https-policy
+    title: HTTPS required for ZULIP_SITE, with an explicit insecure-http opt-in
+    status: both
+    refs:
+      hermes: "#137"
+      sister: "src/config-schema.ts#allowInsecureHttp"
+    notes: "Landed here in #172 (zulip/probe.py)."
+
+  - id: upload-denylist
+    title: Upload denylist for credential / config / audit / session files
+    status: both
+    refs:
+      hermes: "#138"
+      sister: "src/zulip/uploads.ts"
+    notes: "Landed here in #172 (zulip/media.py)."
+
+  - id: activity-trace
+    title: Progressive activity trace — one status message per request, edited in place
+    status: both
+    refs:
+      hermes: "#139"
+      sister: "src/zulip/activity-trace.ts"
+    notes: "Landed here across #173/#174/#175/#176."
+
+  - id: dedupe-store
+    title: Persistent dedupe store (TTL + LRU, debounced atomic save)
+    status: both
+    refs:
+      hermes: "zulip/dedupe_store.py"
+      sister: "src/zulip/dedupe-store.ts"
+    notes: "Identical defaults: 5 min TTL, 2000 entries, 5000 ms save debounce."
+
+  - id: audit-logger
+    title: Rotating JSON-lines audit log for security-relevant events
+    status: both
+    refs:
+      hermes: "zulip/audit_logger.py"
+      sister: "src/zulip/audit-logger.ts"
+    notes: "Same rotation policy (1 MB / 3 files) but the event shape drifted — see PARITY.md §5.5."
+
+  - id: traffic-policy
+    title: DM / group / chatmode traffic policy
+    status: both
+    refs:
+      hermes: "zulip/policy.py"
+      sister: "src/zulip/policy.ts"
+
+  - id: reactions
+    title: Emoji reaction status indicators (start / success / error / clear)
+    status: both
+    refs:
+      hermes: "zulip/reactions.py"
+      sister: "src/zulip/reactions.ts"
+
+  - id: rate-limiting
+    title: Per-sender sliding-window rate limit
+    status: both
+    refs:
+      hermes: "zulip/rate_limiter.py"
+      sister: "src/zulip/audit-logger.ts#rate_limit_exceeded"
+    notes: "maxMessagesPerMinute knob on both sides."
+
+  - id: group-dm-recipients
+    title: Group DM replies reach every recipient, not just the sender
+    status: hermes-only
+    refs:
+      hermes: "#154"
+    notes: >-
+      Landed here in #169 from a fork; sibling parity is not yet verified.
+      Reclassify to `both` only after a sibling-side check.
+
+  # --- sister-only: merged in the sibling (or a tracked fork), not here -------
+  - id: delivery-outcome-audit
+    title: Audit delivery outcomes (delivered / skipped+reason / empty / dispatched)
+    status: sister-only
+    refs:
+      hermes: "#145"
+
+  - id: host-compat-ci-gates
+    title: Host-compat and outbound-payload CI gates
+    status: sister-only
+    refs:
+      hermes: "#141"
+      sister: "scripts/check-compat.js"
+    notes: "Sibling also runs check:tier2, ClawScan and npm-audit/gitleaks gates."
+
+  - id: security-md
+    title: SECURITY.md threat model (credential handling, explicit non-guarantees)
+    status: sister-only
+    refs:
+      hermes: "#142"
+      sister: "SECURITY.md"
+
+  - id: history-aware-context
+    title: History-aware context — answer from bounded stream / topic history
+    status: sister-only
+    refs:
+      hermes: "#148"
+      sister: "src/zulip/history-context.ts"
+
+  - id: reaction-triggers
+    title: In-channel action triggers — a reaction on the bot's message means "go"
+    status: sister-only
+    refs:
+      hermes: "#149"
+      sister: "src/zulip/reaction-triggers.ts"
+
+  - id: actionable-refs
+    title: Actionable refs — validated clickable PR / commit / CI links
+    status: sister-only
+    refs:
+      hermes: "#150"
+      sister: "src/zulip/refs.ts"
+
+  - id: per-session-queue
+    title: Per-session message queue
+    status: sister-only
+    refs:
+      hermes: "#151"
+      sister: "src/zulip/session-queue.ts"
+
+  - id: inbound-hygiene
+    title: Inbound hygiene — strip reasoning blocks, cache display names, drop own messages
+    status: sister-only
+    refs:
+      hermes: "#152"
+    notes: "Filed from a fork."
+
+  - id: soft-gate-observe
+    title: Soft gate + observe group — watch a stream without replying to everything
+    status: sister-only
+    refs:
+      hermes: "#153"
+    notes: "Filed from a fork."
+
+  - id: sticky-topic-engagement
+    title: Sticky topic engagement — keep responding after a mention until the TTL
+    status: sister-only
+    refs:
+      hermes: "#155"
+    notes: "Filed from a fork."
+
+  - id: profile-scoped-state
+    title: Settings and state scoped to the Hermes profile under multiplexing
+    status: sister-only
+    refs:
+      hermes: "#156"
+    notes: "Filed from a fork."
+
+  - id: session-archive-repair
+    title: Session archive repair for hosts without hard links
+    status: sister-only
+    refs:
+      sister: "src/zulip/session-archive-repair.ts"
+
+  # --- hermes-only: merged here, not verified in the sibling ------------------
+  - id: exec-approval-buttons
+    title: Native exec-approval buttons via the zform widget
+    status: hermes-only
+    refs:
+      hermes: "#131"
+    notes: "The sibling has no zform / interactive-widget send path."
+
+  - id: admin-actions
+    title: Admin actions (/streams, /user, /pin, /unpin)
+    status: hermes-only
+    refs:
+      hermes: "zulip/admin_actions.py"
+      sister: "src/actions-admin.ts"
+    notes: >-
+      The sibling exposes a different action set (create / rename stream, member
+      info) behind `enableAdminActions` (default false); the /streams /user /pin
+      /unpin command surface is Hermes-only.
+
+  - id: per-topic-sessions
+    title: Per-topic conversation sessions
+    status: hermes-only
+    refs:
+      hermes: "zulip/adapter.py#_topic_sessions_enabled"
+
+  - id: stream-overrides
+    title: Per-stream chatmode overrides (ZULIP_STREAM_OVERRIDES)
+    status: hermes-only
+    refs:
+      hermes: "zulip/adapter.py#_resolve_stream_overrides"
+
+  - id: standalone-cron-delivery
+    title: Out-of-process cron delivery (standalone_sender_fn)
+    status: hermes-only
+    refs:
+      hermes: "zulip/adapter.py#_standalone_send"
+
+  - id: self-updater-checksums
+    title: Self-updater with a checksums.txt integrity manifest
+    status: hermes-only
+    refs:
+      hermes: "zulip/updater.py"
+      sister: "absent"
+
+# Config keys -----------------------------------------------------------------
+# Every ZULIP_* knob read by this plugin, plus the sibling-only keys we do not
+# implement. `derivable` is true when `sibling_key` is exactly what the naming
+# rule in PARITY.md §5.2 produces from `env`; false means the pair is an
+# exception that the rule cannot reproduce and must be carried explicitly.
+config:
+  # --- required -------------------------------------------------------------
+  - env: ZULIP_API_KEY
+    sibling_key: apiKey
+    derivable: true
+    status: both
+  - env: ZULIP_EMAIL
+    sibling_key: email
+    derivable: true
+    status: both
+  - env: ZULIP_SITE
+    sibling_key: site
+    derivable: true
+    status: both
+    notes: "The sibling also accepts `url` and `realm` aliases."
+
+  # --- access control -------------------------------------------------------
+  - env: ZULIP_ALLOWED_USERS
+    sibling_key: allowFrom
+    derivable: false
+    status: both
+    notes: "Named `allowFrom` in the sibling; the rule cannot derive it."
+  - env: ZULIP_DM_POLICY
+    sibling_key: dmPolicy
+    derivable: true
+    status: both
+  - env: ZULIP_GROUP_POLICY
+    sibling_key: groupPolicy
+    derivable: true
+    status: both
+  - env: ZULIP_GROUP_ALLOW_FROM
+    sibling_key: groupAllowFrom
+    derivable: true
+    status: both
+
+  # --- behavior -------------------------------------------------------------
+  - env: ZULIP_REACTIONS_ENABLED
+    sibling_key: reactions.enabled
+    derivable: false
+    status: both
+    notes: "Sibling nests reaction knobs under `reactions`."
+  - env: ZULIP_REACTION_CLEAR_ON_FINISH
+    sibling_key: reactions.clearOnFinish
+    derivable: false
+    status: both
+  - env: ZULIP_REACTION_START
+    sibling_key: reactions.onStart
+    derivable: false
+    status: both
+  - env: ZULIP_REACTION_SUCCESS
+    sibling_key: reactions.onSuccess
+    derivable: false
+    status: both
+  - env: ZULIP_REACTION_ERROR
+    sibling_key: reactions.onError
+    derivable: false
+    status: both
+  - env: ZULIP_TEXT_CHUNK_LIMIT
+    sibling_key: textChunkLimit
+    derivable: true
+    status: both
+  - env: ZULIP_CHUNK_MODE
+    sibling_key: chunkMode
+    derivable: true
+    status: both
+  - env: ZULIP_MEDIA_MAX_MB
+    sibling_key: mediaMaxMb
+    derivable: true
+    status: both
+  - env: ZULIP_CHATMODE
+    sibling_key: chatmode
+    derivable: true
+    status: both
+  - env: ZULIP_ONCHAR_PREFIXES
+    sibling_key: oncharPrefixes
+    derivable: true
+    status: both
+  - env: ZULIP_REQUIRE_MENTION
+    sibling_key: requireMention
+    derivable: true
+    status: both
+  - env: ZULIP_STREAMS
+    sibling_key: streams
+    derivable: true
+    status: both
+  - env: ZULIP_RESPONSE_PREFIX
+    sibling_key: responsePrefix
+    derivable: true
+    status: both
+  - env: ZULIP_BLOCK_STREAMING
+    sibling_key: blockStreaming
+    derivable: true
+    status: both
+    in_plugin_yaml: false
+  - env: ZULIP_DM_SESSION_TURN_LIMIT
+    sibling_key: dmSessionTurnLimit
+    derivable: true
+    status: both
+    in_plugin_yaml: false
+  - env: ZULIP_MAX_MESSAGES_PER_MINUTE
+    sibling_key: maxMessagesPerMinute
+    derivable: true
+    status: both
+    in_plugin_yaml: false
+  - env: ZULIP_MAX_MESSAGE_LENGTH
+    sibling_key: maxMessageLength
+    derivable: true
+    status: both
+    in_plugin_yaml: false
+
+  # --- security -------------------------------------------------------------
+  - env: ZULIP_BLOCK_SECRET_LEAKS
+    sibling_key: blockSecretLeaks
+    derivable: true
+    status: both
+  - env: ZULIP_ALLOW_INSECURE_HTTP
+    sibling_key: allowInsecureHttp
+    derivable: true
+    status: both
+
+  # --- activity trace -------------------------------------------------------
+  - env: ZULIP_ACTIVITY_TRACE
+    sibling_key: activityTrace
+    derivable: true
+    status: both
+  - env: ZULIP_TRACE_COALESCE_MS
+    sibling_key: traceCoalesceMs
+    derivable: true
+    status: both
+  - env: ZULIP_TRACE_MAX_RATE
+    sibling_key: traceMaxRate
+    derivable: true
+    status: both
+  - env: ZULIP_TRACE_MAX_CONTENT
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+    notes: "No sibling equivalent."
+  - env: ZULIP_TRACE_TOOL_MATCHER
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+    notes: "No sibling equivalent."
+
+  # --- hermes-only knobs ----------------------------------------------------
+  - env: ZULIP_TOPIC_SESSIONS
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+  - env: ZULIP_STREAM_OVERRIDES
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+  - env: ZULIP_CONNECT_TIMEOUT
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+    notes: "The sibling has no per-call timeout knobs."
+  - env: ZULIP_READ_TIMEOUT
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+  - env: ZULIP_SEND_TIMEOUT
+    sibling_key: null
+    derivable: false
+    status: hermes-only
+
+  # --- sister-only knobs ----------------------------------------------------
+  - env: null
+    sibling_key: historyContext
+    derivable: false
+    status: sister-only
+    notes: "Part of #148."
+  - env: null
+    sibling_key: historyMaxMessages
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: historyWindowHours
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: historyMaxChars
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: renderRefs
+    derivable: false
+    status: sister-only
+    notes: "Part of #150."
+  - env: null
+    sibling_key: reactionTriggers
+    derivable: false
+    status: sister-only
+    notes: "Part of #149."
+  - env: null
+    sibling_key: reactionTriggerAnyMessage
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: queueMode
+    derivable: false
+    status: sister-only
+    notes: "Part of #151."
+  - env: null
+    sibling_key: queueCap
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: sessionArchiveRepair
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: enableAdminActions
+    derivable: false
+    status: sister-only
+    notes: "Sibling gates its (different) admin action set behind this flag."
+  - env: null
+    sibling_key: autoSendOnMissingTool
+    derivable: false
+    status: sister-only
+  - env: null
+    sibling_key: showThinkingPlaceholder
+    derivable: false
+    status: sister-only
+    notes: "Placeholder editing is always-on here."
+  - env: null
+    sibling_key: enableSessionRecovery
+    derivable: false
+    status: sister-only
+    notes: "Recovery is always-on here (zulip/recovery.py, zulip/queue_manager.py)."
+  - env: null
+    sibling_key: blockStreamingCoalesce
+    derivable: false
+    status: sister-only

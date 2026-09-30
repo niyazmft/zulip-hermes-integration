@@ -17,6 +17,9 @@
 > sovereign, no chat-vendor lock-in. The pattern Slack and Block's Buzz are racing to
 > productize, delivered **open source** and **self-hosted**.
 
+> 📊 Parity with the sibling is **tracked, not assumed** — see [docs/PARITY.md](docs/PARITY.md)
+> for the capability matrix and the shared adapter spec.
+
 ---
 
 ## 🚀 Quickstart — Running in 2 Minutes
@@ -190,12 +193,14 @@ All synchronous SDK calls are wrapped with `asyncio.to_thread()` to keep the gat
 
 ### Gateway compatibility
 
-| Hermes gateway | Native exec-approval buttons |
-|----------------|------------------------------|
-| **≥ 0.21.3** (`v2026.9.14`) | ✅ Clickable `zform` buttons — Allow Once / Allow Session / Always Allow / Deny |
-| ≤ 0.21.2 | ➖ Not available — approval prompts fall back to the gateway's plain-text `/approve` / `/deny` instructions. The plugin loads and works normally. |
+| Hermes gateway | Native exec-approval buttons | Reply routing (`thread_id`) |
+|----------------|------------------------------|-----------------------------|
+| **≥ 0.21.3** (`v2026.9.14`) | ✅ Clickable `zform` buttons — Allow Once / Allow Session / Always Allow / Deny | ✅ |
+| 0.21.0 – 0.21.2 | ➖ Falls back to the gateway's plain-text `/approve` / `/deny` instructions | ✅ |
+| **0.18.2** (`__min_hermes__`) | ➖ Not available (import guarded) | ✅ |
+| < 0.18.2 | ❌ Unsupported | — |
 
-Native approval buttons rely on the gateway's `_send_exec_approval_prompt` hook, introduced in Hermes 0.21.3. The adapter imports it defensively, so older gateways are unaffected.
+Native approval buttons rely on the gateway's `_send_exec_approval_prompt` hook (Hermes ≥ 0.21.3); the adapter imports it defensively, so older gateways load and run normally. Reply routing relies on `gateway.platforms.base._thread_metadata_for_source` placing the session's origin topic in `metadata["thread_id"]`. A real-host contract gate for these symbols lives in [scripts/check_compat.py](scripts/check_compat.py) (see `.github/workflows/compat.yml`).
 
 ---
 
@@ -373,6 +378,8 @@ bash .githooks/pre-push
 - [Hermes Plugin Docs](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters)
 - [Zulip API Documentation](https://zulip.com/api/)
 - [CHANGELOG.md](CHANGELOG.md)
+- [SECURITY.md](SECURITY.md) — threat model, credential handling, and explicit non-guarantees
+- [docs/PARITY.md](docs/PARITY.md) — capability matrix and shared adapter spec with the OpenClaw sibling (keyed off merge state on `main`)
 - Related: [openclaw-zulip-bridge](https://github.com/niyazmft/openclaw-zulip-bridge) — the OpenClaw (TypeScript) sibling adapter
 
 ## License
