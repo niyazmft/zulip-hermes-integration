@@ -74,6 +74,12 @@ from .reaction_triggers import (
     match_reaction_trigger,
     reaction_dedupe_key,
 )
+from .session_queue import (
+    DEFAULT_QUEUE_CAP,
+    PendingTurn,
+    SessionQueue,
+    SessionQueueConfig,
+)
 from .version import __version__, __repo__
 from .commands import handle_command, is_command
 from .policy import PolicyEngine
@@ -666,6 +672,19 @@ def _resolve_observe_group() -> bool:
     )
 
 
+def _resolve_session_queue() -> bool:
+    """Whether an inbound message waits for its session's run in flight (#151).
+
+    Off by default. When on, a message arriving while its topic (or DM) is
+    mid-run joins that session's FIFO instead of being steered into the running
+    turn, so one person in a shared topic cannot redirect another's work.
+    Separate sessions are untouched and still run in parallel.
+    """
+    return runtime_scope.get_setting("ZULIP_SESSION_QUEUE", "").strip().lower() in (
+        "true", "1", "yes", "on",
+    )
+
+
 def _resolve_history_mode() -> str:
     """How much real stream/topic history is quoted into the prompt (#148).
 
@@ -1137,6 +1156,26 @@ class ZulipAdapter(BasePlatformAdapter):
             logger.warning(
                 "ZULIP_ACTIVITY_TRACE is enabled but this gateway does not expose "
                 "the processing lifecycle hooks; the trace will not run"
+            )
+
+        # Per-session message queue (issue #151). Off by default. The queue
+        # learns that a run ended from on_processing_complete, so on a gateway
+        # without the lifecycle hooks it could only ever queue — stalling every
+        # message behind the first. There it does nothing at all: behaviour is
+        # then exactly what it was before the flag existed.
+        self._queue_cfg = SessionQueueConfig(
+            enabled=_resolve_session_queue(),
+            cap=_resolve_int_setting("ZULIP_QUEUE_CAP", DEFAULT_QUEUE_CAP),
+        )
+        self._session_queue = (
+            SessionQueue(self._queue_cfg)
+            if self._queue_cfg.enabled and ProcessingOutcome is not None
+            else None
+        )
+        if self._queue_cfg.enabled and ProcessingOutcome is None:
+            logger.warning(
+                "ZULIP_SESSION_QUEUE is enabled but this gateway does not expose "
+                "the processing lifecycle hooks; messages will not be queued"
             )
 
     async def _sdk_call(self, fn, *args, timeout: float, **kwargs):
@@ -1672,6 +1711,8 @@ class ZulipAdapter(BasePlatformAdapter):
         """Gateway lifecycle hook: a work item started. (epic #139 / #158)"""
         await self._audit_dispatch_turn(event)
         self._start_trace(event)
+        if self._session_queue is not None:
+            self._session_queue.mark_active(self._queue_session_key(event))
 
     async def _audit_dispatch_turn(self, event: MessageEvent) -> None:
         """Record a dispatched turn and arm this work item for its outcome.
@@ -1706,6 +1747,9 @@ class ZulipAdapter(BasePlatformAdapter):
         """
         await self._audit_run_end(event)
         await self._finish_trace(event, outcome)
+        # Last, so the finished run's status is closed out before the next
+        # queued turn for the same session starts (issue #151).
+        await self._drain_session_queue(event)
 
     async def _audit_run_end(self, event: MessageEvent) -> None:
         """Record ``deliver_empty`` for a dispatched run that never sent.
@@ -1722,6 +1766,155 @@ class ZulipAdapter(BasePlatformAdapter):
             await self._audit_logger.log_deliver_empty(
                 chat_id=chat_id, topic=_metadata_topic(metadata)
             )
+
+    # --- per-session message queue (issue #151) ---
+
+    def _queue_session_key(self, event: Any) -> str:
+        """Session identity for the queue.
+
+        The host's own session key when it exposes one, so the queue agrees with
+        the host about what a session is; otherwise the chat+topic route, the
+        same pair the activity trace keys on (and the same reasoning: a second
+        derivation would drift). Never one global key — two topics in a stream,
+        and two DMs, must not serialize against each other.
+        """
+        key = self._session_key_for_event(event)
+        if key:
+            return key
+        chat_id, metadata = _event_route(event)
+        return f"route:{chat_id}\x00{_metadata_topic(metadata) or ''}"
+
+    async def _audit_queue_transition(
+        self, event_type: str, event: Any, message_id: Any, depth: int
+    ) -> None:
+        """Audit one queue transition: identifiers and depth, never a body.
+
+        The ⏳ reaction is transient by design, so this file is what proves the
+        queue engaged and how deep it got.
+        """
+        chat_id, _ = _event_route(event)
+        await self._audit_logger.log_event(
+            event_type,
+            {
+                "chat_id": chat_id,
+                "message_id": None if message_id is None else str(message_id),
+                "depth": depth,
+            },
+        )
+
+    async def _queue_turn(
+        self, event: Any, reactions: Any, typing_params: Any, message_id: Any
+    ) -> bool:
+        """Queue a fully cleared turn when its session is mid-run.
+
+        True when the turn was queued and must not be dispatched now. Called
+        after every gate above, so a queued turn re-enters only the dispatch
+        path — waiting can never change what the bot is allowed to answer.
+        """
+        key = self._queue_session_key(event)
+        if not key or not self._session_queue.is_active(key):
+            return False
+        accepted, depth = self._session_queue.enqueue(
+            key,
+            PendingTurn(
+                event=event,
+                reactions=reactions,
+                typing_params=typing_params,
+                message_id=message_id,
+            ),
+        )
+        if not accepted:
+            # Full: dispatch now rather than drop. The cap bounds the wait, not
+            # the delivery, and this turn has already cleared every gate.
+            await self._audit_queue_transition(
+                "session_queue_overflow", event, message_id, depth
+            )
+            logger.warning(
+                "zulip session queue full [key=%s msg=%s depth=%d]; "
+                "dispatching immediately",
+                mask_pii(key),
+                mask_pii(str(message_id)),
+                depth,
+            )
+            return False
+        await reactions.queued()
+        await self._audit_queue_transition(
+            "session_queue_enqueue", event, message_id, depth
+        )
+        logger.info(
+            "zulip session queued [key=%s msg=%s depth=%d]",
+            mask_pii(key),
+            mask_pii(str(message_id)),
+            depth,
+        )
+        return True
+
+    async def _drain_session_queue(self, event: Any) -> None:
+        """Dispatch the oldest turn waiting behind the session that just ended.
+
+        One at a time, in arrival order. The session stays marked active while
+        the dispatched turn runs, so a message arriving before the host's start
+        hook for it still queues instead of steering it. Never raises: this runs
+        inside ``on_processing_complete``, which must not reach the gateway loop.
+        """
+        if self._session_queue is None:
+            return
+        key = self._queue_session_key(event)
+        if not key:
+            return
+        while True:
+            turn = self._session_queue.dequeue(key)
+            if turn is None:
+                self._session_queue.release(key)
+                return
+            self._session_queue.mark_active(key)
+            await self._audit_queue_transition(
+                "session_queue_dequeue",
+                turn.event,
+                turn.message_id,
+                self._session_queue.depth(key),
+            )
+            await turn.reactions.unqueued()
+            try:
+                await self._dispatch_turn(
+                    turn.event, turn.reactions, turn.typing_params, turn.message_id
+                )
+            except Exception as e:
+                # The turn never reached a run, so its session is free again:
+                # give the next waiting turn its chance instead of wedging the
+                # queue behind a dispatch that cannot start.
+                logger.warning(
+                    "zulip session queue dispatch failed [key=%s msg=%s]: %s",
+                    mask_pii(key),
+                    mask_pii(str(turn.message_id)),
+                    mask_pii(str(e)),
+                )
+                self._session_queue.release(key)
+                continue
+            return
+
+    async def _dispatch_turn(
+        self, event: Any, reactions: Any, typing_params: Any, message_id: Any
+    ) -> None:
+        """Hand one cleared turn to the gateway and finish its reaction state.
+
+        Shared by the immediate path and the queue's drain path, so a queued
+        turn gets identical error / read / success treatment to one dispatched
+        on arrival (issue #151).
+        """
+        try:
+            await self.handle_message(event)
+        except Exception:
+            await reactions.error()
+            await self._stop_typing(typing_params)
+            raise
+        finally:
+            await self._mark_read(message_id)
+
+        # Only reached on success. The core stops typing itself via the
+        # stop_typing() hook when the agent run finishes; mark the success
+        # reaction here.
+        await reactions.success()
 
     async def _mark_read(self, message_id: Any) -> None:
         """Mark a message as read. Best-effort."""
@@ -2876,19 +3069,18 @@ class ZulipAdapter(BasePlatformAdapter):
             metadata=extra_meta,
         )
 
-        try:
-            await self.handle_message(event)
-        except Exception:
-            await reactions.error()
-            await self._stop_typing(typing_params)
-            raise
-        finally:
-            await self._mark_read(message_id)
+        # --- Per-session queue (issue #151) ---
+        #
+        # Deliberately last: the turn has already been rate limited, cleared
+        # stream gating, stream filtering, group and DM policy, and had any
+        # command intercepted, so waiting for its session cannot change what
+        # the bot is allowed to answer.
+        if self._session_queue is not None and await self._queue_turn(
+            event, reactions, typing_params, message_id
+        ):
+            return
 
-        # Only reached on success. The core stops typing itself via the
-        # stop_typing() hook when the agent run finishes; mark the success
-        # reaction here.
-        await reactions.success()
+        await self._dispatch_turn(event, reactions, typing_params, message_id)
 
     async def _resolve_reaction_user(self, user_id: str):
         """Resolve the reacting user's email (a reaction event carries no user

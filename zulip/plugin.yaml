@@ -152,6 +152,12 @@ optional_env:
   - name: ZULIP_OBSERVE_GROUP
     description: "Record non-addressed stream messages as bounded per-topic context without replying; the buffer is quoted into the prompt when the bot is next addressed in that topic (default: false)"
     prompt: "Observe stream messages without replying"
+  - name: ZULIP_SESSION_QUEUE
+    description: "Queue a message that arrives while its topic (or DM) is mid-run behind the running turn instead of steering it into that turn, so one person cannot redirect another's work; separate topics still run in parallel (default: false)"
+    prompt: "Per-session message queue"
+  - name: ZULIP_QUEUE_CAP
+    description: "How many turns may wait behind one running session before a new message is dispatched immediately instead of being dropped (default: 20)"
+    prompt: "Session queue cap"
   - name: ZULIP_HISTORY_MODE
     description: 'Quote real stream/topic history into the prompt: "off", "on-demand" (only for history questions), or "always" (default: off)'
     prompt: "History context mode"

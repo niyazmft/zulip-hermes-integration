@@ -34,6 +34,7 @@ PLUGIN_FILES = [
     "refs.py",
     "runtime_scope.py",
     "secret_guard.py",
+    "session_queue.py",
     "text_utils.py",
     "updater.py",
     "version.py",

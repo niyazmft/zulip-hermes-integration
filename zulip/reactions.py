@@ -2,6 +2,7 @@
 
 Adds/removes emoji reactions to signal processing state:
 - eyes (👀)  → bot is working on the request
+- hourglass (⏳) → message is waiting its turn behind a run in flight
 - check_mark (✅) → response delivered successfully
 - warning (⚠️) → error occurred
 
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_START = "eyes"
 DEFAULT_SUCCESS = "check_mark"
 DEFAULT_ERROR = "warning"
+# Waiting turn (issue #151). A signal of its own: the message was received (👀)
+# *and* is queued (⏳), and only the ⏳ is cleared when it is dispatched.
+DEFAULT_PENDING = "hourglass"
 
 # Default timeout for reaction API calls (seconds)
 DEFAULT_REACTION_TIMEOUT = 15.0
@@ -167,5 +171,19 @@ class ReactionLifecycle:
             )
         await add_reaction(
             self.client, self.message_id, cfg.on_error, cfg.enabled,
+            timeout=self.timeout,
+        )
+
+    async def queued(self) -> None:
+        """Mark a message that is waiting behind a run in flight (issue #151)."""
+        await add_reaction(
+            self.client, self.message_id, DEFAULT_PENDING, self.config.enabled,
+            timeout=self.timeout,
+        )
+
+    async def unqueued(self) -> None:
+        """Clear the waiting marker when the queued turn is dispatched."""
+        await remove_reaction(
+            self.client, self.message_id, DEFAULT_PENDING, self.config.enabled,
             timeout=self.timeout,
         )
