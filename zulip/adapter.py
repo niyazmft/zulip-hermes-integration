@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import weakref
@@ -665,15 +666,83 @@ def _resolve_observe_group() -> bool:
     )
 
 
+def _resolve_history_mode() -> str:
+    """How much real stream/topic history is quoted into the prompt (#148).
+
+    ``off`` (default) never harvests, so no extra Zulip round-trip is made;
+    ``on-demand`` harvests only for a message that reads like a "do we already
+    know this?" question; ``always`` harvests for every inbound stream message.
+    Anything unrecognised falls back to ``off`` with a warning.
+    """
+    raw = (runtime_scope.get_setting("ZULIP_HISTORY_MODE", "") or "").strip().lower()
+    if raw in ("off", "on-demand", "always"):
+        return raw
+    if raw:
+        logger.warning(
+            "ZULIP_HISTORY_MODE=%r is not one of off/on-demand/always; using off",
+            raw,
+        )
+    return "off"
+
+
+def _resolve_int_setting(name: str, default: int, minimum: int = 1) -> int:
+    """Read a positive integer setting, warning and falling back when invalid."""
+    raw = (runtime_scope.get_setting(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning(
+            "%s=%d is below the minimum %d; using %d", name, value, minimum, default
+        )
+        return default
+    return value
+
+
 #: Caps for the observed-topic buffer (#153). Per topic *and* across topics, so
 #: neither one busy topic nor a long-running bot can grow without limit.
 OBSERVED_MAX_MESSAGES = 20
 OBSERVED_MAX_CHARS = 4000
 OBSERVED_MAX_TOPICS = 200
 
-#: Label marking observed context so the agent can tell it from the live
-#: message (#153).
+#: Labels marking quoted context so the agent can tell it from the live
+#: message (#153, #148).
 OBSERVED_HISTORY_LABEL = "[Observed topic history - not addressed to you]"
+FETCHED_HISTORY_LABEL = "[Topic history - recent messages quoted for context]"
+
+#: Best-effort budget for one history harvest (#148). A slow or failing fetch
+#: is dropped rather than awaited beyond this.
+HISTORY_FETCH_TIMEOUT = 2.0
+
+#: Narrow "do we already know this?" question shapes for ``on-demand`` history
+#: (#148). Deliberately conservative: a harvest costs one Zulip round-trip and
+#: a slice of the context budget, so a passing mention of history is not enough.
+_HISTORY_INTENT_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bhave we\b[^?]{0,80}\b(seen|had|discussed|covered|decided|talked)\b",
+        r"\bdid we\b[^?]{0,80}\b(discuss|decide|agree|see|cover|mention|talk)\b",
+        r"\bwhat did we\b",
+        r"\bwhen did we\b",
+        r"\bdo we (already )?(know|have)\b",
+        r"\b(as|like) (we|i) (discussed|mentioned|said|agreed)\b",
+        r"\bwe (already|previously)\b",
+        r"\b(earlier|previously|before now|last (week|month|time))\b",
+        r"\bhas this (come up|been (asked|raised|seen))\b",
+        r"\bany (prior|previous|earlier)\b",
+    )
+)
+
+
+def _history_intent_matches(text: str) -> bool:
+    """Whether ``text`` reads like a question about something already discussed."""
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _HISTORY_INTENT_PATTERNS)
 
 
 def _joined_len(lines: list[str]) -> int:
@@ -738,6 +807,56 @@ class ObservedContextBuffer:
             lines.pop(0)
         if lines and len(lines[0]) > self._max_chars:
             lines[0] = truncate_text(lines[0], self._max_chars)
+
+
+def _history_sort_key(message: dict) -> int:
+    """Integer message id for a stable oldest-first order; 0 when unusable."""
+    try:
+        return int(message.get("id"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _render_history_block(
+    messages: list[dict],
+    *,
+    max_messages: int,
+    window_hours: int,
+    max_chars: int,
+    now: Optional[float] = None,
+) -> str:
+    """Render the newest slice of ``messages`` as quoted history lines (#148).
+
+    Bounded on all three axes: at most ``max_messages`` lines, nothing older
+    than ``window_hours``, at most ``max_chars`` characters. The newest lines
+    win — oldest lines are dropped (and the oldest survivor truncated) so a
+    topic with months of history cannot blow up the context window.
+    """
+    if now is None:
+        now = time.time()
+    cutoff = now - window_hours * 3600
+
+    lines: list[str] = []
+    for message in sorted(messages, key=_history_sort_key):
+        timestamp = message.get("timestamp")
+        if isinstance(timestamp, (int, float)) and timestamp < cutoff:
+            continue
+        text = strip_html_to_text(str(message.get("content") or "")).strip()
+        if not text:
+            continue
+        sender = (
+            str(message.get("sender_full_name") or "").strip()
+            or str(message.get("sender_email") or "").strip()
+            or "Unknown"
+        )
+        lines.append(f"[{sender}] {text}")
+
+    lines = lines[-max_messages:]
+    while len(lines) > 1 and _joined_len(lines) > max_chars:
+        lines.pop(0)
+    if lines and len(lines[0]) > max_chars:
+        lines[0] = truncate_text(lines[0], max_chars)
+    return "\n".join(lines)
 
 
 def _message_with_flags(event: dict) -> dict:
@@ -938,6 +1057,12 @@ class ZulipAdapter(BasePlatformAdapter):
         self._soft_gate = _resolve_soft_gate()
         self._observe_group = _resolve_observe_group()
         self._observed_context = ObservedContextBuffer()
+
+        # Bounded history-aware context (issue #148). "off" adds no round-trip.
+        self._history_mode = _resolve_history_mode()
+        self._history_max_messages = _resolve_int_setting("ZULIP_HISTORY_MAX_MESSAGES", 8)
+        self._history_window_hours = _resolve_int_setting("ZULIP_HISTORY_WINDOW_HOURS", 72)
+        self._history_max_chars = _resolve_int_setting("ZULIP_HISTORY_MAX_CHARS", 4000)
 
         # Rate limiter (per-sender, sliding window)
         self._rate_limiter = RateLimiter(
@@ -2173,23 +2298,98 @@ class ZulipAdapter(BasePlatformAdapter):
 
     async def _quoted_topic_history(
         self,
+        stream_name: str,
         stream_id: Any,
         topic: str,
         *,
+        content: str,
         addressed: bool,
     ) -> str:
-        """Quoted observed context prepended to the agent-facing body (#153).
+        """Quoted context prepended to the agent-facing body for one turn.
 
-        Costs nothing and only exists for a turn the bot was addressed in. It
-        never reaches a slash command or a policy/rate-limit gate, which have
-        already been decided by the time this runs.
+        Two independent sources: the observed-topic buffer (#153), which costs
+        nothing and only exists for a turn the bot was addressed in, and an
+        optional harvested slice of real topic history (#148). Both are
+        best-effort — a failed harvest is logged and dropped — and neither ever
+        reaches a slash command or a policy/rate-limit gate, which have already
+        been decided by the time this runs.
         """
-        if not (self._observe_group and addressed):
+        blocks: list[str] = []
+
+        if self._observe_group and addressed:
+            observed = self._observed_context.render(stream_id, topic)
+            if observed:
+                blocks.append(f"{OBSERVED_HISTORY_LABEL}\n{observed}")
+
+        if self._history_mode != "off" and (
+            self._history_mode == "always" or _history_intent_matches(content)
+        ):
+            harvested = await self._harvest_history_block(stream_name, topic)
+            if harvested:
+                blocks.append(f"{FETCHED_HISTORY_LABEL}\n{harvested}")
+
+        if not blocks:
             return ""
-        observed = self._observed_context.render(stream_id, topic)
-        if not observed:
+        return "\n\n".join(blocks) + "\n\n"
+
+    async def _fetch_stream_history(self, stream_name: str, topic: str) -> list[dict]:
+        """Narrow ``[stream, topic]`` fetch of the newest topic messages (#148).
+
+        The synchronous SDK call runs through ``_sdk_call`` so it is bounded
+        and cannot block the event loop. A non-success response yields an empty
+        list rather than an error.
+        """
+        narrow = [{"operator": "stream", "operand": stream_name}]
+        if topic:
+            narrow.append({"operator": "topic", "operand": topic})
+        result = await self._sdk_call(
+            self.client.get_messages,
+            {
+                "anchor": "newest",
+                "num_before": self._history_max_messages,
+                "num_after": 0,
+                "narrow": narrow,
+            },
+            timeout=HISTORY_FETCH_TIMEOUT,
+        )
+        if not isinstance(result, dict) or result.get("result") != "success":
+            return []
+        messages = result.get("messages")
+        return messages if isinstance(messages, list) else []
+
+    async def _harvest_history_block(self, stream_name: str, topic: str) -> str:
+        """Best-effort quoted slice of the real topic history (#148).
+
+        Streams/topics only — DMs have their own per-user sessions and are
+        never harvested across. Any error response or timeout is logged and
+        dropped, so a slow or failing Zulip API can never fail or unboundedly
+        delay a dispatch.
+        """
+        try:
+            messages = await asyncio.wait_for(
+                self._fetch_stream_history(stream_name, topic),
+                timeout=HISTORY_FETCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "zulip history harvest timed out (dropped) [stream=%s topic=%s]",
+                mask_pii(stream_name),
+                mask_pii(topic),
+            )
             return ""
-        return f"{OBSERVED_HISTORY_LABEL}\n{observed}\n\n"
+        except Exception as e:
+            logger.warning(
+                "zulip history harvest failed (dropped): %s", mask_pii(str(e))
+            )
+            return ""
+        if not messages:
+            return ""
+        return _render_history_block(
+            messages,
+            max_messages=self._history_max_messages,
+            window_hours=self._history_window_hours,
+            max_chars=self._history_max_chars,
+        )
 
     async def _handle_message(self, message: dict):
         """Process incoming Zulip message."""
@@ -2650,17 +2850,19 @@ class ZulipAdapter(BasePlatformAdapter):
             "topic_changed": topic_changed,
         })
 
-        # --- Quoted observed context (issue #153) ---
+        # --- Quoted topic history (issues #153, #148) ---
         #
         # Appended to the agent-facing body only. Slash commands were handled
         # and returned above, and every policy/rate-limit gate has already
         # decided this turn, so quoted context can never change what the bot is
         # allowed to answer or cost a round-trip on a message that is dropped.
-        # DMs are never observed: their sessions are per-user and isolated.
+        # DMs are never harvested: their sessions are per-user and isolated.
         if msg_type == "stream":
             quoted = await self._quoted_topic_history(
+                stream_name,
                 stream_id,
                 topic,
+                content=content,
                 addressed=addressed,
             )
             if quoted:

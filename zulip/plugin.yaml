@@ -152,3 +152,15 @@ optional_env:
   - name: ZULIP_OBSERVE_GROUP
     description: "Record non-addressed stream messages as bounded per-topic context without replying; the buffer is quoted into the prompt when the bot is next addressed in that topic (default: false)"
     prompt: "Observe stream messages without replying"
+  - name: ZULIP_HISTORY_MODE
+    description: 'Quote real stream/topic history into the prompt: "off", "on-demand" (only for history questions), or "always" (default: off)'
+    prompt: "History context mode"
+  - name: ZULIP_HISTORY_MAX_MESSAGES
+    description: "Maximum history messages quoted per turn (default: 8)"
+    prompt: "Max history messages"
+  - name: ZULIP_HISTORY_WINDOW_HOURS
+    description: "How far back topic history is harvested, in hours (default: 72)"
+    prompt: "History window (hours)"
+  - name: ZULIP_HISTORY_MAX_CHARS
+    description: "Maximum characters in the quoted history block (default: 4000)"
+    prompt: "Max history characters"
