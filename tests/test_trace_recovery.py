@@ -59,9 +59,18 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
 
     a = ZulipAdapter(mock_platform_config)
     a._audit_logger = SimpleNamespace(
-        log_event=_async_recorder(a)
+        log_event=_async_recorder(a),
+        log_dispatch_turn=_async_noop,
+        log_deliver_payload=_async_noop,
+        log_deliver_skipped=_async_noop,
+        log_deliver_empty=_async_noop,
+        log_deliver_failed=_async_noop,
     )
     return a
+
+
+async def _async_noop(*args, **kwargs):
+    """Awaitable stand-in for a delivery-audit helper (issue #145)."""
 
 
 def _async_recorder(adapter):

@@ -221,6 +221,13 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
     a = ZulipAdapter(mock_platform_config)
     a._audit_logger = MagicMock()
     a._audit_logger.log_event = AsyncMock()
+    # Delivery-outcome events (#145) are recorded on the same logger; make every
+    # helper awaitable so the send path can call them without a real file write.
+    a._audit_logger.log_deliver_payload = AsyncMock()
+    a._audit_logger.log_deliver_skipped = AsyncMock()
+    a._audit_logger.log_deliver_empty = AsyncMock()
+    a._audit_logger.log_deliver_failed = AsyncMock()
+    a._audit_logger.log_dispatch_turn = AsyncMock()
     return a
 
 

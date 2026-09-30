@@ -57,7 +57,10 @@ from .text_utils import (
     create_mention_regex,
     normalize_mention,
     strip_html_to_text,
+    strip_think_blocks,
 )
+from .display_names import DisplayNameCache
+from .refs import render_refs
 from .media import upload_file_to_zulip
 from .queue_manager import ZulipQueueManager
 from .dedupe_store import ZulipDedupeStore
@@ -674,6 +677,18 @@ def _metadata_topic(metadata: Any) -> Optional[str]:
     return None
 
 
+def _event_route(event: Any) -> tuple[str, Any]:
+    """``(chat_id, metadata)`` for a gateway event, or ``("", None)``.
+
+    The pair identifies the chat+topic route a work item's delivery events
+    belong to, so the activity trace and the delivery audit key work items
+    identically.
+    """
+    source = getattr(event, "source", None)
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    return chat_id, getattr(event, "metadata", None)
+
+
 def _topic_sessions_enabled() -> bool:
     """Whether each Zulip topic should get its own conversation session.
 
@@ -735,8 +750,10 @@ class ZulipAdapter(BasePlatformAdapter):
         # Populated on connect. Zulip renders mentions from the display name,
         # not the email local-part, so mention matching needs it.
         self.bot_full_name = ""
-        # Bot's Zulip user id, learned at connect; used to recognise the bot's
-        # own messages as reaction-trigger targets. (Epic #149)
+        # The bot's own Zulip user id, learned on connect. Together with the
+        # email it is how the bot's own messages are recognised on every
+        # inbound path (issue #152), and how reaction-trigger targets are
+        # recognised (epic #149).
         self._bot_user_id = ""
 
         # Validate site URL before creating client: https-only unless the
@@ -788,6 +805,17 @@ class ZulipAdapter(BasePlatformAdapter):
         )
 
         self._data_dir = runtime_scope.get_profile_data_dir()
+
+        # Persisted sender display names (issue #152). Zulip events do not
+        # always carry a usable name; the cache resolves one without an API
+        # call on every message. A missing or corrupt file is non-fatal.
+        self._display_names = DisplayNameCache(self._data_dir)
+
+        # Per-work-item delivery state for the audit trail (issue #145): the
+        # key is the same chat+topic route the activity trace uses, and the
+        # value records whether a send was attempted. Popped on completion, so
+        # it cannot grow for a run the gateway never finalizes.
+        self._audit_turns: dict[str, bool] = {}
 
         # Timeout configuration (Issue #62)
         self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
@@ -1294,15 +1322,31 @@ class ZulipAdapter(BasePlatformAdapter):
             payload = self._trace_payload(chat_id, metadata, content)
             if payload is None:
                 return None
-            result = await self._sdk_call(
-                self.client.send_message, payload, timeout=self._send_timeout
-            )
+            # A trace message is an outbound send like any other, so it records
+            # the same delivery outcome (issue #145).
+            topic = _metadata_topic(metadata)
+            try:
+                result = await self._sdk_call(
+                    self.client.send_message, payload, timeout=self._send_timeout
+                )
+            except Exception:
+                await self._audit_logger.log_deliver_failed(
+                    "send_exception", chat_id=chat_id, topic=topic
+                )
+                raise
             if not isinstance(result, dict) or result.get("result") != "success":
+                await self._audit_logger.log_deliver_failed(
+                    "api_error", chat_id=chat_id, topic=topic
+                )
                 return None
             try:
-                return int(result.get("id"))
+                message_id = int(result.get("id"))
             except (TypeError, ValueError):
                 return None
+            await self._audit_logger.log_deliver_payload(
+                chat_id=chat_id, topic=topic, message_id=str(message_id)
+            )
+            return message_id
 
         async def edit(message_id: int, content: str) -> bool:
             result = await self._sdk_call(
@@ -1394,7 +1438,30 @@ class ZulipAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Gateway lifecycle hook: a work item started. (epic #139 / #158)"""
+        await self._audit_dispatch_turn(event)
         self._start_trace(event)
+
+    async def _audit_dispatch_turn(self, event: MessageEvent) -> None:
+        """Record a dispatched turn and arm this work item for its outcome.
+
+        Pairs with the ``deliver_*`` events so "the run produced nothing" is
+        distinguishable from "the run never started" (issue #145).
+        """
+        chat_id, metadata = _event_route(event)
+        if not chat_id:
+            return
+        self._audit_turns[self._trace_key(chat_id, metadata)] = False
+        await self._audit_logger.log_dispatch_turn(
+            chat_id=chat_id,
+            topic=_metadata_topic(metadata),
+            message_id=getattr(event, "message_id", None),
+        )
+
+    def _note_delivery_attempt(self, chat_id: str, metadata: Any) -> None:
+        """Mark this work item as having produced something to deliver."""
+        key = self._trace_key(chat_id, metadata)
+        if key in self._audit_turns:
+            self._audit_turns[key] = True
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: Any = None
@@ -1405,7 +1472,24 @@ class ZulipAdapter(BasePlatformAdapter):
         error and abort distinguishable at all — and therefore what lets a run
         that produced nothing say so instead of staying silent.
         """
+        await self._audit_run_end(event)
         await self._finish_trace(event, outcome)
+
+    async def _audit_run_end(self, event: MessageEvent) -> None:
+        """Record ``deliver_empty`` for a dispatched run that never sent.
+
+        Only reached when ``on_processing_start`` armed this work item: a run
+        the gateway never dispatched has no entry and writes nothing.
+        """
+        chat_id, metadata = _event_route(event)
+        if not chat_id:
+            return
+        key = self._trace_key(chat_id, metadata)
+        attempted = self._audit_turns.pop(key, None)
+        if attempted is False:
+            await self._audit_logger.log_deliver_empty(
+                chat_id=chat_id, topic=_metadata_topic(metadata)
+            )
 
     async def _mark_read(self, message_id: Any) -> None:
         """Mark a message as read. Best-effort."""
@@ -1543,7 +1627,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Recover interrupted messages from previous gateway instance
         bot_user_id = str(probe_result.get("bot", {}).get("id", ""))
-        self._bot_user_id = bot_user_id
+        bot_user_id = str(probe_result.get("bot", {}).get("id", ""))
+        if bot_user_id:
+            self._bot_user_id = bot_user_id
         # Warn about reaction-trigger blind spots: Zulip only delivers
         # ``reaction`` events for streams the bot is subscribed to. (#164)
         await self._check_reaction_trigger_subscriptions()
@@ -1884,17 +1970,65 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(5)
 
+    def _is_self_message(self, message: dict) -> bool:
+        """Whether ``message`` was authored by this bot.
+
+        The event queue subscribes to all public streams, so the bot receives
+        its own sends back. Treating those as user input would let the bot
+        answer itself and would feed its own output back in as history, so the
+        check lives here and is applied on every inbound path (issue #152).
+        """
+        sender_email = str(message.get("sender_email") or "").strip()
+        if sender_email and self.email and sender_email.lower() == self.email.lower():
+            return True
+        sender_id = message.get("sender_id")
+        if self._bot_user_id and sender_id is not None:
+            return str(sender_id) == str(self._bot_user_id)
+        return False
+
+    async def _fetch_display_name(self, user_id: Any) -> Optional[str]:
+        """One bounded lookup for a display name, used on a cache miss (#152)."""
+        try:
+            result = await self._sdk_call(
+                self.client.get_user, user_id, timeout=self._send_timeout
+            )
+        except Exception:
+            return None
+        if not isinstance(result, dict) or result.get("result") != "success":
+            return None
+        name = (result.get("user") or {}).get("full_name") or ""
+        return name.strip() or None
+
+    async def _resolve_display_name(self, message: dict) -> str:
+        """Sender display name: the event payload, the cache, then one fetch.
+
+        Zulip's payload name is authoritative and refreshes the cache. When it
+        is missing, the persisted cache is consulted and, on a miss, refreshed
+        with a single bounded lookup rather than one call per message (#152).
+        """
+        provided = str(message.get("sender_full_name") or "").strip()
+        user_id = message.get("sender_id")
+        if provided:
+            if user_id is not None:
+                self._display_names.put(user_id, provided)
+            return provided
+        if user_id is None:
+            return "Unknown"
+        name = await self._display_names.get_or_fetch(
+            user_id, self._fetch_display_name
+        )
+        return name or "Unknown"
+
     async def _handle_message(self, message: dict):
         """Process incoming Zulip message."""
         # Filter self-messages to prevent loops
-        if message.get("sender_email") == self.email:
+        if self._is_self_message(message):
             return
 
         msg_type = message.get("type")  # "stream" or "private"
         content = message.get("content", "")
         message_id = message.get("id")
         sender_email = message.get("sender_email", "")
-        sender_full_name = message.get("sender_full_name", "Unknown")
 
         # --- Rate limiting (per-sender) ---
         sender_key = sender_email or str(message.get("sender_id", ""))
@@ -2142,10 +2276,14 @@ class ZulipAdapter(BasePlatformAdapter):
         # safe no-ops.
         typing_params = None
 
+        # Resolve the sender's display name once, after the drop paths above so
+        # a discarded message never costs a lookup. The event payload wins; a
+        # miss refreshes the persisted cache with one bounded fetch (#152).
+        sender_full_name = await self._resolve_display_name(message)
+
         # --- Command interception (before AI dispatch) ---
         if is_command(content):
             sender_email = message.get("sender_email", "")
-            sender_full_name = message.get("sender_full_name", "")
             # Determine chat_id early for command replies
             if msg_type == "stream":
                 cmd_chat_id = str(message.get("stream_id", ""))
@@ -2955,10 +3093,14 @@ class ZulipAdapter(BasePlatformAdapter):
                     error=mask_pii(str(e)),
                 )
             )
+            await self._audit_logger.log_deliver_failed(
+                "invalid_target", chat_id=prompt.chat_id
+            )
             return SendResult(success=False, message_id="")
 
         if target["type"] == "dm":
             base: dict[str, Any] = {"type": "private", "to": target["user_ids"]}
+            audit_topic: Optional[str] = None
         else:
             # prompt.metadata carries the turn's routing metadata (thread_id =
             # the session's topic) from the runner; the cache is only a fallback.
@@ -2966,6 +3108,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 prompt.chat_id, "general"
             )
             base = {"type": "stream", "to": target["stream_id"], "topic": topic}
+            audit_topic = topic
 
         async def _send(request: dict[str, Any]) -> Optional[SendResult]:
             try:
@@ -2980,16 +3123,26 @@ class ZulipAdapter(BasePlatformAdapter):
                         error=mask_pii(str(e)),
                     )
                 )
+                await self._audit_logger.log_deliver_failed(
+                    "send_exception", chat_id=prompt.chat_id, topic=audit_topic
+                )
                 return None
             if result.get("result") == "success":
                 logger.debug("zulip approval message sent to %s", mask_pii(prompt.chat_id))
-                return SendResult(success=True, message_id=str(result.get("id", "")))
+                message_id = str(result.get("id", ""))
+                await self._audit_logger.log_deliver_payload(
+                    chat_id=prompt.chat_id, topic=audit_topic, message_id=message_id
+                )
+                return SendResult(success=True, message_id=message_id)
             logger.error(
                 format_zulip_log(
                     "zulip approval prompt send failed",
                     chat_id=mask_pii(prompt.chat_id),
                     error=mask_pii(str(result)),
                 )
+            )
+            await self._audit_logger.log_deliver_failed(
+                "api_error", chat_id=prompt.chat_id, topic=audit_topic
             )
             return None
 
@@ -3055,7 +3208,24 @@ class ZulipAdapter(BasePlatformAdapter):
                 "count": len(hits),
             },
         )
+        await self._audit_logger.log_deliver_skipped(
+            "secret_leak_blocked", chat_id=chat_id
+        )
         return summary
+
+    async def _render_refs(self, text: str) -> str:
+        """Rewrite validated ``[[zulip_ref: …]]`` markers before chunking (#150).
+
+        Best-effort: rendering must never fail a send, and must never change a
+        reply that has no markers.
+        """
+        try:
+            return await render_refs(text)
+        except Exception as e:
+            logger.warning(
+                "zulip ref rendering failed, sending as-is: %s", mask_pii(str(e))
+            )
+            return text
 
     async def send(
         self,
@@ -3069,10 +3239,16 @@ class ZulipAdapter(BasePlatformAdapter):
         metadata = metadata or {}
         media_files = media_files or []
 
+        # Reasoning hygiene (Issue #152): a model that emits its scratchpad
+        # inline must never ship that block to Zulip. Applied before the secret
+        # guard so a credential inside a block is dropped, not refused.
+        content = strip_think_blocks(content)
+
         # Outbound secret guard (Issue #136). Checked before media upload, so a
         # message we are about to refuse cannot leave a stray upload behind.
         leaked = self._detect_secret_leak(content)
         if leaked:
+            self._note_delivery_attempt(chat_id, metadata)
             summary = await self._refuse_secret_leak(leaked, chat_id)
             logger.error(
                 "zulip send refused: %s. Remove it and rotate the credential.",
@@ -3117,6 +3293,10 @@ class ZulipAdapter(BasePlatformAdapter):
         # Extract inline topic directive if present
         content, topic_override = extract_topic_directive(content)
 
+        # Rewrite actionable refs before truncation and chunking, so a marker
+        # can never be split across two messages (Issue #150).
+        content = await self._render_refs(content)
+
         # Hard cap before chunking (mirrors sibling plugin's maxMessageLength).
         max_length = _resolve_max_message_length()
         if max_length > 0:
@@ -3157,9 +3337,15 @@ class ZulipAdapter(BasePlatformAdapter):
         if self._response_prefix and content:
             content = self._response_prefix + content
 
+        # This work item produced something to deliver, so a run that does not
+        # send here must not also be reported as "produced nothing" (#145).
+        self._note_delivery_attempt(chat_id, metadata)
+        audit_topic = _metadata_topic(metadata)
+
         try:
             target = _parse_target(chat_id)
             if target["type"] == "dm":
+                audit_topic = None
                 result = await self._sdk_call(
                     self.client.send_message,
                     {
@@ -3174,6 +3360,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 topic = topic_override or _metadata_topic(metadata)
                 if not topic:
                     topic = self._topic_cache.get(chat_id, "general")
+                audit_topic = topic
 
                 result = await self._sdk_call(
                     self.client.send_message,
@@ -3188,12 +3375,14 @@ class ZulipAdapter(BasePlatformAdapter):
 
             if result.get("result") == "success":
                 logger.debug("zulip message sent to %s", chat_id)
+                message_id = str(result.get("id", ""))
                 # This work item produced a reply, so its trace can say so
                 # instead of reporting a silent run (epic #139 / #158).
                 self._note_trace_reply(chat_id, metadata)
-                return SendResult(
-                    success=True, message_id=str(result.get("id", ""))
+                await self._audit_logger.log_deliver_payload(
+                    chat_id=chat_id, topic=audit_topic, message_id=message_id
                 )
+                return SendResult(success=True, message_id=message_id)
             else:
                 logger.error(
                     format_zulip_log(
@@ -3201,6 +3390,9 @@ class ZulipAdapter(BasePlatformAdapter):
                         chat_id=mask_pii(chat_id),
                         error=mask_pii(str(result)),
                     )
+                )
+                await self._audit_logger.log_deliver_failed(
+                    "api_error", chat_id=chat_id, topic=audit_topic
                 )
                 return SendResult(success=False, message_id="")
 
@@ -3211,6 +3403,9 @@ class ZulipAdapter(BasePlatformAdapter):
                     chat_id=mask_pii(chat_id),
                     error=mask_pii(str(e)),
                 )
+            )
+            await self._audit_logger.log_deliver_failed(
+                "send_exception", chat_id=chat_id, topic=audit_topic
             )
             return SendResult(success=False, message_id="")
 
@@ -3378,16 +3573,30 @@ async def _standalone_send(
             "error": "Zulip not configured (ZULIP_SITE, ZULIP_EMAIL, ZULIP_API_KEY required)"
         }
 
+    # Reasoning hygiene (Issue #152): the out-of-process path must drop a
+    # leaked scratchpad block too, before anything is uploaded or sent.
+    message = strip_think_blocks(message) or ""
+
+    # Delivery audit (Issue #145): same outcomes as the live send path, so a
+    # cron delivery that silently fails is a lookup rather than a mystery.
+    audit = AuditLogger(
+        data_dir=runtime_scope.get_profile_data_dir(),
+        account_id=email or "default",
+    )
+
     try:
         client = _get_cached_client(site, email, api_key)
     except ImportError as e:
+        await audit.log_deliver_failed("client_init_failed", chat_id=chat_id)
         return {"error": str(e)}
     except Exception as e:
+        await audit.log_deliver_failed("client_init_failed", chat_id=chat_id)
         return {"error": f"Zulip client init failed: {e}"}
 
     try:
         target = _parse_target(chat_id)
     except (TypeError, ValueError):
+        await audit.log_deliver_failed("invalid_target", chat_id=chat_id)
         return {
             "error": (
                 f"Invalid Zulip target {chat_id!r}: expected a numeric stream id "
@@ -3414,10 +3623,7 @@ async def _standalone_send(
                 summary,
             )
             try:
-                await AuditLogger(
-                    data_dir=runtime_scope.get_profile_data_dir(),
-                    account_id=email or "default",
-                ).log_event(
+                await audit.log_event(
                     "secret_leak_blocked",
                     {
                         "chat_id": mask_pii(str(chat_id)),
@@ -3426,6 +3632,9 @@ async def _standalone_send(
                         "sources": [hit.name for hit in leaked],
                         "count": len(leaked),
                     },
+                )
+                await audit.log_deliver_skipped(
+                    "secret_leak_blocked", chat_id=chat_id
                 )
             except Exception:
                 pass  # auditing must never break the refusal itself
@@ -3471,6 +3680,15 @@ async def _standalone_send(
 
     content, topic_directive = extract_topic_directive(content)
 
+    # Rewrite actionable refs before truncation, so a marker can never be split
+    # (Issue #150). Best-effort: a failure leaves the reply untouched.
+    try:
+        content = await render_refs(content)
+    except Exception as e:
+        logger.warning(
+            "zulip ref rendering failed, sending as-is: %s", mask_pii(str(e))
+        )
+
     # Hard cap before chunking (mirrors sibling plugin's maxMessageLength).
     max_length = _resolve_max_message_length()
     if max_length > 0:
@@ -3482,6 +3700,7 @@ async def _standalone_send(
 
     if target["type"] == "dm":
         payload = {"type": "private", "to": target["user_ids"], "content": content}
+        audit_topic: Optional[str] = None
     else:
         topic = topic_directive or (str(thread_id).strip() if thread_id else "") or STANDALONE_DEFAULT_TOPIC
         payload = {
@@ -3490,6 +3709,7 @@ async def _standalone_send(
             "topic": topic,
             "content": content,
         }
+        audit_topic = topic
 
     try:
         result = await asyncio.wait_for(
@@ -3497,12 +3717,25 @@ async def _standalone_send(
             timeout=send_timeout,
         )
     except asyncio.TimeoutError:
+        await audit.log_deliver_failed(
+            "send_timeout", chat_id=chat_id, topic=audit_topic
+        )
         return {"error": f"Zulip send timed out after {send_timeout}s"}
     except Exception as e:
+        await audit.log_deliver_failed(
+            "send_exception", chat_id=chat_id, topic=audit_topic
+        )
         return {"error": f"Zulip send failed: {e}"}
 
     if isinstance(result, dict) and result.get("result") == "success":
-        return {"success": True, "message_id": str(result.get("id", ""))}
+        message_id = str(result.get("id", ""))
+        await audit.log_deliver_payload(
+            chat_id=chat_id, topic=audit_topic, message_id=message_id
+        )
+        return {"success": True, "message_id": message_id}
+    await audit.log_deliver_failed(
+        "api_error", chat_id=chat_id, topic=audit_topic
+    )
     if isinstance(result, dict):
         detail = " ".join(
             str(result[k]) for k in ("code", "msg") if result.get(k)

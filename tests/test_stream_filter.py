@@ -161,7 +161,7 @@ class TestResponsePrefixIntegration:
     """Test response prefix in adapter._send_single."""
 
     @pytest.fixture
-    def mock_adapter(self):
+    def mock_adapter(self, tmp_path):
         config = MagicMock()
         config.extra = {}
 
@@ -171,6 +171,8 @@ class TestResponsePrefixIntegration:
                 "ZULIP_API_KEY": "test-key",
                 "ZULIP_EMAIL": "bot@test.com",
                 "ZULIP_SITE": "https://test.zulipchat.com",
+                # Keep the delivery audit log (#145) out of ~/.hermes.
+                "HERMES_DATA_DIR": str(tmp_path),
             },
             clear=True,
         ):

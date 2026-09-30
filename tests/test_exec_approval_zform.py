@@ -48,9 +48,11 @@ def _prompt(chat_id="635267", actions=None, metadata=None, smart_denied=False):
 
 
 @pytest.fixture
-def adapter(mock_platform_config, monkeypatch):
+def adapter(mock_platform_config, monkeypatch, tmp_path):
     """ZulipAdapter with the real SDK swapped for a mock client."""
     monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    # Keep the delivery audit log (#145) out of ~/.hermes.
+    monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
     from tests.conftest import MockZulipClient
 
     class MockZulipModule:

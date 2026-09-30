@@ -8,6 +8,13 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_data_dir(monkeypatch, tmp_path):
+    """Construct every adapter against a temp data dir, so the delivery audit
+    log (#145) never lands in ~/.hermes."""
+    monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
+
+
 class TestOutboundUpload:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):

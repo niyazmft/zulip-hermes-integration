@@ -41,8 +41,10 @@ def _fake_client(result=None):
 
 
 @pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
+def _isolate(monkeypatch, tmp_path):
     adapter_module._clear_caches()
+    # Keep the delivery audit log (#145) out of ~/.hermes.
+    monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
     for key in ("ZULIP_SITE", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SEND_TIMEOUT", "ZULIP_RESPONSE_PREFIX"):
         monkeypatch.delenv(key, raising=False)
     yield
