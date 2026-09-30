@@ -146,3 +146,9 @@ optional_env:
   - name: HERMES_MEDIA_ALLOW_DIRS
     description: "Extra directories the gateway may read inbound media from (os.pathsep- or comma-separated absolute paths)"
     prompt: "Media allow dirs"
+  - name: ZULIP_SOFT_GATE
+    description: "Dispatch every monitored stream message like onmessage, tagging event metadata with addressed=true/false, so the bot watches a stream without replying to all of it (default: false)"
+    prompt: "Dispatch all stream messages (soft gate)"
+  - name: ZULIP_OBSERVE_GROUP
+    description: "Record non-addressed stream messages as bounded per-topic context without replying; the buffer is quoted into the prompt when the bot is next addressed in that topic (default: false)"
+    prompt: "Observe stream messages without replying"
