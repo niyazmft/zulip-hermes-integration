@@ -26,6 +26,7 @@ PLUGIN_FILES = [
     "probe.py",
     "queue_manager.py",
     "rate_limiter.py",
+    "reaction_triggers.py",
     "reactions.py",
     "recovery.py",
     "secret_guard.py",
