@@ -19,10 +19,30 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from .logger import mask_pii
+
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
 MAX_ROTATED_FILES = 3
+
+
+def _delivery_details(
+    chat_id: str,
+    topic: Optional[str] = None,
+    message_id: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Shared details for the delivery-outcome events.
+
+    Only identifiers are accepted here: there is no parameter for a message
+    body, so one cannot reach the log by accident.
+    """
+    details: dict[str, Any] = {"chat_id": chat_id}
+    if topic is not None:
+        details["topic"] = topic
+    if message_id is not None:
+        details["message_id"] = message_id
+    return details
 
 
 class AuditLogger:
@@ -147,3 +167,87 @@ class AuditLogger:
             "policy_block",
             {"sender_id": sender_id, "reason": reason, "kind": kind},
         )
+
+    # --- Delivery outcomes (issue #145) ---
+    #
+    # One event per outbound reply, at the boundary where it is handed to
+    # Zulip or dropped, so "the bot didn't answer" is a lookup rather than a
+    # report. ``dispatch_turn`` pairs with the ``deliver_*`` events: together
+    # they tell "ran and had nothing to send" apart from "never ran".
+    #
+    # None of these take a message body, and the values they do take are
+    # written exactly as passed — callers mask anything sensitive with
+    # ``mask_pii`` before calling, as with the other typed helpers.
+
+    async def log_dispatch_turn(
+        self,
+        chat_id: str,
+        topic: Optional[str] = None,
+        message_id: Optional[Any] = None,
+    ) -> None:
+        """Record that a turn was dispatched to the agent."""
+        await self._log_delivery_event(
+            "dispatch_turn", _delivery_details(chat_id, topic, message_id)
+        )
+
+    async def log_deliver_payload(
+        self,
+        chat_id: str,
+        topic: Optional[str] = None,
+        message_id: Optional[Any] = None,
+    ) -> None:
+        """Record that a reply was handed to Zulip."""
+        await self._log_delivery_event(
+            "deliver_payload", _delivery_details(chat_id, topic, message_id)
+        )
+
+    async def log_deliver_skipped(
+        self, reason: str, chat_id: str, topic: Optional[str] = None
+    ) -> None:
+        """Record a reply that was deliberately not delivered.
+
+        ``reason`` is required and must be a machine-readable token (for
+        example ``"no_trigger"``): a skip with no reason is exactly the silent
+        drop this event exists to make findable.
+        """
+        if not reason or not str(reason).strip():
+            raise ValueError(
+                "deliver_skipped requires a machine-readable reason"
+            )
+        details = _delivery_details(chat_id, topic)
+        details["reason"] = reason
+        await self._log_delivery_event("deliver_skipped", details)
+
+    async def log_deliver_empty(
+        self, chat_id: str, topic: Optional[str] = None
+    ) -> None:
+        """Record a run that finished with nothing to deliver."""
+        await self._log_delivery_event(
+            "deliver_empty", _delivery_details(chat_id, topic)
+        )
+
+    async def log_deliver_failed(
+        self, error: str, chat_id: str, topic: Optional[str] = None
+    ) -> None:
+        """Record a send that raised or timed out."""
+        details = _delivery_details(chat_id, topic)
+        details["error"] = error
+        await self._log_delivery_event("deliver_failed", details)
+
+    async def _log_delivery_event(
+        self, event_type: str, details: dict[str, Any]
+    ) -> None:
+        """Write a delivery event, reporting a failed write rather than dropping it.
+
+        Auditing must not change whether a reply reached the room, so a failed
+        write is logged instead of propagated — but never swallowed, because a
+        silent failure here is how an undelivered reply goes unrecorded.
+        """
+        try:
+            await self.log_event(event_type, details)
+        except Exception as e:
+            logger.warning(
+                "delivery audit write failed [event=%s]: %s",
+                event_type,
+                mask_pii(str(e)),
+            )

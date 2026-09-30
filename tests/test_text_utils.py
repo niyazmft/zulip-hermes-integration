@@ -305,3 +305,61 @@ Text between
     def test_empty_text(self):
         from zulip.text_utils import convert_markdown_tables
         assert convert_markdown_tables("") == ""
+
+
+class TestStripThinkBlocks:
+    """Issue #152: reasoning blocks must never reach Zulip."""
+
+    def test_normal_text_unchanged(self):
+        from zulip.text_utils import strip_think_blocks
+        assert strip_think_blocks("Hello, world!") == "Hello, world!"
+
+    def test_empty_unchanged(self):
+        from zulip.text_utils import strip_think_blocks
+        assert strip_think_blocks("") == ""
+
+    def test_closed_think_block_removed(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "Here is the answer. <thinking>Let me reconsider.</thinking> All good."
+        assert strip_think_blocks(text) == "Here is the answer.  All good."
+
+    def test_closed_thinking_block_removed(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "<thinking>step one\nstep two</thinking>Final reply."
+        assert strip_think_blocks(text) == "Final reply."
+
+    def test_closed_reasoning_block_removed(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "Before <reasoning>internal scratchpad</reasoning> after"
+        assert strip_think_blocks(text) == "Before  after"
+
+    def test_multiple_blocks_removed(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "a <thinking>one</thinking> b <reasoning>two</reasoning> c"
+        assert strip_think_blocks(text) == "a  b  c"
+
+    def test_trailing_unclosed_block_removed(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "The deploy passed. <thinking>But wait, let me double-check"
+        assert strip_think_blocks(text) == "The deploy passed. "
+
+    def test_trailing_unclosed_block_on_own_line(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "Answer below.\n<thinking>\nstill thinking"
+        assert strip_think_blocks(text) == "Answer below.\n"
+
+    def test_case_insensitive(self):
+        from zulip.text_utils import strip_think_blocks
+        text = "Keep <THINKING>drop me</THINKING>this"
+        assert strip_think_blocks(text) == "Keep this"
+
+    def test_response_with_reasoning_never_ships_block(self):
+        """Regression shape from the issue: a synthetic reply with scratchpad."""
+        from zulip.text_utils import strip_think_blocks
+        reply = (
+            "<thinking>\nThe user asked about the deploy; I should confirm.\n</thinking>\n"
+            "The deploy is green — you can ship it."
+        )
+        cleaned = strip_think_blocks(reply)
+        assert "The user asked about the deploy" not in cleaned
+        assert "The deploy is green" in cleaned

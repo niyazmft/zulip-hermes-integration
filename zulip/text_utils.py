@@ -5,6 +5,7 @@
 - Inline topic directives
 - Mention normalization
 - Onchar trigger prefix handling
+- Reasoning/think block stripping
 """
 
 import re
@@ -360,3 +361,74 @@ def _format_zulip_table(table_lines: list[str]) -> list[str]:
             formatted.append(line)
 
     return formatted
+
+
+# ---------------------------------------------------------------------------
+# Reasoning/think block stripping (issue #152)
+#
+# A model that emits its scratchpad inline (`` thinking...``, ``<thinking>``,
+# ``<reasoning>``) must never ship that text to Zulip. The adapter boundary is
+# the last place it can be dropped, and a trailing unclosed block is common
+# when a response is cut off mid-reasoning, so it is handled explicitly.
+# ---------------------------------------------------------------------------
+
+_REASONING_TAG_NAMES = (
+    "think",
+    "thinking",
+    "reasoning",
+    "REASONING_SCRATCHPAD",
+    "thought",
+)
+
+_REASONING_BLOCK_PATTERNS = tuple(
+    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    for name in _REASONING_TAG_NAMES
+)
+
+# After closed pairs are removed, any remaining opening tag is unclosed, so
+# everything from it to the end of the text sits inside the block.
+_UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
+    rf'<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
+_ORPHAN_REASONING_TAG_PATTERN = re.compile(
+    rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*',
+    re.IGNORECASE,
+)
+
+
+def strip_think_blocks(text: str) -> str:
+    """Remove reasoning/think blocks, returning only visible text.
+
+    Handles closed pairs (`` thinking...``, ``<thinking>...</thinking>``,
+    ``<reasoning>...</reasoning>`` and friends), a trailing unclosed block
+    (dropped from its opening tag to the end), and orphaned tags left behind by
+    a partially stripped block. Normal text without those tags passes through
+    unchanged.
+    """
+    if not text:
+        return text
+    if not isinstance(text, str):
+        if isinstance(text, list):
+            parts: list[str] = []
+            for part in text:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.append(str(part.get("text") or part.get("content") or ""))
+            text = "".join(parts)
+        elif isinstance(text, dict):
+            text = str(text.get("text") or text.get("content") or "")
+        else:
+            text = str(text)
+        if not text:
+            return ""
+    # 1. Closed tag pairs
+    for pattern in _REASONING_BLOCK_PATTERNS:
+        text = pattern.sub("", text)
+    # 2. Unclosed block: drop from the opening tag to the end
+    text = _UNTERMINATED_REASONING_BLOCK_PATTERN.sub("", text)
+    # 3. Orphaned tags left behind by a partial block
+    text = _ORPHAN_REASONING_TAG_PATTERN.sub("", text)
+    return text
