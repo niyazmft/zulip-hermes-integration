@@ -163,6 +163,14 @@ Temp files auto-delete after upload. Path traversal is blocked.
 
 ---
 
+## 📊 Activity Trace (Opt-In)
+
+Long runs can show a live status board in the conversation — one message the gateway
+edits as work proceeds, closed out when the run ends. It is **off by default**
+(`ZULIP_ACTIVITY_TRACE=1` enables it). If you don't see progress boards, that is why;
+**don't assume the feature is broken.** While it is on you are also offered the
+`zulip_progress` tool (mode B): use it for intent a tool call cannot reveal, sparingly.
+
 ## 📋 Quick Reference
 
 ### Do

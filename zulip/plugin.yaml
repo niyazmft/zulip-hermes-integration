@@ -80,6 +80,9 @@ optional_env:
   - name: ZULIP_TRACE_MAX_CONTENT
     description: "Maximum characters in a trace message before older steps are trimmed (default: 3500)"
     prompt: "Trace max content"
+  - name: ZULIP_TRACE_TOOL_MATCHER
+    description: "Which finished tool calls become trace checkpoints: comma-separated names form an allowlist, `!name` excludes (default: all tools)"
+    prompt: "Trace tool filter"
   - name: ZULIP_RESPONSE_PREFIX
     description: 'Prefix prepended to every outbound message (default: empty)'
     prompt: "Response prefix"

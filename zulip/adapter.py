@@ -1094,6 +1094,12 @@ class ZulipAdapter(BasePlatformAdapter):
         some other topic: a trace that narrates another conversation's work is
         worse than a trace with a gap.
         """
+        # ZULIP_TRACE_TOOL_MATCHER (#176): a tool-heavy turn otherwise renders a
+        # board far too long to read. The engine's coalescing bounds the API
+        # cost, not the readability.
+        if not self._trace_cfg.allows_tool(tool_name):
+            return
+
         trace = self._trace_for_current_session()
         if trace is None:
             return

@@ -62,6 +62,9 @@ class TraceConfig:
     coalesce_ms: int = DEFAULT_COALESCE_MS
     max_rate: float = DEFAULT_MAX_RATE
     max_content: int = DEFAULT_MAX_CONTENT
+    # Which finished tool calls become checkpoints (#176). Empty means every
+    # tool; otherwise a comma-separated list of names, `!name` to exclude.
+    tool_matcher: str = ""
 
     @classmethod
     def from_env(cls, env: Optional[dict] = None) -> "TraceConfig":
@@ -78,7 +81,49 @@ class TraceConfig:
             coalesce_ms=max(0, _num("ZULIP_TRACE_COALESCE_MS", DEFAULT_COALESCE_MS, int)),
             max_rate=max(0.1, _num("ZULIP_TRACE_MAX_RATE", DEFAULT_MAX_RATE, float)),
             max_content=max(200, _num("ZULIP_TRACE_MAX_CONTENT", DEFAULT_MAX_CONTENT, int)),
+            # Kept verbatim rather than parsed here, so the raw value round-trips
+            # into logs; interpretation lives in allows_tool().
+            tool_matcher=str(env.get("ZULIP_TRACE_TOOL_MATCHER") or "").strip(),
         )
+
+    def allows_tool(self, tool_name: str) -> bool:
+        """Whether mode A should checkpoint a finished ``tool_name`` (#176).
+
+        An empty matcher allows everything, which is the default and preserves
+        the pre-#176 behaviour. Otherwise the value is a comma-separated list:
+
+        * plain names form an **allowlist** — ``terminal,read`` checkpoints only
+          those two;
+        * names prefixed with ``!`` are **exclusions** — ``!browser`` checkpoints
+          everything except ``browser``;
+        * both may be combined, and a denial always wins
+          (``terminal,!terminal`` checkpoints nothing).
+
+        Matching is exact and case-insensitive. An empty or unknown tool name is
+        allowed only when no allowlist was given: with an allowlist we cannot
+        confirm the tool is wanted, so it is filtered out rather than guessed in.
+        """
+        matcher = (self.tool_matcher or "").strip()
+        if not matcher:
+            return True
+
+        allow: list[str] = []
+        deny: list[str] = []
+        for raw in matcher.split(","):
+            item = raw.strip().lower()
+            if not item:
+                continue
+            if item.startswith("!"):
+                deny.append(item[1:])
+            else:
+                allow.append(item)
+
+        name = (tool_name or "").strip().lower()
+        if name and name in deny:
+            return False
+        if allow:
+            return bool(name) and name in allow
+        return True
 
 
 @dataclass

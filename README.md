@@ -271,6 +271,46 @@ local-part.
 
 ---
 
+## 📊 Activity Trace (Opt-In)
+
+Off by default. With `ZULIP_ACTIVITY_TRACE=1`, a long run owns **one** message in the
+topic (or DM) it is working in, edited in place as the agent works — so a busy turn is
+visible instead of silent. When the run ends, that same message becomes its final
+state (`Done`, `Failed`, or `Cancelled`), so a board is never left saying "Working".
+
+Steps come from two places, and both can be on at once:
+
+| Mode | Step source | Notes |
+|------|-------------|-------|
+| **A** — automatic | Each finished tool call, e.g. `✓ terminal — 1.2 s` | Nothing to configure |
+| **B** — agent-authored | The `zulip_progress` tool, offered to the model only while the trace is on | For intent a tool call cannot reveal |
+
+If the gateway restarts mid-run (a deploy, a crash, an OOM), the orphaned board is
+closed out at the next start as **Cancelled — run interrupted by a gateway restart**,
+and the event is written to the audit log. A stale "Working" cannot outlive the
+process that posted it.
+
+### Tuning
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ZULIP_ACTIVITY_TRACE` | `false` | Master switch — the trace is off unless this is truthy |
+| `ZULIP_TRACE_COALESCE_MS` | `400` | Coalesce edits over this window |
+| `ZULIP_TRACE_MAX_RATE` | `2` | Hard ceiling on edits per second |
+| `ZULIP_TRACE_MAX_CONTENT` | `3500` | Trim older steps past this length |
+| `ZULIP_TRACE_TOOL_MATCHER` | *(all tools)* | Which tool calls become checkpoints |
+
+A tool-heavy turn can still produce a long board, because coalescing bounds the API
+cost rather than the readability. `ZULIP_TRACE_TOOL_MATCHER` fixes that:
+
+```bash
+ZULIP_TRACE_TOOL_MATCHER=terminal          # only shell commands
+ZULIP_TRACE_TOOL_MATCHER=terminal,read     # an allowlist
+ZULIP_TRACE_TOOL_MATCHER='!browser'        # everything except one noisy tool
+```
+
+Names are matched exactly and case-insensitively; a `!` denial always wins.
+
 ## 🆘 Troubleshooting
 
 | Problem | Fix |
