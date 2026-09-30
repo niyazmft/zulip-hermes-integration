@@ -85,13 +85,19 @@ def _resolve_name(arg: ast.AST, constants: dict[str, str]) -> str | None:
 
 
 def _env_names_from_call(node: ast.Call, constants: dict[str, str]) -> list[str]:
-    """Names read by ``os.getenv(...)`` / ``<mapping>.get(...)`` calls."""
+    """Names read by ``os.getenv(...)`` / ``<mapping>.get(...)`` calls.
+
+    Also recognises ``get_setting("ZULIP_...")`` (issue #156's profile-scoped
+    accessor), so rewiring a read through ``runtime_scope`` does not silently
+    drop it from this parity check.
+    """
     func = node.func
     is_accessor = (
         isinstance(func, ast.Name)
-        and func.id == "getenv"
+        and func.id in ("getenv", "get_setting")
     ) or (
-        isinstance(func, ast.Attribute) and func.attr in ("getenv", "get")
+        isinstance(func, ast.Attribute)
+        and func.attr in ("getenv", "get", "get_setting")
     )
     if not is_accessor or not node.args:
         return []
