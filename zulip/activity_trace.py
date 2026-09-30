@@ -32,6 +32,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from . import runtime_scope
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_COALESCE_MS = 400
@@ -68,7 +70,19 @@ class TraceConfig:
 
     @classmethod
     def from_env(cls, env: Optional[dict] = None) -> "TraceConfig":
-        env = os.environ if env is None else env
+        if env is None:
+            # Resolve through the active Hermes profile so trace settings cannot
+            # leak across profiles under multiplexing (#156).
+            env = {
+                key: runtime_scope.get_setting(key)
+                for key in (
+                    "ZULIP_ACTIVITY_TRACE",
+                    "ZULIP_TRACE_COALESCE_MS",
+                    "ZULIP_TRACE_MAX_RATE",
+                    "ZULIP_TRACE_MAX_CONTENT",
+                    "ZULIP_TRACE_TOOL_MATCHER",
+                )
+            }
 
         def _num(key: str, default: float, cast: Callable[[str], Any]) -> Any:
             try:

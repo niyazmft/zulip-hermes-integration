@@ -28,6 +28,8 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+
+from . import runtime_scope
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 # Values shorter than this are ignored, so innocuous short strings are never
@@ -170,8 +172,15 @@ def redact_secrets(
 
 
 def block_secret_leaks_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """``ZULIP_BLOCK_SECRET_LEAKS`` — enabled unless explicitly turned off."""
-    raw = (os.environ if env is None else env).get("ZULIP_BLOCK_SECRET_LEAKS")
+    """``ZULIP_BLOCK_SECRET_LEAKS`` — enabled unless explicitly turned off.
+
+    Resolves through the active Hermes profile when no explicit ``env`` is
+    supplied, so the flag cannot leak across profiles under multiplexing (#156).
+    """
+    if env is None:
+        raw = runtime_scope.get_setting("ZULIP_BLOCK_SECRET_LEAKS")
+    else:
+        raw = env.get("ZULIP_BLOCK_SECRET_LEAKS")
     if raw is None or str(raw).strip() == "":
         return True
     return str(raw).strip().lower() not in _TRUTHY_OFF

@@ -272,7 +272,8 @@ async def upload_file_to_zulip(
     # and must not be stricter than the gateway's own decision or an
     # approved path (e.g. a browser-harness screenshot cache dir) gets
     # silently dropped a second time here.
-    for chunk in os.environ.get("HERMES_MEDIA_ALLOW_DIRS", "").split(os.pathsep):
+    allow_dirs_raw = runtime_scope.get_setting("HERMES_MEDIA_ALLOW_DIRS", "") or ""
+    for chunk in allow_dirs_raw.split(os.pathsep):
         for raw_root in chunk.split(","):
             raw_root = raw_root.strip()
             if not raw_root:
