@@ -62,6 +62,14 @@ from .media import upload_file_to_zulip
 from .queue_manager import ZulipQueueManager
 from .dedupe_store import ZulipDedupeStore
 from .reactions import ReactionConfig, ReactionLifecycle
+from .reaction_triggers import (
+    ReactionTriggerConfig,
+    build_reaction_trigger_message,
+    find_unsubscribed_streams,
+    is_eligible_target_message,
+    match_reaction_trigger,
+    reaction_dedupe_key,
+)
 from .version import __version__, __repo__
 from .commands import handle_command, is_command
 from .policy import PolicyEngine
@@ -717,6 +725,9 @@ class ZulipAdapter(BasePlatformAdapter):
         # Populated on connect. Zulip renders mentions from the display name,
         # not the email local-part, so mention matching needs it.
         self.bot_full_name = ""
+        # Bot's Zulip user id, learned at connect; used to recognise the bot's
+        # own messages as reaction-trigger targets. (Epic #149)
+        self._bot_user_id = ""
 
         # Validate site URL before creating client: https-only unless the
         # operator opted in, so the API key cannot leave in cleartext by
@@ -814,11 +825,18 @@ class ZulipAdapter(BasePlatformAdapter):
         # Reaction config
         self._reaction_cfg = ReactionConfig.from_env()
 
+        # In-channel action triggers (epic #149): a configured reaction on the
+        # bot's own message dispatches a turn for that topic. Off by default —
+        # when off, the "reaction" event type is not requested at all.
+        self._reaction_trigger_cfg = ReactionTriggerConfig.from_env()
+
         # Extra Zulip event types beyond "message" that this install needs.
-        # Features opt in here (e.g. reaction triggers need "reaction"); it is
-        # consulted when registering the event queue and when deciding whether
-        # a persisted queue can be reused. (Issue #162)
-        self._extra_event_types: list = []
+        # Reaction triggers opt into "reaction" here; it is consulted when
+        # registering the event queue and when deciding whether a persisted
+        # queue can be reused. (Issues #162, #163)
+        self._extra_event_types: list = (
+            ["reaction"] if self._reaction_trigger_cfg.enabled else []
+        )
 
         # DM policy engine (Issue #48 — controls who can DM the bot)
         self._policy = PolicyEngine(data_dir=self._data_dir)
@@ -1251,6 +1269,10 @@ class ZulipAdapter(BasePlatformAdapter):
         if key in self._traces:
             return  # already tracing this work item
 
+        title = "Working"
+        if isinstance(metadata, dict) and metadata.get("trace_title"):
+            title = str(metadata["trace_title"])
+
         async def post(content: str) -> Optional[int]:
             payload = self._trace_payload(chat_id, metadata, content)
             if payload is None:
@@ -1273,7 +1295,7 @@ class ZulipAdapter(BasePlatformAdapter):
             )
             return isinstance(result, dict) and result.get("result") == "success"
 
-        trace = ActivityTrace(post, edit, self._trace_cfg)
+        trace = ActivityTrace(post, edit, self._trace_cfg, title=title)
         self._traces[key] = trace
         self._trace_started[key] = time.monotonic()
         for alias in self._session_aliases(event):
@@ -1497,6 +1519,10 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # Recover interrupted messages from previous gateway instance
         bot_user_id = str(probe_result.get("bot", {}).get("id", ""))
+        self._bot_user_id = bot_user_id
+        # Warn about reaction-trigger blind spots: Zulip only delivers
+        # ``reaction`` events for streams the bot is subscribed to. (#164)
+        await self._check_reaction_trigger_subscriptions()
         asyncio.create_task(
             recover_interrupted_messages(
                 client=self.client,
@@ -1679,6 +1705,15 @@ class ZulipAdapter(BasePlatformAdapter):
                         # Per-session serialization is handled by the gateway.
                         task = asyncio.create_task(self._handle_message(msg))
                         processing_tasks.append(task)
+                    elif event.get("type") == "reaction":
+                        # In-channel action triggers (epic #149). Fire-and-forget
+                        # like messages so a slow resolution/fetch cannot stall
+                        # the poll loop.
+                        had_message = True
+                        task = asyncio.create_task(
+                            self._handle_reaction_event(event)
+                        )
+                        processing_tasks.append(task)
 
                 # Fire-and-forget: don't await processing tasks here so the
                 # poll loop keeps fetching events. Errors are logged inside
@@ -1779,8 +1814,17 @@ class ZulipAdapter(BasePlatformAdapter):
                 was_mentioned = bool(mention_regex.search(content))
 
             # Apply gating
+            #
+            # A synthetic reaction-trigger turn (epic #149) already carries an
+            # explicit human instruction, so it does not need a fresh @mention.
+            # It still flows through the per-sender rate limit, stream filter
+            # and group policy below — the reaction is a trigger, never an
+            # authorisation bypass.
+            is_reaction_trigger = bool(message.get("_reaction_trigger"))
             should_process = False
-            if chatmode == "onmessage":
+            if is_reaction_trigger:
+                should_process = True
+            elif chatmode == "onmessage":
                 should_process = True
             elif chatmode == "oncall":
                 should_process = was_mentioned
@@ -1788,7 +1832,13 @@ class ZulipAdapter(BasePlatformAdapter):
                 should_process = onchar_triggered or was_mentioned
 
             # requireMention acts as additional gate (ignored in onmessage mode)
-            if chatmode != "onmessage" and require_mention and not was_mentioned and not onchar_triggered:
+            if (
+                not is_reaction_trigger
+                and chatmode != "onmessage"
+                and require_mention
+                and not was_mentioned
+                and not onchar_triggered
+            ):
                 should_process = False
 
             if not should_process:
@@ -1994,6 +2044,14 @@ class ZulipAdapter(BasePlatformAdapter):
                 source_kwargs["thread_id"] = topic
             source = self.build_source(**source_kwargs)
             extra_meta = {"topic": topic, "stream_id": stream_id}
+            if message.get("_reaction_trigger"):
+                # Label the triggered run legibly instead of echoing the
+                # internal envelope into the room. (#164)
+                extra_meta["reaction_trigger"] = True
+                extra_meta["trace_title"] = (
+                    f"reaction :{message.get('_reaction_emoji', '?')}: — "
+                    f"{message.get('_reaction_instruction', 'triggered')}"
+                )
         else:
             sender_id = message.get("sender_id")
             chat_id = _private_chat_id(message)
@@ -2065,6 +2123,209 @@ class ZulipAdapter(BasePlatformAdapter):
         # stop_typing() hook when the agent run finishes; mark the success
         # reaction here.
         await reactions.success()
+
+    async def _resolve_reaction_user(self, user_id: str):
+        """Resolve the reacting user's email (a reaction event carries no user
+        object). Returns ``(email, full_name)``; email is ``None`` on failure."""
+        user = await self.get_user_info(user_id)
+        if user and user.get("email"):
+            return user["email"], (user.get("full_name") or "")
+        return None, None
+
+    async def _fetch_message(self, message_id: str) -> Optional[dict]:
+        """Fetch a single Zulip message by id, bounded and best-effort."""
+        try:
+            mid = self._validate_message_id(message_id)
+        except ValueError:
+            return None
+        try:
+            result = await self._sdk_call(
+                self.client.get_raw_message, mid, timeout=self._read_timeout
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip reaction trigger: message fetch failed [id=%s error=%s]",
+                mask_pii(message_id),
+                mask_pii(str(e)),
+            )
+            return None
+        if isinstance(result, dict) and result.get("result") == "success":
+            message = result.get("message")
+            if isinstance(message, dict):
+                return message
+        return None
+
+    async def _handle_reaction_event(self, event: dict) -> None:
+        """Turn a configured reaction on the bot's own message into a turn.
+
+        The synthetic turn carries the *reacting human* as its sender, so
+        every authorisation and rate-limit decision is made about them. A
+        reaction is never an authorisation bypass. (Epic #149 / #163)
+        """
+        matched = match_reaction_trigger(event, self._reaction_trigger_cfg)
+        if not matched:
+            return
+        try:
+            dedupe_key = reaction_dedupe_key(
+                matched.message_id, matched.emoji, matched.user_id
+            )
+            if self._dedupe.check(dedupe_key):
+                logger.debug(
+                    "zulip reaction trigger dedupe hit [msg=%s emoji=%s]",
+                    mask_pii(matched.message_id),
+                    matched.emoji,
+                )
+                return
+
+            user_email, user_name = await self._resolve_reaction_user(
+                matched.user_id
+            )
+            if not user_email:
+                # Fail closed *and say so*: dispatching without an authorizable
+                # sender would only produce a silent policy drop. (#164)
+                logger.warning(
+                    "zulip reaction trigger dropped: could not resolve the "
+                    "reacting user's email [user_id=%s msg=%s emoji=%s]",
+                    mask_pii(matched.user_id),
+                    mask_pii(matched.message_id),
+                    matched.emoji,
+                )
+                await self._audit_logger.log_event(
+                    "reaction_trigger_dropped",
+                    {
+                        "message_id": matched.message_id,
+                        "emoji": matched.emoji,
+                        "user_id": matched.user_id,
+                        "reason": "unresolved_sender",
+                    },
+                )
+                return
+
+            target = await self._fetch_message(matched.message_id)
+            if not is_eligible_target_message(
+                target,
+                any_message=self._reaction_trigger_cfg.any_message,
+                bot_user_id=getattr(self, "_bot_user_id", ""),
+                bot_email=self.email or "",
+            ):
+                logger.info(
+                    "zulip reaction trigger ignored: ineligible target "
+                    "[msg=%s emoji=%s]",
+                    mask_pii(matched.message_id),
+                    matched.emoji,
+                )
+                return
+
+            stream_name = str(target.get("display_recipient") or "").strip()
+            if not stream_name:
+                logger.info(
+                    "zulip reaction trigger ignored: no stream name [msg=%s]",
+                    mask_pii(matched.message_id),
+                )
+                return
+            if (
+                self._streams_filter is not None
+                and stream_name.lower() not in self._streams_filter
+            ):
+                logger.info(
+                    "zulip reaction trigger ignored: stream not monitored "
+                    "[stream=%s]",
+                    mask_pii(stream_name),
+                )
+                return
+            topic = str(target.get("subject") or "").strip() or "general"
+
+            logger.info(
+                "zulip reaction trigger fired [msg=%s emoji=%s sender=%s "
+                "stream=%s topic=%s]",
+                mask_pii(matched.message_id),
+                matched.emoji,
+                mask_pii(user_email),
+                mask_pii(stream_name),
+                mask_pii(topic),
+            )
+            await self._audit_logger.log_event(
+                "reaction_trigger",
+                {
+                    "message_id": matched.message_id,
+                    "emoji": matched.emoji,
+                    "sender_id": user_email,
+                    "stream": stream_name,
+                    "topic": topic,
+                },
+            )
+
+            synthetic = build_reaction_trigger_message(
+                target,
+                matched,
+                stream_name,
+                topic,
+                user_email=user_email,
+                user_name=user_name,
+            )
+            await self._handle_message(synthetic)
+        except Exception as e:
+            logger.error(
+                "zulip reaction trigger failed [msg=%s error=%s]",
+                mask_pii(matched.message_id),
+                mask_pii(str(e)),
+            )
+
+    async def _check_reaction_trigger_subscriptions(self) -> None:
+        """Warn about monitored streams the bot is not subscribed to (#164).
+
+        Zulip only delivers ``reaction`` events for streams the user is
+        subscribed to, while ``message`` events arrive anyway, so an
+        unsubscribed monitored stream looks healthy while the trigger silently
+        never fires.
+        """
+        if not self._reaction_trigger_cfg.enabled:
+            return
+        try:
+            result = await self._sdk_call(
+                self.client.get_subscriptions, {}, timeout=self._read_timeout
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip reaction trigger subscription check failed: %s",
+                mask_pii(str(e)),
+            )
+            return
+        subscriptions = (
+            result.get("subscriptions", []) if isinstance(result, dict) else []
+        )
+        subscribed = [
+            str(s.get("name") or "")
+            for s in subscriptions
+            if isinstance(s, dict)
+        ]
+        if self._streams_filter is None:
+            # "*" cannot be enumerated, so report what we are subscribed to
+            # instead of pretending we verified the monitor set.
+            logger.info(
+                "zulip reaction triggers enabled; monitoring all streams; "
+                "subscribed to: %s",
+                ", ".join(sorted(n for n in subscribed if n)) or "(none)",
+            )
+            return
+        missing = find_unsubscribed_streams(
+            sorted(self._streams_filter), subscribed
+        )
+        if missing:
+            logger.warning(
+                "zulip reaction triggers will not fire in monitored streams "
+                "the bot is not subscribed to: %s",
+                ", ".join(missing),
+            )
+            await self._audit_logger.log_event(
+                "reaction_trigger_subscription_gap",
+                {"streams": missing},
+            )
+        else:
+            logger.info(
+                "zulip reaction triggers: bot is subscribed to every "
+                "monitored stream"
+            )
 
     async def resolve_topic(self, stream_id: int, topic: str) -> dict[str, Any]:
         """Mark a topic as resolved by prepending ✔.
