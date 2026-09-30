@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse, unquote
 
+from . import runtime_scope
 from .logger import mask_pii
 
 logger = logging.getLogger(__name__)
@@ -231,7 +232,7 @@ def _resolve_filename(url: str, content_disposition: Optional[str]) -> str:
 
 def resolve_media_max_mb() -> int:
     """Read max upload size from environment."""
-    raw = os.getenv("ZULIP_MEDIA_MAX_MB", "").strip()
+    raw = runtime_scope.get_setting("ZULIP_MEDIA_MAX_MB", "").strip()
     return int(raw) if raw.isdigit() else DEFAULT_MAX_MB
 
 

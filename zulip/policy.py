@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from . import runtime_scope
+
 logger = __import__("logging").getLogger(__name__)
 
 # Policy modes
@@ -113,27 +115,27 @@ class PolicyEngine:
 
     @staticmethod
     def _resolve_dm_mode() -> str:
-        raw = os.getenv("ZULIP_DM_POLICY", "open").strip().lower()
+        raw = runtime_scope.get_setting("ZULIP_DM_POLICY", "open").strip().lower()
         return raw if raw in _VALID_POLICIES else POLICY_OPEN
 
     @staticmethod
     def _resolve_group_mode() -> str:
         """Group policy defaults to 'open' for backward compatibility."""
-        raw = os.getenv("ZULIP_GROUP_POLICY", "open").strip().lower()
+        raw = runtime_scope.get_setting("ZULIP_GROUP_POLICY", "open").strip().lower()
         # Group policy does not support 'pairing'
         valid = frozenset({POLICY_OPEN, POLICY_ALLOWLIST, POLICY_DISABLED})
         return raw if raw in valid else POLICY_OPEN
 
     @staticmethod
     def _parse_allowlist() -> set[str]:
-        raw = os.getenv("ZULIP_ALLOWED_USERS", "").strip()
+        raw = runtime_scope.get_setting("ZULIP_ALLOWED_USERS", "").strip()
         if not raw:
             return set()
         return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
     @staticmethod
     def _parse_group_allowlist() -> set[str]:
-        raw = os.getenv("ZULIP_GROUP_ALLOW_FROM", "").strip()
+        raw = runtime_scope.get_setting("ZULIP_GROUP_ALLOW_FROM", "").strip()
         if not raw:
             return set()
         return {e.strip().lower() for e in raw.split(",") if e.strip()}

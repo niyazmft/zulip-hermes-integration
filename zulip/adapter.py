@@ -73,6 +73,7 @@ from .reaction_triggers import (
 from .version import __version__, __repo__
 from .commands import handle_command, is_command
 from .policy import PolicyEngine
+from . import runtime_scope
 from . import updater
 from .probe import (
     INSECURE_HTTP_ENV,
@@ -401,7 +402,7 @@ def _resolve_max_message_length() -> int:
     ``ZULIP_MAX_MESSAGE_LENGTH`` (default 20000, ``0`` disables). Applied in
     :meth:`ZulipAdapter.send` and :func:`_standalone_send` before chunking.
     """
-    raw = os.getenv("ZULIP_MAX_MESSAGE_LENGTH", "").strip()
+    raw = runtime_scope.get_setting("ZULIP_MAX_MESSAGE_LENGTH", "").strip()
     if not raw:
         return DEFAULT_MAX_MESSAGE_LENGTH
     try:
@@ -435,9 +436,9 @@ LONGPOLL_GRACE_SECONDS = 10.0
 
 def _resolve_chunk_config() -> tuple[int, str]:
     """Read chunking config from environment."""
-    limit_raw = os.getenv("ZULIP_TEXT_CHUNK_LIMIT", "").strip()
+    limit_raw = runtime_scope.get_setting("ZULIP_TEXT_CHUNK_LIMIT", "").strip()
     limit = int(limit_raw) if limit_raw.isdigit() else DEFAULT_CHUNK_LIMIT
-    mode = os.getenv("ZULIP_CHUNK_MODE", DEFAULT_CHUNK_MODE).strip()
+    mode = runtime_scope.get_setting("ZULIP_CHUNK_MODE", DEFAULT_CHUNK_MODE).strip()
     if mode not in ("length", "newline"):
         mode = DEFAULT_CHUNK_MODE
     return limit, mode
@@ -454,9 +455,9 @@ def _resolve_timeouts() -> tuple[float, float, float]:
         except (ValueError, AttributeError):
             return default
 
-    connect = _parse(os.getenv("ZULIP_CONNECT_TIMEOUT", ""), DEFAULT_CONNECT_TIMEOUT)
-    read = _parse(os.getenv("ZULIP_READ_TIMEOUT", ""), DEFAULT_READ_TIMEOUT)
-    send = _parse(os.getenv("ZULIP_SEND_TIMEOUT", ""), DEFAULT_SEND_TIMEOUT)
+    connect = _parse(runtime_scope.get_setting("ZULIP_CONNECT_TIMEOUT", ""), DEFAULT_CONNECT_TIMEOUT)
+    read = _parse(runtime_scope.get_setting("ZULIP_READ_TIMEOUT", ""), DEFAULT_READ_TIMEOUT)
+    send = _parse(runtime_scope.get_setting("ZULIP_SEND_TIMEOUT", ""), DEFAULT_SEND_TIMEOUT)
     return connect, read, send
 
 
@@ -495,7 +496,7 @@ def _resolve_streams_filter() -> set[str] | None:
     Returns None if all streams are allowed (default), or a set of
     lowercase stream names to monitor.
     """
-    raw = os.getenv("ZULIP_STREAMS", "").strip()
+    raw = runtime_scope.get_setting("ZULIP_STREAMS", "").strip()
     if not raw or raw == "*":
         return None
     return {s.strip().lower() for s in raw.split(",") if s.strip()}
@@ -503,7 +504,7 @@ def _resolve_streams_filter() -> set[str] | None:
 
 def _resolve_response_prefix() -> str:
     """Read outbound response prefix from environment."""
-    return os.getenv("ZULIP_RESPONSE_PREFIX", "")
+    return runtime_scope.get_setting("ZULIP_RESPONSE_PREFIX", "")
 
 
 def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
@@ -527,7 +528,7 @@ def _resolve_stream_overrides() -> dict[str, dict[str, Any]]:
     Unrecognised setting keys are warned about. Malformed configuration is
     logged and ignored rather than raised.
     """
-    raw = os.getenv("ZULIP_STREAM_OVERRIDES", "").strip()
+    raw = runtime_scope.get_setting("ZULIP_STREAM_OVERRIDES", "").strip()
     if len(raw.encode("utf-8")) > _MAX_JSON_OVERRIDES_BYTES:
         logger.warning(
             "ZULIP_STREAM_OVERRIDES exceeds max size (%d > %d bytes); ignoring overrides",
@@ -622,11 +623,11 @@ def _resolve_chatmode(stream_name: Optional[str] = None) -> tuple[str, list[str]
     ``ZULIP_STREAM_OVERRIDES`` takes precedence over the global
     ``ZULIP_CHATMODE`` for that stream only.
     """
-    mode = os.getenv("ZULIP_CHATMODE", "onmessage").strip().lower()
+    mode = runtime_scope.get_setting("ZULIP_CHATMODE", "onmessage").strip().lower()
     if mode not in ("onmessage", "oncall", "onchar"):
         mode = "onmessage"
-    prefixes = resolve_onchar_prefixes(os.getenv("ZULIP_ONCHAR_PREFIXES", ""))
-    require_mention = os.getenv("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
+    prefixes = resolve_onchar_prefixes(runtime_scope.get_setting("ZULIP_ONCHAR_PREFIXES", ""))
+    require_mention = runtime_scope.get_setting("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
 
     if stream_name:
         override = _resolve_stream_overrides().get(stream_name.strip().lower())
@@ -684,7 +685,7 @@ def _topic_sessions_enabled() -> bool:
     This is opt-in because turning it on splits an existing stream's history
     into per-topic sessions, which changes what an agent remembers.
     """
-    return os.getenv("ZULIP_TOPIC_SESSIONS", "").strip().lower() in ("true", "1", "yes", "on")
+    return runtime_scope.get_setting("ZULIP_TOPIC_SESSIONS", "").strip().lower() in ("true", "1", "yes", "on")
 
 
 def _safe_delete_temp_file(file_path: str) -> None:
@@ -721,9 +722,9 @@ class ZulipAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("zulip"))
         extra = config.extra or {}
 
-        self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
-        self.email = os.getenv("ZULIP_EMAIL") or extra.get("email", "")
-        self.site = os.getenv("ZULIP_SITE") or extra.get("site", "")
+        self.api_key = runtime_scope.get_setting("ZULIP_API_KEY") or extra.get("api_key", "")
+        self.email = runtime_scope.get_setting("ZULIP_EMAIL") or extra.get("email", "")
+        self.site = runtime_scope.get_setting("ZULIP_SITE") or extra.get("site", "")
 
         # Outbound secret guard (Issue #136): the platform extra is walked for
         # credential-shaped keys, and the adapter's own api_key is registered
@@ -777,16 +778,16 @@ class ZulipAdapter(BasePlatformAdapter):
         self._last_message_time: dict[str, float] = {}   # chat_id → last message epoch
         # DM session rotation: prevents context bloat in long conversations
         self._dm_session_turn_limit = int(
-            os.getenv("ZULIP_DM_SESSION_TURN_LIMIT", "20").strip()
+            runtime_scope.get_setting("ZULIP_DM_SESSION_TURN_LIMIT", "20").strip()
         )
         self._dm_base_message_counts: dict[str, int] = {}  # base_session_key → turn count
 
         # Block streaming config (Issue #49 — requires gateway-level streaming support)
         self._block_streaming = (
-            os.getenv("ZULIP_BLOCK_STREAMING", "").strip().lower() in ("true", "1", "yes", "on")
+            runtime_scope.get_setting("ZULIP_BLOCK_STREAMING", "").strip().lower() in ("true", "1", "yes", "on")
         )
 
-        self._data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+        self._data_dir = runtime_scope.get_profile_data_dir()
 
         # Timeout configuration (Issue #62)
         self._connect_timeout, self._read_timeout, self._send_timeout = _resolve_timeouts()
@@ -806,7 +807,7 @@ class ZulipAdapter(BasePlatformAdapter):
         # Rate limiter (per-sender, sliding window)
         self._rate_limiter = RateLimiter(
             max_per_minute=int(
-                os.getenv("ZULIP_MAX_MESSAGES_PER_MINUTE", "60").strip()
+                runtime_scope.get_setting("ZULIP_MAX_MESSAGES_PER_MINUTE", "60").strip()
             ),
         )
 
@@ -2826,7 +2827,7 @@ class ZulipAdapter(BasePlatformAdapter):
         metadata: Optional[dict],
         as_image: bool,
     ) -> SendResult:
-        data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+        data_dir = runtime_scope.get_profile_data_dir()
         try:
             url = await upload_file_to_zulip(
                 self.client, file_path, data_dir, account_id=self.email
@@ -3083,7 +3084,7 @@ class ZulipAdapter(BasePlatformAdapter):
         uploaded_urls = []
         uploaded_local_paths = []
         if media_files:
-            data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+            data_dir = runtime_scope.get_profile_data_dir()
             for file_path in media_files:
                 # Security: reject URL-like values in media_files (must be local paths)
                 if isinstance(file_path, str) and (file_path.startswith("http://") or file_path.startswith("https://")):
@@ -3223,17 +3224,17 @@ def validate_config(config) -> bool:
     """Validate that required credentials are present."""
     extra = getattr(config, "extra", {}) or {}
     return bool(
-        (os.getenv("ZULIP_API_KEY") or extra.get("api_key"))
-        and (os.getenv("ZULIP_EMAIL") or extra.get("email"))
-        and (os.getenv("ZULIP_SITE") or extra.get("site"))
+        (runtime_scope.get_setting("ZULIP_API_KEY") or extra.get("api_key"))
+        and (runtime_scope.get_setting("ZULIP_EMAIL") or extra.get("email"))
+        and (runtime_scope.get_setting("ZULIP_SITE") or extra.get("site"))
     )
 
 
 def _env_enablement() -> dict | None:
     """Seed PlatformConfig.extra from environment variables."""
-    key = os.getenv("ZULIP_API_KEY", "").strip()
-    email = os.getenv("ZULIP_EMAIL", "").strip()
-    site = os.getenv("ZULIP_SITE", "").strip()
+    key = runtime_scope.get_setting("ZULIP_API_KEY", "").strip()
+    email = runtime_scope.get_setting("ZULIP_EMAIL", "").strip()
+    site = runtime_scope.get_setting("ZULIP_SITE", "").strip()
     if not (key and email and site):
         return None
 
@@ -3330,9 +3331,9 @@ def _resolve_standalone_credentials(pconfig) -> tuple[str, str, str]:
     variables win, then the platform config's ``extra`` mapping.
     """
     extra = getattr(pconfig, "extra", {}) or {}
-    site = os.getenv("ZULIP_SITE") or extra.get("site") or ""
-    email = os.getenv("ZULIP_EMAIL") or extra.get("email") or ""
-    api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key") or ""
+    site = runtime_scope.get_setting("ZULIP_SITE") or extra.get("site") or ""
+    email = runtime_scope.get_setting("ZULIP_EMAIL") or extra.get("email") or ""
+    api_key = runtime_scope.get_setting("ZULIP_API_KEY") or extra.get("api_key") or ""
     return site, email, api_key
 
 
@@ -3414,9 +3415,7 @@ async def _standalone_send(
             )
             try:
                 await AuditLogger(
-                    data_dir=os.environ.get(
-                        "HERMES_DATA_DIR", os.path.expanduser("~/.hermes")
-                    ),
+                    data_dir=runtime_scope.get_profile_data_dir(),
                     account_id=email or "default",
                 ).log_event(
                     "secret_leak_blocked",
@@ -3443,7 +3442,7 @@ async def _standalone_send(
     # Media: upload first, then link — same shape as ZulipAdapter.send().
     uploaded_urls: list[str] = []
     if media_files:
-        data_dir = os.environ.get("HERMES_DATA_DIR", os.path.expanduser("~/.hermes"))
+        data_dir = runtime_scope.get_profile_data_dir()
         for file_path in media_files:
             if isinstance(file_path, (tuple, list)):
                 # Some callers pass (path, is_voice) pairs.

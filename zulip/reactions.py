@@ -12,6 +12,8 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from . import runtime_scope
+
 logger = logging.getLogger(__name__)
 
 # Default emoji names (Zulip uses underscore names)
@@ -49,19 +51,18 @@ class ReactionConfig:
     @classmethod
     def from_env(cls) -> "ReactionConfig":
         """Build config from environment variables."""
-        import os
 
         def truthy(val: str) -> bool:
             return val.lower() not in ("false", "0", "", "no", "off")
 
-        enabled = truthy(os.getenv("ZULIP_REACTIONS_ENABLED", "true"))
-        clear = truthy(os.getenv("ZULIP_REACTION_CLEAR_ON_FINISH", "true"))
+        enabled = truthy(runtime_scope.get_setting("ZULIP_REACTIONS_ENABLED", "true"))
+        clear = truthy(runtime_scope.get_setting("ZULIP_REACTION_CLEAR_ON_FINISH", "true"))
         return cls(
             enabled=enabled,
             clear_on_finish=clear,
-            on_start=os.getenv("ZULIP_REACTION_START", DEFAULT_START),
-            on_success=os.getenv("ZULIP_REACTION_SUCCESS", DEFAULT_SUCCESS),
-            on_error=os.getenv("ZULIP_REACTION_ERROR", DEFAULT_ERROR),
+            on_start=runtime_scope.get_setting("ZULIP_REACTION_START", DEFAULT_START),
+            on_success=runtime_scope.get_setting("ZULIP_REACTION_SUCCESS", DEFAULT_SUCCESS),
+            on_error=runtime_scope.get_setting("ZULIP_REACTION_ERROR", DEFAULT_ERROR),
         )
 
 

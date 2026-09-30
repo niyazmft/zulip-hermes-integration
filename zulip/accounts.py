@@ -6,9 +6,10 @@ configs. Future: full multi-account support with isolated event queues.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from dataclasses import dataclass
+
+from . import runtime_scope
 
 
 @dataclass
@@ -45,11 +46,11 @@ class AccountResolver:
         """Build single account from env vars or top-level config."""
         return ZulipAccount(
             name="default",
-            email=os.getenv("ZULIP_EMAIL") or self.extra.get("email", ""),
-            api_key=os.getenv("ZULIP_API_KEY") or self.extra.get("api_key", ""),
-            site=os.getenv("ZULIP_SITE") or self.extra.get("site", ""),
+            email=runtime_scope.get_setting("ZULIP_EMAIL") or self.extra.get("email", ""),
+            api_key=runtime_scope.get_setting("ZULIP_API_KEY") or self.extra.get("api_key", ""),
+            site=runtime_scope.get_setting("ZULIP_SITE") or self.extra.get("site", ""),
             streams=self._parse_streams(self.extra.get("streams")),
-            dm_policy=os.getenv("ZULIP_DM_POLICY", self.extra.get("dm_policy", "open")),
+            dm_policy=runtime_scope.get_setting("ZULIP_DM_POLICY", self.extra.get("dm_policy", "open")),
             allow_from=self._parse_allowlist(self.extra.get("allow_from")),
         )
 
