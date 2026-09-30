@@ -1107,6 +1107,123 @@ class ZulipAdapter(BasePlatformAdapter):
         step = trace.step(str(tool_name or "tool"))
         trace.complete(step, ok=ok, detail=detail)
 
+    # --- durable trace records (issue #161) ---
+
+    def _trace_records_path(self) -> Path:
+        safe = "".join(
+            ch if (ch.isalnum() or ch in "._-") else "_"
+            for ch in (self.email or "default")
+        )
+        return Path(self._data_dir) / f"zulip_traces_{safe}.json"
+
+    def _load_trace_records(self) -> dict:
+        try:
+            with open(self._trace_records_path(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("zulip: unreadable trace record file, starting fresh: %s", e)
+            return {}
+
+    def _save_trace_records(self, records: dict) -> None:
+        path = self._trace_records_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(records, fh)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.debug("zulip: could not persist trace records: %s", e)
+
+    def _persist_trace_record(
+        self, key: str, chat_id: str, metadata: Any, message_id: int
+    ) -> None:
+        records = self._load_trace_records()
+        records[key] = {
+            "message_id": int(message_id),
+            "chat_id": str(chat_id),
+            "topic": _metadata_topic(metadata) or "",
+            "started_at": time.time(),
+        }
+        self._save_trace_records(records)
+
+    def _drop_trace_record(self, key: str) -> None:
+        records = self._load_trace_records()
+        if key in records:
+            records.pop(key, None)
+            self._save_trace_records(records)
+
+    async def _recover_interrupted_traces(self) -> int:
+        """Close out traces whose run died with the previous process.
+
+        A trace can only be finalized by the process that created it, so an
+        abrupt restart (deploy, crash, OOM) would leave the topic showing
+        ``Working`` forever — the one case where "no trace is left permanently
+        in progress" fails. Those records are collapsed here to a terminal
+        cancelled board. (Issue #161)
+        """
+        records = self._load_trace_records()
+        if not records:
+            return 0
+
+        content = "**Cancelled**\n\nrun interrupted by a gateway restart"
+        recovered = 0
+        for key, record in list(records.items()):
+            message_id = record.get("message_id") if isinstance(record, dict) else None
+            if not isinstance(message_id, int):
+                # Unusable record: drop it rather than retry it every start.
+                records.pop(key, None)
+                continue
+
+            ok = False
+            try:
+                result = await self._sdk_call(
+                    self.client.update_message,
+                    {"message_id": message_id, "content": content},
+                    timeout=self._send_timeout,
+                )
+                ok = isinstance(result, dict) and result.get("result") == "success"
+            except Exception as e:
+                logger.warning(
+                    "zulip: could not close interrupted trace [key=%s]: %s", key, e
+                )
+
+            if not ok:
+                # Typical cause: the realm's message-edit limit has passed.
+                # Log it and STILL clear the record, otherwise every start
+                # retries an edit the server will keep refusing.
+                logger.warning(
+                    "zulip: interrupted trace left unfinalized"
+                    " [key=%s message=%s]",
+                    key,
+                    message_id,
+                )
+
+            records.pop(key, None)
+            recovered += 1
+            try:
+                await self._audit_logger.log_event(
+                    "activity_trace_recovered",
+                    {
+                        "chat_id": mask_pii(str(record.get("chat_id", ""))),
+                        "topic": str(record.get("topic", "")),
+                        "message_id": message_id,
+                        "finalized": ok,
+                    },
+                )
+            except Exception:
+                pass  # auditing never blocks recovery
+
+        self._save_trace_records(records)
+        if recovered:
+            logger.info(
+                "zulip: closed %d interrupted trace(s) after restart", recovered
+            )
+        return recovered
+
     def _start_trace(self, event: Any) -> None:
         """Begin a trace for a work item. Never raises, never blocks the run."""
         if not self._trace_cfg.enabled:
@@ -1153,10 +1270,22 @@ class ZulipAdapter(BasePlatformAdapter):
         # finalizing, so a fast turn cannot leave a stale "Working" board.
         try:
             self._trace_start_tasks[key] = asyncio.get_running_loop().create_task(
-                trace.start()
+                self._start_trace_and_persist(trace, key, chat_id, metadata)
             )
         except RuntimeError:  # no running loop (sync caller): the trace is inert
             pass
+
+    async def _start_trace_and_persist(
+        self, trace: ActivityTrace, key: str, chat_id: str, metadata: Any
+    ) -> None:
+        """Post the trace, then remember it so a later start can close it out.
+
+        The record is written only once the post succeeded: with no message id
+        there is nothing for recovery to finalize. (Issue #161)
+        """
+        ok = await trace.start()
+        if ok and trace.message_id is not None:
+            self._persist_trace_record(key, chat_id, metadata, trace.message_id)
 
     async def _finish_trace(self, event: Any, outcome: Any) -> None:
         """Finalize a work item's trace. Never raises into the gateway loop."""
@@ -1206,6 +1335,10 @@ class ZulipAdapter(BasePlatformAdapter):
                 )
         except Exception as e:
             logger.warning("activity trace finalize failed (dropped): %s", e)
+        finally:
+            # Finalized here, so a later start must not try again — even when the
+            # final edit failed, or recovery would retry it forever. (#161)
+            self._drop_trace_record(key)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Gateway lifecycle hook: a work item started. (epic #139 / #158)"""
@@ -1452,6 +1585,13 @@ class ZulipAdapter(BasePlatformAdapter):
 
     async def _listen_for_events(self):
         """Listen for incoming Zulip messages via persistent event queue."""
+        # Close out traces orphaned by an abrupt restart before taking new work
+        # (issue #161). Best-effort: it must never block listening.
+        try:
+            await self._recover_interrupted_traces()
+        except Exception as e:
+            logger.warning("zulip: interrupted-trace recovery failed: %s", e)
+
         logger.info("zulip adapter listening [account=%s]", mask_pii(self.email))
 
         # Latency-gated backoff state (Issue #146). Stays 0.0 while the server
