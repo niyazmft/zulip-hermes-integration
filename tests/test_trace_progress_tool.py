@@ -63,8 +63,10 @@ def stream_event(topic="api-review", chat_id="573423"):
 
 
 async def _settle():
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # The trace post runs through asyncio.to_thread, so a bare sleep(0) yield can
+    # return before the fake SDK call has finished. That race was invisible locally
+    # and lost on CI's slower runner, so give the worker thread a real moment.
+    await asyncio.sleep(0.15)
 
 
 async def started(adapter, topic="api-review"):
