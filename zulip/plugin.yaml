@@ -101,6 +101,21 @@ optional_env:
   - name: ZULIP_REQUIRE_MENTION
     description: "Require @mention in streams (default: true)"
     prompt: "Require mention"
+  - name: ZULIP_ENGAGEMENT_MODE
+    description: 'Sticky follow-ups after @mention: "off" (default) or "sticky_topic"'
+    prompt: "Engagement mode"
+  - name: ZULIP_ENGAGEMENT_SCOPE
+    description: 'Who can continue without @mention: "user" (default, same person) or "topic" (anyone in topic)'
+    prompt: "Engagement scope"
+  - name: ZULIP_ENGAGEMENT_TTL_MINUTES
+    description: "Minutes of idle time before sticky engagement expires (default: 45)"
+    prompt: "Engagement TTL minutes"
+  - name: ZULIP_ENGAGEMENT_EXPIRY_NOTICE
+    description: "Post a topic notice when sticky engagement idle-expires (default: true)"
+    prompt: "Engagement expiry notice"
+  - name: ZULIP_ENGAGEMENT_EXPIRY_SCAN_SECONDS
+    description: "How often to scan for expired engagements (default: 30)"
+    prompt: "Expiry scan interval seconds"
   - name: ZULIP_TOPIC_SESSIONS
     description: "Give each stream topic its own conversation session (default: false)"
     prompt: "Per-topic sessions"

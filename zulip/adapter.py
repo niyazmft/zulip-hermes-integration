@@ -84,6 +84,15 @@ from .recovery import recover_interrupted_messages
 from .rate_limiter import RateLimiter
 from .audit_logger import AuditLogger
 from .activity_trace import ActivityTrace, TraceConfig
+from .engagement import (
+    MODE_OFF as ENGAGEMENT_MODE_OFF,
+    EngagementConfig,
+    EngagementEntry,
+    TopicEngagementStore,
+    format_expiry_notice_text,
+    is_end_session_message,
+    is_stop_listening_message,
+)
 
 # Per-task session context published by the gateway (epic #139 / #159). Guarded
 # like every other host symbol: on a gateway without it, tool steps simply
@@ -838,6 +847,13 @@ class ZulipAdapter(BasePlatformAdapter):
             ["reaction"] if self._reaction_trigger_cfg.enabled else []
         )
 
+        # Sticky topic engagement (issues #165/#166): after a mention in a
+        # stream topic, follow-ups there are answered without a fresh mention
+        # until the idle TTL lapses or the caller stops. Off by default.
+        self._engagement_cfg = EngagementConfig.from_env()
+        self._engagement_store = TopicEngagementStore(self._engagement_cfg)
+        self._engagement_task: Optional[asyncio.Task] = None
+
         # DM policy engine (Issue #48 — controls who can DM the bot)
         self._policy = PolicyEngine(data_dir=self._data_dir)
 
@@ -1511,6 +1527,13 @@ class ZulipAdapter(BasePlatformAdapter):
         # Start presence heartbeat so bot appears online
         self._presence_task = asyncio.create_task(self._presence_heartbeat())
 
+        # Sticky engagement expiry scanner (#166). Started only when engagement
+        # is enabled, so mode=off runs no background task at all.
+        if self._engagement_cfg.mode != ENGAGEMENT_MODE_OFF:
+            self._engagement_task = asyncio.create_task(
+                self._engagement_expiry_loop()
+            )
+
         # Check for plugin updates on startup
         updater.startup_version_check(__version__, __repo__)
 
@@ -1561,6 +1584,12 @@ class ZulipAdapter(BasePlatformAdapter):
             self._presence_task.cancel()
             try:
                 await self._presence_task
+            except asyncio.CancelledError:
+                pass
+        if self._engagement_task:
+            self._engagement_task.cancel()
+            try:
+                await self._engagement_task
             except asyncio.CancelledError:
                 pass
         self._mark_disconnected()
@@ -1633,6 +1662,116 @@ class ZulipAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # presence is best-effort
             await asyncio.sleep(60)
+
+    def _engagement_notice_payload(
+        self, stream_id: object, topic: str, content: str
+    ) -> Optional[dict]:
+        """In-topic send payload for an engagement notice.
+
+        Resolved through ``_parse_target`` — the same routing the reply uses —
+        so a notice can never land in a different stream than the one it
+        describes.
+        """
+        try:
+            target = _parse_target(str(stream_id))
+        except (TypeError, ValueError):
+            return None
+        if target.get("type") != "stream":
+            return None
+        return {
+            "type": "stream",
+            "to": target["stream_id"],
+            "topic": topic,
+            "content": content,
+        }
+
+    async def _ack_engagement_stop(self, message: dict, *, cleared: bool) -> None:
+        """Acknowledge an explicit stop of sticky listening, in-topic."""
+        if cleared:
+            text_out = (
+                "Okay — I'll stop listening on this topic. "
+                "@mention me again when you want to continue."
+            )
+        else:
+            text_out = (
+                "I wasn't actively listening on this topic. "
+                "@mention me to start a conversation."
+            )
+        payload = self._engagement_notice_payload(
+            message.get("stream_id"), message.get("subject", ""), text_out
+        )
+        if payload is None:
+            return
+        try:
+            await self._sdk_call(
+                self.client.send_message, payload, timeout=self._send_timeout
+            )
+        except Exception as e:
+            logger.warning("zulip engagement stop ack failed: %s", mask_pii(str(e)))
+
+    async def _engagement_expiry_loop(self) -> None:
+        """Expire idle engagements and post an in-topic notice (#166).
+
+        Only natural idle TTL expiry notifies; an explicit stop or session end
+        clears silently. Runs only while the adapter is listening and only when
+        engagement is enabled — the task is simply never started for mode=off.
+        """
+        interval = self._engagement_cfg.expiry_scan_seconds
+        ttl_min = max(1, int(round(self._engagement_cfg.ttl_seconds / 60.0)))
+        logger.info(
+            "zulip engagement expiry scanner started [interval=%.0fs ttl=%sm]",
+            interval,
+            ttl_min,
+        )
+        while self._listening:
+            try:
+                await asyncio.sleep(interval)
+                if not self._listening:
+                    break
+                expired = self._engagement_store.pop_expired()
+                if not expired:
+                    continue
+
+                # Coalesce: one notice per (stream_id, topic).
+                by_topic: dict[tuple[str, str], list[EngagementEntry]] = {}
+                for entry in expired:
+                    by_topic.setdefault((entry.stream_id, entry.topic), []).append(
+                        entry
+                    )
+
+                if not self._engagement_cfg.expiry_notice:
+                    continue
+                for (stream_id, topic), entries in by_topic.items():
+                    payload = self._engagement_notice_payload(
+                        stream_id,
+                        topic,
+                        format_expiry_notice_text(ttl_minutes=ttl_min),
+                    )
+                    if payload is None:
+                        continue
+                    try:
+                        await self._sdk_call(
+                            self.client.send_message,
+                            payload,
+                            timeout=self._send_timeout,
+                        )
+                        logger.info(
+                            "zulip engagement expired notice [stream=%s topic=%s users=%d]",
+                            stream_id,
+                            topic,
+                            len(entries),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "zulip engagement expired notice failed [stream=%s topic=%s]: %s",
+                            stream_id,
+                            topic,
+                            mask_pii(str(e)),
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("zulip engagement expiry loop error: %s", str(e))
 
     async def _listen_for_events(self):
         """Listen for incoming Zulip messages via persistent event queue."""
@@ -1788,6 +1927,10 @@ class ZulipAdapter(BasePlatformAdapter):
             # malformed event would otherwise raise AttributeError inside the
             # handler rather than being skipped.
             stream_name = str(message.get("display_recipient", ""))
+            # Engagement keys on the stream + topic pair, read here so the gate
+            # below never depends on locals bound later in the handler.
+            gate_stream_id = message.get("stream_id")
+            gate_topic = message.get("subject", "")
             chatmode, onchar_prefixes, require_mention = _resolve_chatmode(stream_name)
 
             # Check onchar trigger
@@ -1840,6 +1983,26 @@ class ZulipAdapter(BasePlatformAdapter):
                 and not onchar_triggered
             ):
                 should_process = False
+
+            # Sticky topic engagement (#165/#166): once a user (or the whole
+            # topic, per scope) has engaged the bot with a real mention/onchar,
+            # later messages in that same topic are accepted without a fresh
+            # mention until the idle TTL lapses. DMs never reach this block and
+            # onmessage streams already answer everything, so engagement is
+            # only consulted for mention-gated modes. An engaged follow-up
+            # still passes stream filtering, group policy and the per-sender
+            # rate limit below exactly like any other message.
+            engaged_followup = False
+            if (
+                self._engagement_cfg.mode != ENGAGEMENT_MODE_OFF
+                and chatmode != "onmessage"
+                and not should_process
+                and self._engagement_store.is_engaged(
+                    gate_stream_id, gate_topic, sender_email
+                )
+            ):
+                engaged_followup = True
+                should_process = True
 
             if not should_process:
                 logger.debug("zulip drop [mode=%s, no trigger] msg=%s", chatmode, mask_pii(str(message_id)))
@@ -1900,6 +2063,51 @@ class ZulipAdapter(BasePlatformAdapter):
                     mask_pii(str(message.get("display_recipient", ""))),
                 )
                 return
+
+            # --- Sticky engagement: explicit stop / session end (#166) ---
+            # This sits inside the stream gate — after filtering and group
+            # policy, so an unauthorized or off-topic sender can never use it —
+            # and before the ``is_command`` interception below. "/unlisten" and
+            # "/reset" start with "/" yet are not registered admin commands,
+            # so without this they would fall through to an agent turn. A stop
+            # is acknowledged in-topic and consumes the message.
+            engagement_blocked = False
+            if (
+                self._engagement_cfg.mode != ENGAGEMENT_MODE_OFF
+                and chatmode != "onmessage"
+            ):
+                if is_stop_listening_message(content):
+                    cleared = self._engagement_store.clear(
+                        gate_stream_id, gate_topic, sender_email
+                    )
+                    await self._ack_engagement_stop(message, cleared=cleared)
+                    await self._mark_read(message_id)
+                    return
+                if is_end_session_message(content):
+                    # A session ender clears the topic and must not re-open it
+                    # via the engaged_followup path below.
+                    self._engagement_store.clear(
+                        gate_stream_id, gate_topic, sender_email
+                    )
+                    engagement_blocked = True
+
+            # --- Sticky engagement: open / refresh (#165/#166) ---
+            # Only a message that actually reaches the agent — a real
+            # mention/onchar, or a follow-up on an already-engaged topic —
+            # (re)starts the idle TTL. Keeping onmessage streams out avoids
+            # expiry notices for topics that never needed a mention.
+            if (
+                self._engagement_cfg.mode != ENGAGEMENT_MODE_OFF
+                and chatmode != "onmessage"
+                and not engagement_blocked
+                and (was_mentioned or onchar_triggered or engaged_followup)
+            ):
+                self._engagement_store.mark_engaged(
+                    gate_stream_id,
+                    gate_topic,
+                    sender_email,
+                    user_name=sender_full_name,
+                )
 
             # Normalize mention from content
             if was_mentioned and mention_regex:
