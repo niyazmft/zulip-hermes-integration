@@ -53,6 +53,13 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
                 return {"result": "success"}
 
     monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    # The live-adapter registry is module-level, so adapters built by earlier tests
+    # in the same process stay registered and can answer for this one — the handler
+    # iterates them all. That made a "wrong topic is dropped" test report success on
+    # CI, where GC timing kept a stale adapter alive. Isolate the registry.
+    monkeypatch.setattr(
+        adapter_module, "_LIVE_ADAPTERS", type(adapter_module._LIVE_ADAPTERS)()
+    )
     adapter_module._clear_caches()
 
     from zulip.adapter import ZulipAdapter
