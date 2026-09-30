@@ -18,6 +18,7 @@ PLUGIN_FILES = [
     "commands.py",
     "activity_trace.py",
     "dedupe_store.py",
+    "engagement.py",
     "fallback_reader.py",
     "logger.py",
     "media.py",
