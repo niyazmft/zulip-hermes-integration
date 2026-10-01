@@ -1,7 +1,7 @@
 name: zulip
 label: Zulip
 kind: platform
-version: 1.0.0
+version: 1.10.0
 description: Zulip gateway adapter for Hermes Agent. Supports streams with topics and private messages.
 author: Niyaz
 requires_env:
