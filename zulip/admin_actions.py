@@ -12,11 +12,35 @@ Stream creation/deletion requires admin privileges on the Zulip server.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import Any, Optional
 
 from .logger import mask_pii
 
 logger = logging.getLogger(__name__)
+
+
+def _user_lookup_call(client: Any, user_id_or_email: Any):
+    """Resolve ``(callable, args)`` for a single-user lookup.
+
+    ``zulip`` 0.9.1 exposes ``get_user_by_id`` and ``call_endpoint`` but has no
+    ``get_user`` (issue #196); ``GET /users/{value}`` accepts either a numeric
+    id or an email address, so the raw endpoint covers the email case that
+    ``get_user_by_id`` cannot. Kept in step with ``zulip/adapter.py``.
+    """
+    raw = str(user_id_or_email or "").strip()
+    if not raw:
+        return None, ()
+    by_id = getattr(client, "get_user_by_id", None)
+    if raw.isdigit() and callable(by_id):
+        return by_id, (int(raw),)
+    endpoint = getattr(client, "call_endpoint", None)
+    if callable(endpoint):
+        return partial(endpoint, url=f"users/{raw}", method="GET"), ()
+    legacy = getattr(client, "get_user", None)
+    if callable(legacy):
+        return legacy, (raw,)
+    return None, ()
 
 
 async def list_streams(client: Any, include_all_public: bool = False) -> list[dict]:
@@ -119,11 +143,25 @@ async def delete_stream(client: Any, stream_id: int) -> bool:
 
 
 async def get_user_info(client: Any, user_id_or_email: str) -> Optional[dict]:
-    """Get information about a user."""
+    """Get information about a user, by numeric id or email address.
+
+    ``zulip`` 0.9.1 has no ``get_user`` method (issue #196), so the lookup goes
+    through whatever the installed SDK actually exposes.
+    """
+    fn, args = _user_lookup_call(client, user_id_or_email)
+    if fn is None:
+        logger.error(
+            "get_user_info unavailable: %s exposes no supported user lookup "
+            "(issue #196)",
+            type(client).__name__,
+        )
+        return None
     try:
-        result = await _sdk_call_async(client.get_user, user_id_or_email)
-        if result.get("result") == "success":
-            user = result.get("user", {})
+        result = await _sdk_call_async(fn, *args)
+        if isinstance(result, dict) and result.get("result") == "success":
+            user = result.get("user") or {}
+            if isinstance(user, list):
+                user = user[0] if user else {}
             return {
                 "user_id": user.get("user_id"),
                 "email": user.get("email"),
@@ -131,10 +169,13 @@ async def get_user_info(client: Any, user_id_or_email: str) -> Optional[dict]:
                 "is_admin": user.get("is_admin", False),
                 "is_bot": user.get("is_bot", False),
             }
-        logger.warning("get_user_info failed: %s", result.get("msg"))
+        logger.warning(
+            "get_user_info failed: %s",
+            result.get("msg") if isinstance(result, dict) else result,
+        )
         return None
     except Exception as e:
-        logger.error("get_user_info error: %s", e)
+        logger.error("get_user_info error: %s", mask_pii(str(e)))
         return None
 
 

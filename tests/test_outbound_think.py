@@ -219,8 +219,14 @@ class TestDisplayNameCacheWiring:
         assert first == "User 7"
         assert adapter._display_names.get(7) == "User 7"
 
-        # Second resolution must be served from the cache, not the API.
+        # Second resolution must be served from the cache, not the API. Guard
+        # every lookup the SDK may expose -- get_user_by_id is the real method on
+        # zulip 0.9.1 (issue #196), so guarding only get_user would let a cache
+        # miss slip through unnoticed.
         adapter.client.get_user = MagicMock(side_effect=AssertionError("no fetch"))
+        adapter.client.get_user_by_id = MagicMock(
+            side_effect=AssertionError("no fetch")
+        )
         assert await adapter._resolve_display_name({"sender_id": 7}) == "User 7"
 
     @pytest.mark.asyncio

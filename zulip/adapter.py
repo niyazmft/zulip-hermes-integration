@@ -14,6 +14,7 @@ import tempfile
 import time
 import weakref
 from collections import OrderedDict
+from functools import partial
 from pathlib import Path
 from typing import Optional, Any, overload
 
@@ -645,6 +646,30 @@ def _resolve_chatmode(stream_name: Optional[str] = None) -> tuple[str, list[str]
             mode = override.get("chatmode", mode)
 
     return mode, prefixes, require_mention
+
+
+def _user_lookup_call(client: Any, user_id_or_email: Any):
+    """Resolve ``(callable, args)`` for a single-user lookup.
+
+    The ``zulip`` SDK exposes no single consistent method for this: 0.9.1 has
+    ``get_user_by_id`` and ``call_endpoint`` but **no** ``get_user``, while some
+    other builds do provide ``get_user`` (issue #196). ``GET /users/{value}``
+    accepts either a numeric id or an email address, so the raw endpoint covers
+    the email case that ``get_user_by_id`` cannot.
+    """
+    raw = str(user_id_or_email or "").strip()
+    if not raw:
+        return None, ()
+    by_id = getattr(client, "get_user_by_id", None)
+    if raw.isdigit() and callable(by_id):
+        return by_id, (int(raw),)
+    endpoint = getattr(client, "call_endpoint", None)
+    if callable(endpoint):
+        return partial(endpoint, url=f"users/{raw}", method="GET"), ()
+    legacy = getattr(client, "get_user", None)
+    if callable(legacy):
+        return legacy, (raw,)
+    return None, ()
 
 
 def _resolve_soft_gate() -> bool:
@@ -2413,15 +2438,25 @@ class ZulipAdapter(BasePlatformAdapter):
 
     async def _fetch_display_name(self, user_id: Any) -> Optional[str]:
         """One bounded lookup for a display name, used on a cache miss (#152)."""
-        try:
-            result = await self._sdk_call(
-                self.client.get_user, user_id, timeout=self._send_timeout
+        fn, args = _user_lookup_call(self.client, user_id)
+        if fn is None:
+            logger.warning(
+                "zulip display-name lookup unavailable: %s exposes no supported "
+                "user lookup (issue #196)",
+                type(self.client).__name__,
             )
+            return None
+        try:
+            result = await self._sdk_call(fn, *args, timeout=self._send_timeout)
         except Exception:
             return None
         if not isinstance(result, dict) or result.get("result") != "success":
             return None
-        name = (result.get("user") or {}).get("full_name") or ""
+        user = result.get("user") or {}
+        if isinstance(user, list):
+            # The SDK docstring shows a list shape for /users/{id}; tolerate it.
+            user = user[0] if user else {}
+        name = user.get("full_name") or ""
         return name.strip() or None
 
     async def _resolve_display_name(self, message: dict) -> str:
@@ -3501,15 +3536,25 @@ class ZulipAdapter(BasePlatformAdapter):
             return False
 
     async def get_user_info(self, user_id_or_email: str) -> Optional[dict]:
-        """Get information about a user."""
-        try:
-            result = await self._sdk_call(
-                self.client.get_user,
-                user_id_or_email,
-                timeout=self._send_timeout,
+        """Get information about a user, by numeric id or email address.
+
+        ``zulip`` 0.9.1 has no ``get_user`` method (issue #196), so the lookup
+        goes through whatever the installed SDK actually exposes.
+        """
+        fn, args = _user_lookup_call(self.client, user_id_or_email)
+        if fn is None:
+            logger.error(
+                "get_user_info unavailable: %s exposes no supported user lookup "
+                "(issue #196)",
+                type(self.client).__name__,
             )
-            if result.get("result") == "success":
-                user = result.get("user", {})
+            return None
+        try:
+            result = await self._sdk_call(fn, *args, timeout=self._send_timeout)
+            if isinstance(result, dict) and result.get("result") == "success":
+                user = result.get("user") or {}
+                if isinstance(user, list):
+                    user = user[0] if user else {}
                 return {
                     "user_id": user.get("user_id"),
                     "email": user.get("email"),
@@ -3517,10 +3562,13 @@ class ZulipAdapter(BasePlatformAdapter):
                     "is_admin": user.get("is_admin", False),
                     "is_bot": user.get("is_bot", False),
                 }
-            logger.warning("get_user_info failed: %s", result.get("msg"))
+            logger.warning(
+                "get_user_info failed: %s",
+                result.get("msg") if isinstance(result, dict) else result,
+            )
             return None
         except Exception as e:
-            logger.error("get_user_info error: %s", e)
+            logger.error("get_user_info error: %s", mask_pii(str(e)))
             return None
 
     async def send_image_file(

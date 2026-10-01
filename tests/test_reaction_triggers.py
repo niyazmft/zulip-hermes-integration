@@ -257,7 +257,7 @@ class TestHandleReactionEvent:
             "result": "success",
             "message": _bot_message(),
         }
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com", "full_name": "Human"},
         }
@@ -280,7 +280,7 @@ class TestHandleReactionEvent:
         other["sender_id"] = 7
         other["sender_email"] = "someone-else@x.com"
         a.client.get_raw_message.return_value = {"result": "success", "message": other}
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
@@ -296,7 +296,7 @@ class TestHandleReactionEvent:
         other["sender_id"] = 7
         other["sender_email"] = "someone-else@x.com"
         a.client.get_raw_message.return_value = {"result": "success", "message": other}
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
@@ -310,7 +310,7 @@ class TestHandleReactionEvent:
     ):
         a = _build_adapter(monkeypatch, tmp_path, {"+1": "Proceed."})
         a._bot_user_id = "42"
-        a.client.get_user.return_value = {"result": "error", "msg": "no such user"}
+        a.client.get_user_by_id.return_value = {"result": "error", "msg": "no such user"}
 
         await a._handle_reaction_event(_reaction_event())
 
@@ -328,7 +328,7 @@ class TestHandleReactionEvent:
             "result": "success",
             "message": _bot_message(),
         }
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
@@ -345,7 +345,7 @@ class TestHandleReactionEvent:
             "result": "success",
             "message": _bot_message(),
         }
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
@@ -359,7 +359,7 @@ class TestHandleReactionEvent:
             "result": "success",
             "message": _bot_message(),
         }
-        b.client.get_user.return_value = {
+        b.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
@@ -375,7 +375,7 @@ class TestHandleReactionEvent:
             "result": "success",
             "message": _bot_message(),
         }
-        a.client.get_user.return_value = {
+        a.client.get_user_by_id.return_value = {
             "result": "success",
             "user": {"user_id": 9, "email": "human@x.com"},
         }
