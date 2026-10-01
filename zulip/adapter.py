@@ -3830,10 +3830,12 @@ class ZulipAdapter(BasePlatformAdapter):
         return summary
 
     async def _render_refs(self, text: str) -> str:
-        """Rewrite validated ``[[zulip_ref: …]]`` markers before chunking (#150).
+        """Rewrite validated GitHub refs before chunking (#150).
 
-        Best-effort: rendering must never fail a send, and must never change a
-        reply that has no markers.
+        Handles both ``[[zulip_ref: …]]`` markers and bare ``github.com``
+        pull/issue/commit/run URLs written in prose. Best-effort: rendering
+        must never fail a send, and must never make a reply worse -- an
+        unconfirmed bare URL is left exactly as written.
         """
         try:
             return await render_refs(text)

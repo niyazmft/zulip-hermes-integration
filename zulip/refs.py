@@ -11,12 +11,26 @@ the GitHub REST API and rewrites it as a clickable markdown link::
     [[zulip_ref: https://github.com/owner/repo/pull/12]]
         -> [owner/repo#12](https://github.com/owner/repo/pull/12)
 
+A *bare* ref URL written in prose is handled too, because the marker
+convention is not communicated to the agent anywhere -- in practice refs
+arrive as plain URLs::
+
+    See https://github.com/owner/repo/pull/12
+        -> See [owner/repo#12](https://github.com/owner/repo/pull/12)
+
+The two passes share one validation cache and one per-message rate budget.
+They differ only in the failure mode: an unvalidatable *marker* degrades to
+backticked plain text (it was an explicit render request), while an
+unvalidatable *bare URL* is left exactly as written so the agent's prose is
+never made worse. URLs inside code spans or markdown link targets are never
+rewritten.
+
 Security invariants (do not relax):
 
 * Only ``https://github.com/...`` URLs matched by the anchored
-  :data:`_REF_URL_RE` are ever fetched. Lookalike hosts, ports, embedded
-  credentials, query strings and fragments never match, so the plugin never
-  fetches a user-controlled origin.
+  :data:`_REF_URL_RE` / :data:`_BARE_URL_RE` are ever fetched. Lookalike hosts,
+  ports, embedded credentials, query strings and fragments never match, so the
+  plugin never fetches a user-controlled origin.
 * The API origin is the hardcoded module constant :data:`GITHUB_API_ORIGIN`.
   It is *not* configurable -- no environment variable can widen it into an
   SSRF primitive.
@@ -83,6 +97,23 @@ _REF_MARKER_RE = re.compile(
     r"\[\[\s*zulip_ref\s*:\s*(?P<body>[^\n]*?)\s*\]\]",
     re.IGNORECASE,
 )
+
+# A *bare* ref URL written in prose, with no marker. Same anchored shape as
+# :data:`_REF_URL_RE`, but matched inline so the agent does not have to know
+# the marker convention. The lookbehind keeps us out of markdown link targets
+# (``](url)``), inline code, fenced code and attributes; the lookahead refuses
+# to match a prefix of a longer URL (``/pull/1/files``, ``/pull/1?x=1``).
+_BARE_URL_RE = re.compile(
+    r"(?<![`(=<\"'\w])"
+    r"(?P<url>https://github\.com/"
+    r"(?P<owner>" + _OWNER_SEGMENT + r")/"
+    r"(?P<repo>" + _GITHUB_SEGMENT + r")/"
+    r"(?:pull/\d+|issues/\d+|commit/[0-9a-fA-F]{7,40}|actions/runs/\d+))"
+    r"(?![\w/?#-])"
+)
+
+_FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -211,6 +242,25 @@ async def _validate(ref: _Ref, http: Any) -> bool:
         return False
 
 
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Character spans the bare-URL pass must not rewrite (fenced + inline code)."""
+    spans = [(m.start(), m.end()) for m in _FENCED_CODE_RE.finditer(text)]
+    for match in _INLINE_CODE_RE.finditer(text):
+        if not any(start <= match.start() < end for start, end in spans):
+            spans.append((match.start(), match.end()))
+    return spans
+
+
+async def _validate_cached(ref: _Ref, http: Any, now: float) -> bool:
+    """Validate ``ref``, reusing the shared cache so markers and bare URLs pay
+    for the same URL at most once per TTL window."""
+    ok = _cache_get(ref.url, now)
+    if ok is None:
+        ok = await _validate(ref, http)
+        _cache_put(ref.url, ok, now)
+    return ok
+
+
 def _degrade(url: str) -> str:
     return f"`{url}`"
 
@@ -231,31 +281,14 @@ async def _render_validated(ref: _Ref, label: str, *, http: Any, now: float) -> 
     return _link(ref, label) if ok else _degrade(ref.url)
 
 
-async def render_refs(
-    text: str,
-    *,
-    max_refs: int = MAX_REFS_DEFAULT,
-    http: Any = None,
-) -> str:
-    """Replace ``[[zulip_ref: ...]]`` markers with validated links.
-
-    Call this *before* chunking so a marker can never be split across two
-    messages. ``http`` is an injectable fetcher used by tests: a callable
-    (sync or async) taking the API URL and returning an object with a
-    ``status_code`` attribute. When ``None``, a real unauthenticated request
-    is made to :data:`GITHUB_API_ORIGIN`.
-
-    Never raises: every ref that cannot be validated is left as backticked
-    plain text and the surrounding reply is returned intact.
-    """
-    if not text or "[[zulip_ref" not in text.lower():
-        return text
-
+async def _render_markers(
+    text: str, *, max_refs: int, http: Any, now: float
+) -> tuple[str, int]:
+    """Rewrite ``[[zulip_ref: …]]`` markers; returns ``(text, refs_validated)``."""
     matches = list(_REF_MARKER_RE.finditer(text))
     if not matches:
-        return text
+        return text, 0
 
-    now = _now()
     parts: list[str] = []
     last = 0
     validated = 0
@@ -279,4 +312,110 @@ async def render_refs(
         last = match.end()
 
     parts.append(text[last:])
+    return "".join(parts), validated
+
+
+async def _render_bare_urls(
+    text: str, *, max_refs: int, http: Any, now: float
+) -> str:
+    """Upgrade bare ``https://github.com/…`` ref URLs already written in prose.
+
+    The marker convention is not communicated to the agent anywhere, so in
+    practice refs arrive as plain URLs and the marker pass alone never fires.
+    Validation here is identical to the marker path (anchored shape, hardcoded
+    API origin, shared ~10 min cache, bounded per message). The difference is
+    the failure mode: a marker is an explicit render request, so an
+    unvalidatable one degrades to backticked text, whereas a bare URL we
+    cannot confirm is left *exactly as written* -- the agent's prose is never
+    made worse, and Zulip autolinks it either way.
+
+    URLs inside fenced/inline code or markdown link targets are never touched.
+    """
+    if max_refs <= 0 or "github.com/" not in text:
+        return text
+
+    protected = _code_spans(text)
+    found: list[tuple[re.Match, _Ref]] = []
+    for match in _BARE_URL_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in protected):
+            continue
+        ref = _parse_ref_url(match.group("url"))
+        if ref is None:
+            continue
+        found.append((match, ref))
+    if not found:
+        return text
+
+    # Spend the per-message budget on distinct URLs, validated concurrently so
+    # a slow or blackholed GitHub API cannot add seconds per ref to a send.
+    chosen: list[_Ref] = []
+    seen: set[str] = set()
+    for _, ref in found:
+        if ref.url in seen:
+            continue
+        if len(chosen) >= max_refs:
+            break
+        seen.add(ref.url)
+        chosen.append(ref)
+
+    ok_by_url: dict[str, bool] = {}
+    if chosen:
+        results = await asyncio.gather(
+            *(_validate_cached(ref, http, now) for ref in chosen)
+        )
+        ok_by_url = {ref.url: ok for ref, ok in zip(chosen, results)}
+
+    parts: list[str] = []
+    last = 0
+    for match, ref in found:
+        if not ok_by_url.get(ref.url):
+            continue  # unconfirmed: leave the original text untouched
+        parts.append(text[last:match.start()])
+        parts.append(_link(ref, _default_label(ref)))
+        last = match.end()
+    parts.append(text[last:])
     return "".join(parts)
+
+
+async def render_refs(
+    text: str,
+    *,
+    max_refs: int = MAX_REFS_DEFAULT,
+    http: Any = None,
+) -> str:
+    """Render validated GitHub refs in outbound text; never raises.
+
+    Two passes sharing one cache and one per-message rate budget:
+
+    1. ``[[zulip_ref: <url> | <label>]]`` markers -- an explicit render
+       request. A marker that cannot be validated degrades to backticked
+       plain text.
+    2. Bare ``https://github.com/…`` pull/issue/commit/run URLs written in
+       prose -- upgraded to a labelled link only when the API confirms the
+       ref, otherwise left untouched.
+
+    Call this *before* chunking so a marker can never be split across two
+    messages. ``http`` is an injectable fetcher used by tests: a callable
+    (sync or async) taking the API URL and returning an object with a
+    ``status_code`` attribute. When ``None``, a real unauthenticated request
+    is made to :data:`GITHUB_API_ORIGIN`.
+    """
+    if not text:
+        return text
+
+    has_marker = "[[zulip_ref" in text.lower()
+    has_bare = "github.com/" in text
+    if not has_marker and not has_bare:
+        return text
+
+    now = _now()
+    validated = 0
+    if has_marker:
+        text, validated = await _render_markers(
+            text, max_refs=max_refs, http=http, now=now
+        )
+    if has_bare:
+        text = await _render_bare_urls(
+            text, max_refs=max(0, max_refs - validated), http=http, now=now
+        )
+    return text

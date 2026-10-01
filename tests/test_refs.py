@@ -306,3 +306,119 @@ class TestCaching:
         # Same URL, still inside the TTL: cached failure applies, no fetch.
         assert await render_refs(_marker(PR_URL), http=ok) == f"`{PR_URL}`"
         assert ok.calls == []
+
+
+class TestBareUrlUpgrade:
+    """Bare ref URLs written in prose are validated and labelled (#150).
+
+    The marker convention is never communicated to the agent, so this -- not
+    the marker path -- is what actually fires in production.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_pull_url_is_upgraded(self):
+        fake = FakeGitHub(status=200)
+        out = await render_refs(f"See {PR_URL} for details.", http=fake)
+        assert out == f"See {PR_LINK} for details."
+        assert fake.calls == ["https://api.github.com/repos/octo/hello/pulls/128"]
+
+    @pytest.mark.asyncio
+    async def test_bare_issue_commit_and_run_upgraded(self):
+        fake = FakeGitHub(status=200)
+        out = await render_refs(f"{ISSUE_URL} and {COMMIT_URL} and {RUN_URL}", http=fake)
+        assert out == f"{ISSUE_LINK} and {COMMIT_LINK} and {RUN_LINK}"
+
+    @pytest.mark.asyncio
+    async def test_unvalidatable_bare_url_is_left_untouched(self):
+        fake = FakeGitHub(status=404)
+        text = f"See {PR_URL} for details."
+        assert await render_refs(text, http=fake) == text
+
+    @pytest.mark.asyncio
+    async def test_bare_url_is_not_backticked_on_timeout(self):
+        fake = FakeGitHub(error=TimeoutError("timed out"))
+        text = f"See {PR_URL}."
+        assert await render_refs(text, http=fake) == text
+
+    @pytest.mark.asyncio
+    async def test_existing_markdown_link_target_not_rewritten(self):
+        fake = FakeGitHub(status=200)
+        text = f"See [the fix]({PR_URL})."
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_url_in_inline_code_not_rewritten(self):
+        fake = FakeGitHub(status=200)
+        text = f"Run `curl {PR_URL}` to check."
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_url_in_fenced_block_not_rewritten(self):
+        fake = FakeGitHub(status=200)
+        text = f"```\n{PR_URL}\n```"
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_partial_url_shapes_are_not_matched(self):
+        fake = FakeGitHub(status=200)
+        text = f"See {PR_URL}/files and {PR_URL}?x=1 and {PR_URL}#note."
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_off_host_bare_urls_never_fetched(self):
+        fake = FakeGitHub(status=200)
+        text = (
+            "See https://evil.test/octo/hello/pull/1 and "
+            "https://github.com:443/octo/hello/pull/1 and "
+            "https://user@github.com/octo/hello/pull/1."
+        )
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_bare_url_budget_respected(self):
+        fake = FakeGitHub(status=200)
+        urls = [f"https://github.com/octo/hello/pull/{n}" for n in range(1, 6)]
+        out = await render_refs(" ".join(urls), http=fake)
+        assert len(fake.calls) == refs.MAX_REFS_DEFAULT == 3
+        # Beyond-budget URLs stay exactly as written, never mangled.
+        assert urls[3] in out and urls[4] in out
+
+    @pytest.mark.asyncio
+    async def test_duplicate_bare_urls_cost_one_fetch(self):
+        fake = FakeGitHub(status=200)
+        out = await render_refs(f"{PR_URL} then {PR_URL} again", http=fake)
+        assert len(fake.calls) == 1
+        assert out == f"{PR_LINK} then {PR_LINK} again"
+
+    @pytest.mark.asyncio
+    async def test_marker_and_bare_url_share_one_budget(self):
+        fake = FakeGitHub(status=200)
+        out = await render_refs(f"{_marker(PR_URL)} and {ISSUE_URL}", http=fake)
+        assert PR_LINK in out and ISSUE_LINK in out
+        assert len(fake.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_bare_pass_does_not_reprocess_marker_output(self):
+        # A rendered marker link must not be re-fetched by the bare pass.
+        fake = FakeGitHub(status=200)
+        assert await render_refs(_marker(PR_URL), http=fake) == PR_LINK
+        assert len(fake.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_ref_urls_means_no_work(self):
+        fake = FakeGitHub(status=200)
+        text = "github.com is mentioned but no ref URL follows"
+        assert await render_refs(text, http=fake) == text
+        assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_bare_url_cache_hit_avoids_second_fetch(self):
+        fake = FakeGitHub(status=200)
+        await render_refs(f"See {PR_URL}", http=fake)
+        await render_refs(f"Again {PR_URL}", http=fake)
+        assert len(fake.calls) == 1
