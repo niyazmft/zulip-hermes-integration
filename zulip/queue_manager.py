@@ -10,26 +10,75 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 import time
 
 logger = logging.getLogger(__name__)
 
+# What a pre-#162 queue actually requested when ``event_types`` was first
+# introduced. Legacy metadata carries no record of its requested set, so we
+# assume this rather than forcing a re-registration (and a possible event gap)
+# on every upgrade. (Issue #162)
+LEGACY_EVENT_TYPES = ["message"]
+
+
+def normalize_event_types(event_types: Optional[Iterable[str]]) -> list:
+    """Return a stable, deduplicated event-type list.
+
+    ``None`` means legacy metadata that predates event-type recording, which
+    requested ``["message"]``. Any other value is ordered and deduplicated so
+    comparisons do not depend on caller ordering. (Issue #162)
+    """
+    if event_types is None:
+        return list(LEGACY_EVENT_TYPES)
+    seen = set()
+    result = []
+    for name in event_types:
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def event_types_match(
+    recorded: Optional[Iterable[str]], needed: Optional[Iterable[str]]
+) -> bool:
+    """Whether a persisted queue's event types satisfy the needed set.
+
+    Order-insensitive, and ``None`` on either side is normalized to the legacy
+    ``["message"]`` set. A persisted queue must be re-registered when this is
+    False: ``/register`` fixes ``event_types`` for the queue's whole lifetime,
+    so a reused queue silently never delivers the newly-needed types. (#162)
+    """
+    return set(normalize_event_types(recorded)) == set(normalize_event_types(needed))
+
 
 class QueueMetadata:
     """Represents persisted queue state."""
 
-    def __init__(self, queue_id: str, last_event_id: int, registered_at: int = 0):
+    def __init__(
+        self,
+        queue_id: str,
+        last_event_id: int,
+        registered_at: int = 0,
+        event_types: Optional[Iterable[str]] = None,
+    ):
         self.queue_id = queue_id
         self.last_event_id = last_event_id
         self.registered_at = registered_at or int(time.time() * 1000)
+        # The set of Zulip event types this queue was registered for. Zulip
+        # fixes event_types for the queue's whole lifetime, so this must be
+        # persisted to know whether a reused queue can still deliver what we
+        # need. (Issue #162)
+        self.event_types = normalize_event_types(event_types)
 
     def to_dict(self) -> dict:
         return {
             "queue_id": self.queue_id,
             "last_event_id": self.last_event_id,
             "registered_at": self.registered_at,
+            "event_types": list(self.event_types),
         }
 
     @classmethod
@@ -38,6 +87,9 @@ class QueueMetadata:
             queue_id=data["queue_id"],
             last_event_id=data["last_event_id"],
             registered_at=data.get("registered_at", 0),
+            # Missing key (legacy file) or explicit null both mean: registered
+            # before we recorded event types, i.e. ["message"]. (Issue #162)
+            event_types=data.get("event_types"),
         )
 
 
@@ -49,10 +101,18 @@ class ZulipQueueManager:
         account_id: str,
         data_dir: str,
         register_fn: Callable[[], dict],
+        needed_event_types_fn: Optional[Callable[[], Iterable[str]]] = None,
     ):
         self.account_id = account_id
         self._data_dir = Path(data_dir).expanduser()
         self._register_fn = register_fn
+        # Supplies the event-type set this process needs. A persisted queue is
+        # only reused while it matches; otherwise we re-register so the newly
+        # needed types are actually delivered. Defaults to legacy ["message"].
+        # (Issue #162)
+        self._needed_event_types_fn = needed_event_types_fn or (
+            lambda: list(LEGACY_EVENT_TYPES)
+        )
         self._current_queue: Optional[QueueMetadata] = None
         self._registration_promise: Optional[asyncio.Future] = None
         # Debounced save state
@@ -109,10 +169,30 @@ class ZulipQueueManager:
                 e,
             )
 
+    def needed_event_types(self) -> list:
+        """The event-type set this process requires from its queue."""
+        return normalize_event_types(self._needed_event_types_fn())
+
     async def ensure_queue(self) -> QueueMetadata:
-        """Return existing queue or register a new one."""
+        """Return existing queue or register a new one.
+
+        Re-registers when the queue's recorded event types no longer match the
+        needed set, so a queue registered for ``["message"]`` is not silently
+        reused after a feature starts requesting ``"reaction"``. (Issue #162)
+        """
         if self._current_queue:
-            return self._current_queue
+            if event_types_match(
+                self._current_queue.event_types, self.needed_event_types()
+            ):
+                return self._current_queue
+            logger.info(
+                "zulip queue event types changed [account=%s recorded=%s needed=%s] "
+                "re-registering",
+                self.account_id,
+                self._current_queue.event_types,
+                self.needed_event_types(),
+            )
+            self.mark_queue_expired()
 
         if self._registration_promise:
             return await self._registration_promise
@@ -132,9 +212,18 @@ class ZulipQueueManager:
 
     async def _perform_registration(self) -> QueueMetadata:
         """Attempt to load from disk, or register a new queue with retry."""
+        needed = self.needed_event_types()
         persisted = self.load()
         if persisted:
-            return persisted
+            if event_types_match(persisted.event_types, needed):
+                return persisted
+            logger.info(
+                "zulip queue re-registration required [account=%s recorded=%s needed=%s]",
+                self.account_id,
+                persisted.event_types,
+                needed,
+            )
+            self.mark_queue_expired()
 
         max_attempts = 5
         base_delay = 1.0
@@ -144,6 +233,10 @@ class ZulipQueueManager:
                 metadata = QueueMetadata(
                     queue_id=result["queue_id"],
                     last_event_id=result["last_event_id"],
+                    # Record the set we just asked for. The register function
+                    # requests exactly this set; if it ever drifts, the next
+                    # restart's match check catches it. (Issue #162)
+                    event_types=needed,
                 )
                 self.save(metadata)
                 logger.info(
