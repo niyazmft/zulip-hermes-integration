@@ -90,6 +90,60 @@ def _sanitize_error(key: str) -> str:
     return _SANITIZED_ERRORS.get(key, _SANITIZED_ERRORS["unknown"])
 
 
+def read_manifest(version_py: Path) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Read ``__version__``, ``__repo__`` and ``PLUGIN_FILES`` from version.py.
+
+    Parsed as data, never imported. The updater must be able to run against a
+    tree that cannot be imported -- that is exactly the state a partial update
+    leaves behind (issue #204) -- so importing the package to learn the manifest
+    would make a broken install unrepairable.
+
+    Returns ``(version, repo, files)``; an absent field comes back as ``None``
+    or an empty list.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(Path(version_py).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError) as e:
+        logger.warning("manifest parse failed [%s]: %s", version_py, e)
+        return None, None, []
+
+    version: Optional[str] = None
+    repo: Optional[str] = None
+    files: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id == "__version__" and isinstance(node.value, ast.Constant):
+                if isinstance(node.value.value, str):
+                    version = node.value.value
+            elif target.id == "__repo__" and isinstance(node.value, ast.Constant):
+                if isinstance(node.value.value, str):
+                    repo = node.value.value
+            elif target.id == "PLUGIN_FILES" and isinstance(node.value, (ast.List, ast.Tuple)):
+                files = [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+    return version, repo, files
+
+
+def find_missing_files(plugin_dir: str, files: list[str]) -> list[str]:
+    """Manifest files that are absent on disk.
+
+    A version string is not evidence of a complete install: a partial update
+    writes the new manifest before the modules it names, so a tree can report
+    the new version while being unloadable (issue #204). Presence is the check.
+    """
+    root = Path(plugin_dir)
+    return [name for name in files if not (root / name).exists()]
+
+
 def _http_get_text(url: str, timeout: int = 15) -> Optional[str]:
     """Fetch text content from URL with short timeout."""
     try:
@@ -250,6 +304,14 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
         shutil.rmtree(str(extract_dir), ignore_errors=True)
         return False, _sanitize_error("extraction_failed")
 
+    # The install set comes from the release being installed, not from the
+    # manifest being replaced. A release that ADDS a module names it only in its
+    # own PLUGIN_FILES, so a caller passing the older list can never deliver it:
+    # the new file is never fetched while version.py is, leaving a tree that
+    # claims the new version and cannot import (issue #204).
+    _, _, target_files = read_manifest(source_root / "version.py")
+    install_files = target_files or files
+
     # Fetch checksums from the repo and place them in the extract dir for verification
     checksums_text = _http_get_text(CHECKSUMS_URL.format(repo=repo))
     if checksums_text:
@@ -260,7 +322,7 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
             pass
 
     # Verify checksums before replacing any files
-    checksums_ok, checksum_error = _verify_checksums(extract_dir, source_root, files)
+    checksums_ok, checksum_error = _verify_checksums(extract_dir, source_root, install_files)
     if not checksums_ok:
         shutil.rmtree(str(extract_dir), ignore_errors=True)
         return False, checksum_error
@@ -268,7 +330,7 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
     # Replace files
     replaced = []
     errors = []
-    for filename in files:
+    for filename in install_files:
         src = source_root / filename
         dst = plugin_path / filename
         if src.exists():
@@ -307,19 +369,21 @@ def startup_version_check(current_version: str, repo: str) -> None:
         )
 
 
-if __name__ == "__main__":
+def main(argv: Optional[list[str]] = None) -> int:
     """CLI entry point for manual plugin updates.
 
     Usage:
-        python -m zulip.updater              # check + update
+        python -m zulip.updater               # check + update
         python -m zulip.updater --check-only  # just check, don't update
         python -m zulip.updater --help        # show help
+
+    Returns a process exit code: 0 when up to date or updated, 1 on a manifest
+    or update failure, 2 when --check-only finds an incomplete install (#204).
     """
     import argparse
-    import sys
-    from pathlib import Path
 
     parser = argparse.ArgumentParser(
+        prog="python -m zulip.updater",
         description="Update the Zulip Hermes plugin from GitHub.",
         epilog="Files are verified via SHA-256 checksums before replacement.",
     )
@@ -338,18 +402,20 @@ if __name__ == "__main__":
         default=None,
         help="Plugin directory (default: auto-detect)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    # Import version info
-    from .version import __version__, __repo__, PLUGIN_FILES
+    # Read the manifest as data. This module has to run against a tree that does
+    # not import, or a partial update could never be repaired (issue #204).
+    plugin_dir = args.plugin_dir or str(Path(__file__).resolve().parent)
+    current, manifest_repo, plugin_files = read_manifest(Path(plugin_dir) / "version.py")
+    if not current or not manifest_repo:
+        print("\u274c Could not read the plugin manifest (version.py).")
+        return 1
 
-    repo = args.repo or __repo__
-    current = __version__
+    repo = args.repo or manifest_repo
 
-    # Auto-detect plugin directory (parent of this file's zulip/ subdir)
-    plugin_dir = args.plugin_dir
-    if not plugin_dir:
-        plugin_dir = str(Path(__file__).resolve().parent)
+    # A version string is not evidence of a complete install (issue #204).
+    missing = find_missing_files(plugin_dir, plugin_files)
 
     print(f"Current version: v{current}")
     print(f"Repo: {repo}")
@@ -357,22 +423,37 @@ if __name__ == "__main__":
     print()
 
     newer = check_for_update(repo, current)
-    if not newer:
-        print("\u2705 Already up to date.")
-        sys.exit(0)
 
-    print(f"\u2191 Update available: v{current} \u2192 v{newer}")
+    if not newer and not missing:
+        print("\u2705 Already up to date.")
+        return 0
+
+    if newer:
+        print(f"\u2191 Update available: v{current} \u2192 v{newer}")
+    if missing:
+        shown = ", ".join(missing[:5]) + ("\u2026" if len(missing) > 5 else "")
+        print(
+            f"\u26a0\ufe0f  Incomplete install: {len(missing)} file(s) named in "
+            f"version.py are missing ({shown})"
+        )
     print()
 
     if args.check_only:
+        if missing:
+            print("This install is incomplete. Run without --check-only to repair it.")
+            return 2
         print("Run without --check-only to download and install.")
-        sys.exit(0)
+        return 0
 
     print("Downloading and verifying...")
-    success, message = perform_update(repo, plugin_dir, PLUGIN_FILES)
+    success, message = perform_update(repo, plugin_dir, plugin_files)
 
     if success:
         print(f"\u2705 {message}")
-    else:
-        print(f"\u274c {message}")
-        sys.exit(1)
+        return 0
+    print(f"\u274c {message}")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -20,8 +20,14 @@ echo "════════════════════════�
 echo "Plugin dir: $PLUGIN_DIR"
 echo ""
 
-# Run the Python updater
-python3 -m zulip.updater "$@"
+# Run the Python updater as a SCRIPT, not `-m zulip.updater`.
+#
+# The -m form imports the zulip package, and zulip/__init__.py imports the
+# adapter -- which is precisely what fails on a tree that a partial update has
+# already broken. Running updater.py directly skips the package import, so the
+# updater can still repair an install that no longer loads (issue #204).
+# updater.py deliberately has no relative imports so this works.
+python3 "$PLUGIN_DIR/updater.py" "$@"
 
 echo ""
 echo "═══════════════════════════════════════"
