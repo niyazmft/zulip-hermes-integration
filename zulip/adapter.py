@@ -2963,6 +2963,11 @@ class ZulipAdapter(BasePlatformAdapter):
         # --- DM policy check (Issue #48) ---
         if msg_type == "private":
             sender_email = message.get("sender_email", "")
+            # Approval happens out of process (``python3 -m zulip.pairing``), so
+            # pick up a rewritten allowlist before deciding (issue #198). This
+            # is one stat() on the data file, and it also makes a revocation
+            # take effect without a restart.
+            self._policy.refresh_if_changed()
             allowed, pairing_code = self._policy.check_dm(sender_email)
             if not allowed:
                 await self._audit_logger.log_policy_block(
@@ -2975,7 +2980,9 @@ class ZulipAdapter(BasePlatformAdapter):
                     reply = (
                         f"👋 Hi! You need to be approved before messaging this bot.\n\n"
                         f"Your pairing code: **PAIR-{pairing_code}**\n\n"
-                        f"Share this code with your admin to get access."
+                        f"Share this code with your admin to get access. They can\n"
+                        f"approve it with:\n"
+                        f"`python3 -m zulip.pairing approve PAIR-{pairing_code}`"
                     )
                 elif self._policy.mode == "disabled":
                     reply = "🚫 DMs to this bot are currently disabled."

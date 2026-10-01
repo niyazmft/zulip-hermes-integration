@@ -506,14 +506,19 @@ Set these in `~/.hermes/.env`. Credentials can also be provided by the setup wiz
 | `ZULIP_ALLOW_ALL_USERS` | `false` | `false` | disables authorization entirely — **dev only** |
 | `ZULIP_MAX_MESSAGES_PER_MINUTE` | `60` | `10` | per-sender rate limit; `0` disables |
 
-**Pairing mode:** a new user DMs the bot → the bot replies
-`Your pairing code: PAIR-ABC123` and asks them to contact an admin → the admin adds that
-email to `ZULIP_ALLOWED_USERS` and restarts → they can now DM normally.
+**Pairing mode:** a new user DMs the bot → the bot replies with a code that lasts 24 hours
+and works once → an admin approves it → they can DM immediately.
 
-> ⚠️ The code itself is informational. To grant access, add the email to
-> `ZULIP_ALLOWED_USERS`, or add it to `{data_dir}/zulip_allowlist.json` as
-> `{"allowlist": ["them@org.zulipchat.com"]}` (merged over the env list at startup). For
-> approval without the code step, use `ZULIP_DM_POLICY=allowlist`.
+```bash
+python3 -m zulip.pairing list                              # who is waiting
+python3 -m zulip.pairing approve PAIR-ABC123               # approve by code
+python3 -m zulip.pairing approve them@org.zulipchat.com    # or by email
+python3 -m zulip.pairing revoke them@org.zulipchat.com     # take access away
+```
+
+Pending requests are stored next to the allowlist, and the running gateway notices a change
+on the next DM it handles — there is nothing to restart. `allowlist` mode is the simpler
+choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 
 ### Stream triggers and addressing
 

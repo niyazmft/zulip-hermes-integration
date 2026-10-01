@@ -23,6 +23,7 @@ PLUGIN_FILES = [
     "fallback_reader.py",
     "logger.py",
     "media.py",
+    "pairing.py",
     "plugin.yaml",
     "policy.py",
     "probe.py",

@@ -268,7 +268,7 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 | User says | Likely cause | What to tell them |
 |-----------|-------------|-------------------|
 | "Bot isn't responding" | Not subscribed to stream / wrong trigger mode | "Ask your admin to check if the bot is subscribed to this stream and verify the trigger mode." |
-| "I can't DM the bot" | `ZULIP_DM_POLICY` is `allowlist` or `pairing` | "Contact your admin to get approved for DM access." |
+| "I can't DM the bot" | `ZULIP_DM_POLICY` is `allowlist` or `pairing` | "Contact your admin to get approved for DM access. Under `pairing` you will get a `PAIR-…` code to share with them." |
 | "The bot replies to everything" | `ZULIP_CHATMODE=onmessage` with mention-gating off | "The admin can switch to `oncall` mode so the bot only responds to mentions." |
 | "Bot went quiet mid-conversation" | sticky-engagement window lapsed | "Mention the bot again to reopen the conversation in that topic." |
 | "My message was ignored" | it may be queued behind a running turn | "The bot works one request at a time per topic; your reply is coming." |
