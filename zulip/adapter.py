@@ -2029,6 +2029,12 @@ class ZulipAdapter(BasePlatformAdapter):
         content = message.get("content", "")
         message_id = message.get("id")
         sender_email = message.get("sender_email", "")
+        # Cheap payload name for the early gating/engagement paths; the
+        # authoritative name is resolved (and cached/refreshed) after the drop
+        # paths below, so a discarded message never costs a lookup (#152).
+        sender_full_name = (
+            str(message.get("sender_full_name") or "").strip() or "Unknown"
+        )
 
         # --- Rate limiting (per-sender) ---
         sender_key = sender_email or str(message.get("sender_id", ""))
