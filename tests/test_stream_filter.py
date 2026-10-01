@@ -3,7 +3,7 @@
 Verifies that:
 - ZULIP_STREAMS filters inbound stream messages by name
 - ZULIP_RESPONSE_PREFIX prepends to outbound messages
-- Prefix does not interfere with placeholder editing
+- ZULIP_RESPONSE_PREFIX prepends to outbound messages
 """
 
 import asyncio
@@ -183,7 +183,6 @@ class TestResponsePrefixIntegration:
                 adapter = ZulipAdapter(config)
 
         adapter._sdk_call = AsyncMock(return_value={"result": "success", "id": 123})
-        adapter._pending_placeholders = {}
         return adapter
 
     @pytest.mark.asyncio
@@ -193,7 +192,7 @@ class TestResponsePrefixIntegration:
         await mock_adapter._send_single("dm:42", "hello", {}, None)
 
         call_args = mock_adapter._sdk_call.call_args_list
-        # First call is send_message (no placeholder to edit)
+        # One send, with the prefix applied.
         assert call_args[0][0][1]["content"] == "🤖 hello"
 
     @pytest.mark.asyncio

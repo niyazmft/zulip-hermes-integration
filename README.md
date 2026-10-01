@@ -1,6 +1,6 @@
 # 📬 Zulip Plugin for Hermes
 
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-1168%20passing-brightgreen)](https://github.com/niyazmft/zulip-hermes-integration/actions)
 [![Hermes](https://img.shields.io/badge/Hermes-%3E%3D0.18.2-green)](https://hermes-agent.nousresearch.com)
 [![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
@@ -40,7 +40,7 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 ## Prerequisites
 
 - **Hermes** `>= 0.18.2` (native exec-approval buttons need `>= 0.21.3`)
-- **Python** 3.8+
+- **Python** 3.10+
 - **A Zulip bot** — see below
 
 ### Creating a Zulip Bot
@@ -144,14 +144,13 @@ filtered — see [Troubleshooting](#troubleshooting).
 | **DMs** | private messages, with per-user session isolation and policy controls | it's between you and the bot |
 | **Slash Commands** | `/streams`, `/user`, `/pin`, `/unpin` are answered directly; `/help`, `/status`, `/model` pass through to Hermes | you want a quick answer without spending a model call |
 | **Status Reactions** | 👀 while working → ✅ when done (⚠️ on error) | you want to know the turn is alive without reading it |
-| **"Thinking..." Placeholder** | posts a placeholder, then edits it into the real answer | a stream should never look like nobody is home |
+| **Typing Indicator** | Zulip shows the bot as typing while it works | you want to see it is alive without reading a reply |
 | **File Attachments** | inbound CSVs, PDFs and JSON are downloaded and readable; outbound files are sent as uploads | you're handing the bot a file, or want one back |
 | **Persistent Event Queue** | resumes from where it left off across restarts | you restart the gateway |
 | **Durable Deduplication** | an on-disk store stops a replayed event being processed twice | a restart or reconnect might replay a message |
 | **Bot Workspace** | sandboxed file storage under `{data_dir}/workspace/`, path traversal and symlinks refused | the bot generates a report you want back |
 | **SSRF Protection** | rejects internal IPs, localhost and cloud-metadata endpoints | a user can hand the bot a URL |
 | **Secret Guard** | blocks an outbound message containing a host credential value | you don't want a token pasted into a room |
-| **Multiple Accounts** | several Zulip realms in one instance | you run more than one org |
 
 **Opt-in** — each is one flag away, and documented in its own section:
 
@@ -227,22 +226,33 @@ def _cmd_ping(args, chat_id, sender_email, sender_name):
 
 ## Progressive Activity Trace
 
-> `/summarise every open PR` → the topic shows a message that updates live:
-> `✅ $ gh pr list (1.2s)` → `💬 found 4, reading diffs` → `✅ **Done** — run finished in 18s`.
+> `/summarise every open PR` → the topic shows one message that updates as work proceeds,
+> ending as `**Done**` with a note such as `replied in 18s`.
 
 By default a topic only sees the final reply, so a run that takes a while is invisible.
 With `ZULIP_ACTIVITY_TRACE=1`, the plugin keeps **one** bot-owned status message per run and
 edits it in place:
 
 ```
-hermes-bot · **Working** — fix the failing auth test
-          - ✅ $ git status --short (0.2s)
-          - ✅ $ pytest -k auth (12s)
-          - 💬 switching to a rebase instead of a merge
-          - ⏳ $ git push
+**Working**
+
+✓ terminal — 1234 ms
+✓ read — 30 ms
+… browser
 ```
 
-When the run ends that message collapses to one line (`✅ **Done** — run finished in 18s`)
+Each finished tool call adds a line: `✓` succeeded, `✗` failed, `…` still running, with the
+tool's duration as the detail. When the run ends the header becomes `**Done**`, `**Failed**`
+or `**Cancelled**` and a closing note is appended:
+
+```
+**Done**
+
+✓ terminal — 1234 ms
+✓ read — 30 ms
+
+replied in 18s
+```
 and is **never deleted**, so the topic keeps its audit trail. If the gateway restarts
 mid-run (deploy, crash, OOM), the orphaned board is closed out at next start as
 `⚪ **Cancelled** — run interrupted by a gateway restart`, so a stale "Working" cannot
@@ -286,11 +296,10 @@ message plus whatever survived in its own memory. With `ZULIP_HISTORY_MODE` enab
 **bounded** slice of the current topic is added to the prompt as evidence:
 
 ```
-[Zulip history — 3 earlier message(s) in #general / deploy]
-- Dana (3d ago): same 502 on the auth service, it was the connection pool limit
-- Bot (3d ago): raised max_connections to 50 in commit 4f2c1ab
-- Niyaz (1h ago): it's back after the config revert
-[end history]
+[Topic history - recent messages quoted for context]
+[Dana] same 502 on the auth service, it was the connection pool limit
+[Bot] raised max_connections to 50 in commit 4f2c1ab
+[Niyaz] it's back after the config revert
 ```
 
 | Mode | Behaviour | When to use |
@@ -389,7 +398,8 @@ ZULIP_QUEUE_CAP=20        # how many may wait before a new one dispatches immedi
 - The waiting message gets an hourglass reaction — Zulip has no "queued input" surface — and
   the reaction disappears the moment its turn starts.
 - Past the cap a message is dispatched **immediately rather than dropped**.
-- Every transition is **audit-logged** as `message_queued` / `message_dequeued` with the
+- Every transition is **audit-logged** as `session_queue_enqueue` / `session_queue_dequeue`
+  (and `session_queue_overflow` past the cap) with the
   message id and queue depth, which is the durable proof the queue engaged.
 
 Use separate topics for genuinely parallel work; use DMs for private work.
@@ -458,7 +468,8 @@ fails:
 - **No credentials are sent.** Validation is unauthenticated, so a private ref simply 404s
   and stays plain text. Outcomes are cached for ~10 minutes and at most 3 refs per message
   are validated, keeping a busy topic inside GitHub's 60/hour unauthenticated budget.
-- **Best-effort**, bounded by a 1.5s timeout per message — it can never fail or stall a send.
+- **Best-effort** — each validation request is bounded by an 8s timeout and rendering never
+  raises, so a slow or unreachable GitHub cannot fail or stall a send.
 
 ## Sending Files
 
@@ -621,7 +632,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `Invalid or unsafe ZULIP_SITE` | `http://`, localhost or an IP | use an `https://` host, or opt in with `ZULIP_ALLOW_INSECURE_HTTP` |
 | Reaction trigger does nothing | bot not subscribed to that stream | Zulip delivers `reaction` events only to subscribers — subscribe and retry |
 | Sticky follow-ups ignored | window lapsed, or an invalid mode fell back to `off` | re-mention the bot; check the log for a rejected `ZULIP_ENGAGEMENT_MODE` |
-| Messages held mid-run | `ZULIP_SESSION_QUEUE=1` working as intended | wait for the hourglass to clear; check `message_dequeued` in the audit log |
+| Messages held mid-run | `ZULIP_SESSION_QUEUE=1` working as intended | wait for the hourglass to clear; check `session_queue_dequeue` in the audit log |
 | `ZULIP_OBSERVE_GROUP` seems dead | `ZULIP_SOFT_GATE` is also on | they are mutually exclusive — turn soft gate off |
 | No activity trace | `ZULIP_ACTIVITY_TRACE` unset | tracing is opt-in; set it to `1` |
 | Setup wizard shows instructions only | `setup_fn=interactive_setup` not passed to `register()` | reinstall the plugin from source |

@@ -4005,7 +4005,7 @@ class ZulipAdapter(BasePlatformAdapter):
         metadata: dict,
         topic_override: Optional[str],
     ) -> SendResult:
-        """Send a single (unchunked) message, editing placeholder if present."""
+        """Send a single (unchunked) message."""
         # Prepend response prefix if configured (Issue #65)
         if self._response_prefix and content:
             content = self._response_prefix + content

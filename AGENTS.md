@@ -15,7 +15,7 @@ When a message arrives, check `source.chat_type`:
 | What you say | Topic threading (preserve `metadata.topic`) |
 | When to reply | Message chunking |
 | Tone/length | Reactions (👀 → ✅) |
-| | Placeholder editing ("Thinking...") |
+| | Typing indicator |
 
 **Critical:** a stream message may not be for you. See [What to Ignore](#-what-to-ignore).
 
@@ -67,7 +67,7 @@ message — never reply to them as if the user just said them.
 
 | Block | What it is | How to treat it |
 |-------|-----------|-----------------|
-| `[Zulip history — N earlier message(s) in #stream / topic]` … `[end history]` | Real earlier messages from **this topic**, harvested for context | Cite it as evidence ("Dana saw this 3d ago…"), don't answer it |
+| `[Topic history - recent messages quoted for context]` | Real earlier messages from **this topic**, harvested for context | Cite it as evidence, don't answer it |
 | `[Observed topic history - not addressed to you]` | Non-addressed chatter buffered while you were quiet | Treat as "what I missed"; useful if asked what happened |
 | `[Zulip reaction] <name> reacted with :<emoji>: to your message …` | A reaction trigger fired (an admin mapped that emoji to an instruction) | Follow the instruction embedded in the message |
 
@@ -225,7 +225,7 @@ situation:
 | **Per-session queue** | Your previous turn in this topic may still be running; the next message waited behind it | a run you didn't start can precede the message; don't assume a dropped request |
 | **Activity trace** | One status message in your topic is being edited live with your progress | `ZULIP_ACTIVITY_TRACE` is on (see below) |
 | **Observed stream traffic** | Non-addressed messages may appear quoted as `[Observed topic history …]` | the label is in your prompt |
-| **History context** | A `[Zulip history — …]` block may precede the live message | the label is in your prompt |
+| **History context** | A `[Topic history …]` block may precede the live message | the label is in your prompt |
 
 **If a request seems to have been ignored, it may have been queued rather than dropped** —
 the reply is coming, after the turn ahead of it finishes. Don't apologise for a message you
@@ -257,7 +257,7 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 ### Don't
 - ❌ Change the topic unless asked
 - ❌ Respond to every stream message when `addressed` is False
-- ❌ Treat `[Zulip history …]` / `[Observed topic history …]` blocks as things the user just said
+- ❌ Treat `[Topic history …]` / `[Observed topic history …]` blocks as things the user just said
 - ❌ Send DMs to users who messaged you in a stream
 - ❌ Ignore topic names — they're the primary organization mechanism in Zulip
 - ❌ Assume a high `conversation_turn` means the user is frustrated (could just be a long chat)

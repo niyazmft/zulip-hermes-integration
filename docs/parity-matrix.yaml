@@ -480,7 +480,7 @@ config:
     sibling_key: showThinkingPlaceholder
     derivable: false
     status: sister-only
-    notes: "Placeholder editing is always-on here."
+    notes: "Not implemented here. The typing indicator plus status reactions are the working signal instead."
   - env: null
     sibling_key: enableSessionRecovery
     derivable: false
