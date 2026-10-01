@@ -2,6 +2,12 @@
 
 Commands are parsed BEFORE messages reach the AI agent.
 Unknown commands fall through to the AI.
+
+Gateway-native slash commands (``/help``, ``/status``, ``/model``, ``/stop``,
+``/new``, ...) are deliberately **not** registered here: the Hermes gateway
+implements them natively, so registering them in the plugin would shadow the
+gateway and swallow the command (issue #190). Only plugin-specific commands
+are registered below; everything else falls through to the gateway.
 """
 
 from __future__ import annotations
@@ -30,9 +36,12 @@ def register_command(name: str, handler: CommandHandler | None = None):
     """Register a command handler.
 
     Can be used as a decorator:
-        @register_command("help")
-        def _cmd_help(args, chat_id, sender_email, sender_name) -> str:
-            return "Help text..."
+        @register_command("ping")
+        def _cmd_ping(args, chat_id, sender_email, sender_name) -> str:
+            return "🏓 Pong!"
+
+    Do not register a name the gateway owns (``/help``, ``/status``, ``/model``,
+    ...); that shadows the gateway command (issue #190).
     """
 
     def decorator(func: CommandHandler) -> CommandHandler:
@@ -88,60 +97,17 @@ def handle_command(
         return CommandResult(handled=True, reply=f"❌ Error processing /{cmd}. Please try again later.")
 
 
-# ------------------------------------------------------------------
-# Built-in commands
-# ------------------------------------------------------------------
-
-@register_command("help")
-def _cmd_help(
-    args: str, chat_id: str, sender_email: str, sender_name: str
-) -> str:
-    """List available commands."""
-    cmd_list = sorted(_COMMANDS.keys())
-    lines = ["**Bot Commands:**", ""]
-    for name in cmd_list:
-        lines.append(f"• `/{name}`")
-    lines.extend(
-        [
-            "",
-            "Unknown commands are passed to the AI agent.",
-        ]
-    )
-    return "\n".join(lines)
-
-
-@register_command("status")
-def _cmd_status(
-    args: str, chat_id: str, sender_email: str, sender_name: str
-) -> str:
-    """Show bot status."""
-    from .version import __version__, __repo__
-
-    lines = [
-        "**Bot Status**",
-        f"Version: `{__version__}`",
-        f"Repo: {__repo__}",
-    ]
-    return "\n".join(lines)
-
-
-@register_command("model")
-def _cmd_model(
-    args: str, chat_id: str, sender_email: str, sender_name: str
-) -> str:
-    """Show or set model."""
-    if not args:
-        return "Current model: default\nUsage: `/model <name>`"
-    return f"Model switching is managed by the Hermes gateway. Current: `{args.strip()}`"
-
-
 def is_command(content: str) -> bool:
     """Check if content looks like a command (starts with /)."""
     return content.strip().startswith("/")
 
 
 # ------------------------------------------------------------------
-# Admin commands (stream CRUD, user info)
+# Plugin-specific commands
+#
+# Nothing here may share a name with a gateway-native command. The gateway
+# owns /help, /status, /model, /stop, /new, /reset, /version, ...; those must
+# reach it, not be absorbed by this router (issue #190).
 # ------------------------------------------------------------------
 
 @register_command("streams")

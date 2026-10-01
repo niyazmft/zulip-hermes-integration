@@ -74,29 +74,33 @@ class TestCommandRegistration:
         assert result.reply == ""
 
 
-class TestBuiltInCommands:
-    def test_help_lists_commands(self):
-        result = handle_command("/help", "dm:1", "a@x.com", "Alice")
-        assert result.handled is True
-        assert "Bot Commands:" in result.reply
-        assert "/help" in result.reply
-        assert "/status" in result.reply
-        assert "/model" in result.reply
+class TestPluginCommands:
+    def test_gateway_native_commands_fall_through(self):
+        # Issue #190: /help, /status and /model belong to the gateway and must
+        # NOT be handled by the plugin router (they would be shadowed otherwise).
+        for cmd in ("/help", "/status", "/model", "/model gpt4", "/stop"):
+            result = handle_command(cmd, "dm:1", "a@x.com", "Alice")
+            assert result.handled is False, cmd
+            assert result.reply == ""
 
-    def test_status_shows_version(self):
-        result = handle_command("/status", "dm:1", "a@x.com", "Alice")
+    def test_streams_replies(self):
+        result = handle_command("/streams", "dm:1", "a@x.com", "Alice")
         assert result.handled is True
-        assert "Bot Status" in result.reply
+        assert "Stream management" in result.reply
 
-    def test_model_without_args(self):
-        result = handle_command("/model", "dm:1", "a@x.com", "Alice")
+    def test_user_without_args_shows_usage(self):
+        result = handle_command("/user", "dm:1", "a@x.com", "Alice")
         assert result.handled is True
-        assert "Current model:" in result.reply
+        assert "Usage" in result.reply
 
-    def test_model_with_args(self):
-        result = handle_command("/model gpt4", "dm:1", "a@x.com", "Alice")
+    def test_user_with_args_replies(self):
+        result = handle_command("/user someone@x.com", "dm:1", "a@x.com", "Alice")
         assert result.handled is True
-        assert "gpt4" in result.reply
+        assert "someone@x.com" in result.reply
+
+    def test_pin_and_unpin(self):
+        assert handle_command("/pin 42", "dm:1", "a@x.com", "Alice").handled is True
+        assert handle_command("/unpin 42", "dm:1", "a@x.com", "Alice").handled is True
 
 
 class TestCommandErrorHandling:
@@ -146,7 +150,7 @@ class TestAdapterIntegration:
             "sender_id": 42,
             "sender_email": "user@test.com",
             "sender_full_name": "User",
-            "content": "/help",
+            "content": "/streams",
         }
 
         await adapter._handle_message(message)
@@ -154,13 +158,13 @@ class TestAdapterIntegration:
         # Should have sent a command reply, not dispatched to AI
         assert len(adapter.client._sent_messages) > 0
         last_msg = adapter.client._sent_messages[-1]
-        assert "Bot Commands:" in last_msg["content"]
+        assert "Stream management" in last_msg["content"]
 
     @pytest.mark.asyncio
     async def test_command_reply_preserves_group_dm_recipients(
         self, mock_platform_config, monkeypatch
     ):
-        """Issue #154: /help in a group DM must answer the whole conversation."""
+        """Issue #154: /streams in a group DM must answer the whole conversation."""
         import zulip.adapter as adapter_module
         from zulip.adapter import ZulipAdapter
         from tests.conftest import MockZulipClient
@@ -192,7 +196,7 @@ class TestAdapterIntegration:
                     {"id": 42, "email": "user@test.com"},
                     {"id": 99, "email": "other@test.com"},
                 ],
-                "content": "/help",
+                "content": "/streams",
             }
         )
 

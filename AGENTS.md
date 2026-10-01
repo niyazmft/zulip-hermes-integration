@@ -57,18 +57,17 @@ Every `MessageEvent.metadata` contains:
 
 Messages starting with `/` are intercepted **before** they reach you:
 
-| Command | Handled by bot | You see? |
-|---------|---------------|----------|
-| `/help` | ✅ Yes | ❌ No |
-| `/status` | ✅ Yes | ❌ No |
-| `/model` | ✅ Yes | ❌ No |
-| `/streams` | ✅ Yes (delegates to AI) | ❌ No |
-| `/user` | ✅ Yes (delegates to AI) | ❌ No |
-| `/pin` | ✅ Yes (delegates to AI) | ❌ No |
-| `/unpin` | ✅ Yes (delegates to AI) | ❌ No |
-| `/weather` | ❌ No — falls through | ✅ Yes (treat as normal message) |
+| Command | Handled by | You see? |
+|---------|-----------|----------|
+| `/streams` | plugin (delegates to AI) | ❌ No |
+| `/user` | plugin (delegates to AI) | ❌ No |
+| `/pin` | plugin (delegates to AI) | ❌ No |
+| `/unpin` | plugin (delegates to AI) | ❌ No |
+| `/unlisten`, `/stop-listening` | plugin (sticky-engagement stop) | ❌ No |
+| `/help`, `/status`, `/model`, `/stop`, `/new`, `/reset`, … | Hermes gateway (native) | ❌ No |
+| anything else starting with `/` | gateway / falls through | ✅ Yes (treat as normal message) |
 
-**Do not silently drop `/` messages.** If it's not one of the commands above, it's a user question for you. The admin commands (`/streams`, `/user`, `/pin`, `/unpin`) delegate to you — if a user asks you to manage streams or pin a message, use the adapter's `star_message()`, `list_streams()`, `get_user_info()` methods.
+**Do not silently drop `/` messages.** The plugin handles only the four admin commands (`/streams`, `/user`, `/pin`, `/unpin`) and the sticky-engagement stops; **gateway-native commands must not be registered by the plugin** — they fall through to Hermes, which owns them (see #190). If a message isn't one of the commands above, it's a user question for you. The admin commands delegate to you — if a user asks you to manage streams or pin a message, use the adapter's `star_message()`, `list_streams()`, `get_user_info()` methods.
 
 ---
 

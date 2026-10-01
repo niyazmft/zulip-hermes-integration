@@ -82,7 +82,7 @@ Send a DM or @-mention your bot in a subscribed stream. Done! 🎉
 | 💬 **Streams + DMs** | Talk to the bot in public streams (with topic threading) or private messages |
 | 🤔 **"Thinking..." placeholder** | Bot shows it's working, then edits with the final answer. No awkward silence. |
 | 📎 **File uploads** | Send CSVs, PDFs, JSON — the bot downloads and can process them |
-| 🏓 **Admin commands** | Type `/help`, `/status`, `/model`, `/streams`, `/user`, `/pin`, `/unpin` for instant responses (no LLM call needed) |
+| 🏓 **Plugin commands** | `/streams`, `/user`, `/pin`, `/unpin` are handled by the plugin; gateway-native commands (`/help`, `/status`, `/model`, `/stop`, `/new`, …) pass through to Hermes |
 
 ### For Admins
 
@@ -108,21 +108,22 @@ Send a DM or @-mention your bot in a subscribed stream. Done! 🎉
 
 ---
 
-## 🏓 Built-in Commands
+## 🏓 Slash Commands
 
-Type these in any stream or DM. They're handled instantly — no LLM call:
+**Plugin commands** — handled by this plugin, no LLM call:
 
 | Command | Response |
 |---------|----------|
-| `/help` | List all available commands |
-| `/status` | Bot version, repo URL, your email |
-| `/model` | Current model status |
 | `/streams` | List streams (or ask AI for management) |
 | `/user` | Get user info (or ask AI) |
 | `/pin` | Star/pin a message (or ask AI) |
 | `/unpin` | Unstar/unpin a message (or ask AI) |
 
-Add your own:
+With sticky engagement enabled (`ZULIP_ENGAGEMENT_MODE=sticky_topic`), a topic can be left with `stop listening`, `/unlisten`, or `/stop-listening`.
+
+**Gateway-native commands** — `/help`, `/status`, `/model`, `/stop`, `/new`, `/reset`, `/version`, … are **not** handled by the plugin. They fall through to the Hermes gateway, which owns them (session model switching, session reset, help, etc.). Registering them here would shadow the gateway — see issue #190.
+
+Add your own plugin command:
 
 ```python
 from zulip.commands import register_command
@@ -131,6 +132,8 @@ from zulip.commands import register_command
 def _cmd_ping(args, chat_id, sender_email, sender_name):
     return "🏓 Pong!"
 ```
+
+> ⚠️ Do not register a command name the gateway already owns, or you will shadow it and the gateway command will never run.
 
 ---
 

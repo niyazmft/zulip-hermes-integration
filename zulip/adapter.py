@@ -2507,6 +2507,11 @@ class ZulipAdapter(BasePlatformAdapter):
         reaches a slash command or a policy/rate-limit gate, which have already
         been decided by the time this runs.
         """
+        # Slash commands belong to the gateway — never spend a harvest on them
+        # and never modify their body (#148, #190).
+        if is_command(content):
+            return ""
+
         blocks: list[str] = []
 
         if self._observe_group and addressed:
