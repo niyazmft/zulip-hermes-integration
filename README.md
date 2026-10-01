@@ -16,16 +16,12 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 > sovereign, no chat-vendor lock-in. The pattern Slack and Block's Buzz are racing to
 > productize, delivered **open source** and **self-hosted**.
 
-> 📊 Parity with the sibling is **tracked, not assumed** — see [docs/PARITY.md](docs/PARITY.md)
-> for the capability matrix and the shared adapter spec.
-
 ## Table of Contents
 
+- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Verification](#verification)
 - [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
 - [Configuration](#configuration)
 - [Slash Commands](#slash-commands)
 - [Progressive Activity Trace](#progressive-activity-trace)
@@ -38,9 +34,21 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 - [Sending Files](#sending-files)
 - [Environment Variable Reference](#environment-variable-reference)
 - [Troubleshooting](#troubleshooting)
-- [Updating](#updating)
 - [Contributing](#contributing)
 - [Documentation](#documentation)
+
+## Prerequisites
+
+- **Hermes** `>= 0.18.2` (native exec-approval buttons need `>= 0.21.3`)
+- **Python** 3.8+
+- **A Zulip bot** — see below
+
+### Creating a Zulip Bot
+
+1. In Zulip, go to **Settings → Bots → Add a new bot**
+2. Choose **Generic bot**
+3. Copy the **bot email** and **API key** — Quick Start step 3 needs both
+4. **Subscribe the bot to the streams it should answer in** (Stream settings → Subscribers). A bot that is not subscribed never sees those messages.
 
 ## Quick Start
 
@@ -63,10 +71,46 @@ hermes plugins enable zulip
 hermes gateway
 ```
 
-`hermes gateway setup` runs an interactive wizard for step 3 instead — it reads the plugin's
-declared environment variables and prompts for each one, no manual file editing required.
+Step 3 can be done for you: `hermes gateway setup` prompts for each declared setting and
+writes them to `~/.hermes/.env`, so nothing needs editing by hand.
 
-Then DM the bot, or @-mention it in a stream it is subscribed to.
+Then tell the gateway to run the platform, in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  platforms:
+    zulip:
+      enabled: true
+```
+
+> ⚠️ Install the whole repository, not individual files — the plugin is 28 modules that
+> import from each other, so copying only `adapter.py` fails to load.
+
+### Container / system-wide install
+
+To install for every user on the host instead:
+
+```bash
+HERMES_PATH=$(python3 -c "import hermes_cli; print(hermes_cli.__path__[0])")
+rm -rf "$HERMES_PATH/../plugins/platforms/zulip"
+git clone https://github.com/niyazmft/zulip-hermes-integration.git \
+  "$HERMES_PATH/../plugins/platforms/zulip"
+```
+
+### Updating
+
+```bash
+bash ~/.hermes/plugins/zulip/update.sh     # pulls latest, verifies checksums, restarts
+```
+
+On a remote host, wrap it: `ssh user@device "bash ~/.hermes/plugins/zulip/update.sh"`.
+Or by hand:
+
+```bash
+cd ~/.hermes/plugins/zulip && git pull origin main && hermes gateway restart
+```
+
+DM the bot, or @-mention it in a stream it is subscribed to.
 
 ## Verification
 
@@ -94,100 +138,54 @@ filtered — see [Troubleshooting](#troubleshooting).
 
 **Core** — work as soon as credentials are set:
 
-- **Streams & Topics**: full Zulip stream/topic support with mention gating (`oncall`, `onmessage`, `onchar`); replies always land in the topic they came from
-- **DMs**: private messages with per-user session isolation and traffic policy controls, including a code-based `pairing` onboarding flow
-- **Slash Commands**: `/streams`, `/user`, `/pin`, `/unpin` handled by the plugin; gateway-native `/help`, `/status`, `/model`, `/stop`, `/new` pass through to Hermes untouched
-- **Status Reactions**: 👀 while working → ✅ when done (or ⚠️ on error), so a slow turn is visibly alive
-- **"Thinking..." Placeholder**: the bot posts a placeholder and edits it in place with the final answer, so a stream never shows an awkward silence
-- **File Attachments**: inbound CSVs, PDFs and JSON are downloaded and readable; outbound files are sent as Zulip uploads
-- **Persistent Event Queue**: resumes from where it left off across restarts using locally-persisted queue metadata
-- **Durable Deduplication**: an on-disk store stops a replayed event from being processed twice
-- **Bot Workspace**: sandboxed file storage under `{data_dir}/workspace/` with path-traversal and symlink rejection
-- **SSRF Protection**: rejects internal IPs, localhost and cloud-metadata endpoints unless insecure HTTP is explicitly opted in
-- **Secret Guard**: outbound messages containing a host credential value are blocked rather than posted
-- **Multiple Accounts**: several Zulip realms in one instance
+| Feature | What it does | Use it when |
+|---------|--------------|-------------|
+| **Streams & Topics** | talk to the bot in public streams; replies stay threaded to the topic they came from | the work should be visible to the team |
+| **DMs** | private messages, with per-user session isolation and policy controls | it's between you and the bot |
+| **Slash Commands** | `/streams`, `/user`, `/pin`, `/unpin` are answered directly; `/help`, `/status`, `/model` pass through to Hermes | you want a quick answer without spending a model call |
+| **Status Reactions** | 👀 while working → ✅ when done (⚠️ on error) | you want to know the turn is alive without reading it |
+| **"Thinking..." Placeholder** | posts a placeholder, then edits it into the real answer | a stream should never look like nobody is home |
+| **File Attachments** | inbound CSVs, PDFs and JSON are downloaded and readable; outbound files are sent as uploads | you're handing the bot a file, or want one back |
+| **Persistent Event Queue** | resumes from where it left off across restarts | you restart the gateway |
+| **Durable Deduplication** | an on-disk store stops a replayed event being processed twice | a restart or reconnect might replay a message |
+| **Bot Workspace** | sandboxed file storage under `{data_dir}/workspace/`, path traversal and symlinks refused | the bot generates a report you want back |
+| **SSRF Protection** | rejects internal IPs, localhost and cloud-metadata endpoints | a user can hand the bot a URL |
+| **Secret Guard** | blocks an outbound message containing a host credential value | you don't want a token pasted into a room |
+| **Multiple Accounts** | several Zulip realms in one instance | you run more than one org |
 
-**Opt-in** — each is one flag away, and documented in its own section below:
+**Opt-in** — each is one flag away, and documented in its own section:
 
-- **Progressive Activity Trace**: one status message per run, edited in place as work proceeds — the topic shows progress instead of silence ([docs](#progressive-activity-trace))
-- **History-aware Context**: quotes real earlier messages from the same topic into the prompt, so "have we seen this before?" is answered from evidence ([docs](#history-aware-context))
-- **In-Channel Action Triggers**: a 👍 on the bot's own message dispatches a configured instruction as a turn in that same topic ([docs](#in-channel-action-triggers))
-- **Sticky Engagement**: after a mention, the conversation continues without re-mentioning the bot ([docs](#sticky-engagement))
-- **Per-Session Queue**: a message arriving mid-run waits its turn instead of steering the running one ([docs](#per-session-queue))
-- **Stream Watching**: watch a busy stream without replying to every message, or silently remember what it says ([docs](#stream-watching))
-- **Actionable Refs**: GitHub links the agent writes in prose are validated against the API before being rendered as links ([docs](#actionable-refs))
+| Feature | What it does | Turn it on when |
+|---------|--------------|-----------------|
+| [**Progressive Activity Trace**](#progressive-activity-trace) | one status message per run, edited in place as work proceeds | long runs look like silence |
+| [**History-aware Context**](#history-aware-context) | quotes real earlier messages from this topic into the prompt | people ask "didn't we hit this before?" |
+| [**In-Channel Action Triggers**](#in-channel-action-triggers) | a 👍 on the bot's own message dispatches an instruction as a turn | you'd rather react than type "go ahead" |
+| [**Sticky Engagement**](#sticky-engagement) | follow-ups continue without re-mentioning the bot | a conversation takes more than one message |
+| [**Per-Session Queue**](#per-session-queue) | a message arriving mid-run waits instead of steering the running turn | several people share one topic |
+| [**Stream Watching**](#stream-watching) | watch a busy stream, or silently remember what it says | the bot should know the room without answering it |
+| [**Actionable Refs**](#actionable-refs) | GitHub links the agent writes are validated before rendering | you want to trust the links in a reply |
 
 **Admin & security**:
 
-- **DM Policies**: `open`, `allowlist`, `pairing` or `disabled`
-- **Group Policy**: who may trigger the bot in streams (`open`, `allowlist`, `disabled`)
-- **Rate Limiting**: per-sender sliding window (default 60 msg/min)
-- **Audit Logging**: JSON-line audit log with rotation, recording policy blocks, reaction triggers and queue transitions
-- **Health Probe**: pre-flight server check with SSRF protection and structured `health_status` logging
-
-## Prerequisites
-
-- **Hermes** `>= 0.18.2` (native exec-approval buttons need `>= 0.21.3`)
-- **Python** 3.8+
-- **Zulip bot** on your realm (see below)
-
-### Creating a Zulip Bot
-
-1. In Zulip, go to **Settings → Bots → Add a new bot**
-2. Choose **Generic bot**
-3. Copy the **bot email** and **API key** — Quick Start step 3 needs both
-4. **Subscribe the bot to the streams it should answer in** (Stream settings → Subscribers). A bot that is not subscribed never sees those messages.
-
-## Installation
-
-### From source (recommended)
-
-```bash
-mkdir -p ~/.hermes/plugins
-rm -rf ~/.hermes/plugins/zulip
-git clone https://github.com/niyazmft/zulip-hermes-integration.git ~/.hermes/plugins/zulip
-hermes plugins enable zulip
-```
-
-> ⚠️ Install the whole repository, not individual files. The plugin is 28 modules and
-> imports between them — copying only `adapter.py` produces an import error at load time.
-
-### Bundled / container install
-
-```bash
-HERMES_PATH=$(python3 -c "import hermes_cli; print(hermes_cli.__path__[0])")
-rm -rf "$HERMES_PATH/../plugins/platforms/zulip"
-git clone https://github.com/niyazmft/zulip-hermes-integration.git \
-  "$HERMES_PATH/../plugins/platforms/zulip"
-```
+| Feature | What it does | Use it when |
+|---------|--------------|-------------|
+| **DM Policies** | `open`, `allowlist`, `pairing` or `disabled` | you need to control who can reach the bot privately |
+| **Group Policy** | who may trigger the bot in streams (`open`, `allowlist`, `disabled`) | a stream is busier than the bot should answer |
+| **Rate Limiting** | per-sender sliding window (default 60 msg/min) | one noisy sender could otherwise flood it |
+| **Audit Logging** | JSON-line log recording policy blocks, reaction triggers and queue transitions | you need to prove what happened, after the fact |
+| **Health Probe** | pre-flight server check with SSRF protection and `health_status` logging | you're diagnosing a connection problem |
 
 ## Configuration
 
-### Interactive setup (recommended)
-
-```bash
-hermes gateway setup
-```
-
-The wizard reads the plugin's `requires_env` / `optional_env` declarations and prompts for
-each value, then writes them to `~/.hermes/.env`. Credentials can be updated later with
-`hermes config`.
-
-### Enable the platform
-
-```yaml
-# ~/.hermes/config.yaml
-gateway:
-  platforms:
-    zulip:
-      enabled: true
-```
+Credentials are set in [Quick Start](#quick-start). This section covers how the bot decides
+**when** to answer; every knob is also in the
+[environment reference](#environment-variable-reference).
 
 ### Stream trigger modes
 
 `ZULIP_CHATMODE` decides **when** the bot answers in a stream:
 
-| Mode | The bot answers when… | 10-second example |
+| Mode | The bot answers when… | Example |
 |------|----------------------|-------------------|
 | `onmessage` *(default)* | every message in a monitored stream | everyone in `#general` is talking to the bot |
 | `oncall` | it is @-mentioned | `@**hermes-bot** what changed today?` |
@@ -207,18 +205,13 @@ Messages starting with `/` are intercepted before they reach the agent. Plugin c
 never invoke the model themselves — they answer directly, or delegate to the agent when the
 request needs judgement:
 
-| Command | What it does | 10-second example |
-|---------|-------------|-------------------|
-| `/streams` | list streams the bot can see (or ask the AI to manage them) | `/streams` → a list of names |
-| `/user` | look up a user (or ask the AI) | `/user niyaz@org.zulipchat.com` → name, id, status |
-| `/pin` | star/pin the message being replied to (or ask the AI) | reply to a message with `/pin` → ⭐ added |
-| `/unpin` | unstar/unpin it (or ask the AI) | `/unpin` → ⭐ removed |
-| `/unlisten`, `/stop-listening` | end a [sticky engagement](#sticky-engagement) early | `/unlisten` → "Stopped listening in this topic" |
-
-**Gateway-native commands are not handled here.** `/help`, `/status`, `/model`, `/stop`,
-`/new`, `/reset`, `/version` and the rest belong to Hermes and fall through untouched, so
-model switching and session reset behave exactly as they do on any other platform.
-Registering one of these names in the plugin would shadow the gateway command — see #190.
+| Command | What it does | Use it when | Example |
+|---------|--------------|-------------|---------|
+| `/streams` | lists the streams the bot can see (or asks the AI to manage them) | you've forgotten what the bot is watching | `/streams` → a list of names |
+| `/user` | looks up a Zulip user (or asks the AI) | you need someone's id or email | `/user niyaz@org.zulipchat.com` → name, id, status |
+| `/pin` | stars the message you are replying to (or asks the AI) | a decision should stay easy to find | reply with `/pin` → ⭐ added |
+| `/unpin` | un-stars it (or asks the AI) | the topic has moved on | `/unpin` → ⭐ removed |
+| `/unlisten`, `/stop-listening` | ends a [sticky engagement](#sticky-engagement) early | the bot is still answering and shouldn't be | `/unlisten` → "Stopped listening in this topic" |
 
 Add your own:
 
@@ -234,7 +227,7 @@ def _cmd_ping(args, chat_id, sender_email, sender_name):
 
 ## Progressive Activity Trace
 
-> **In 10 seconds:** `/summarise every open PR` → the topic shows a message that updates live:
+> `/summarise every open PR` → the topic shows a message that updates live:
 > `✅ $ gh pr list (1.2s)` → `💬 found 4, reading diffs` → `✅ **Done** — run finished in 18s`.
 
 By default a topic only sees the final reply, so a run that takes a while is invisible.
@@ -285,7 +278,7 @@ Off by default, because it adds outbound writes.
 
 ## History-aware Context
 
-> **In 10 seconds:** someone asks *"didn't we hit this 502 before?"* → the bot answers with
+> Someone asks *"didn't we hit this 502 before?"* → the bot answers with
 > the earlier messages quoted in its prompt, instead of guessing.
 
 Zulip is the only durable record of a topic, but by default the agent sees just the current
@@ -316,7 +309,7 @@ sessions.
 
 ## In-Channel Action Triggers
 
-> **In 10 seconds:** the bot proposes a fix and ends with "say the word"; you react 👍 to
+> The bot proposes a fix and ends with "say the word"; you react 👍 to
 > *its* message; the agent proceeds in that same topic, with its reply and trace landing there.
 
 ```bash
@@ -349,7 +342,7 @@ someone typing that sentence.
 
 ## Sticky Engagement
 
-> **In 10 seconds:** `@**hermes-bot** fix the typo in the README` → then, **without
+> `@**hermes-bot** fix the typo in the README` → then, **without
 > mentioning it again**, `and update the changelog too` → the bot answers both. Five
 > minutes of silence ends it (`/unlisten` ends it immediately).
 
@@ -363,7 +356,7 @@ ZULIP_ENGAGEMENT_SCOPE=user          # user (default, only whoever mentioned it)
 ZULIP_ENGAGEMENT_TTL_MINUTES=45      # idle window; 45 is the default
 ```
 
-| Setting | Values | 10-second example |
+| Setting | Values | Example |
 |---------|--------|-------------------|
 | `ZULIP_ENGAGEMENT_MODE` | `off` *(default)*, `sticky_topic` | `off` = mention every time; `sticky_topic` = mention once |
 | `ZULIP_ENGAGEMENT_SCOPE` | `user` *(default)*, `topic` | `user`: only your follow-ups; `topic`: anyone in the topic |
@@ -378,7 +371,7 @@ half-enabling the feature.
 
 ## Per-Session Queue
 
-> **In 10 seconds:** in a shared topic, you ask for a long change; your teammate asks for a
+> In a shared topic, you ask for a long change; your teammate asks for a
 > different one while it runs. Without this, their message is pushed *into* your running
 > turn and redirects your work. With `ZULIP_SESSION_QUEUE=1`, theirs waits its turn.
 
@@ -403,12 +396,12 @@ Use separate topics for genuinely parallel work; use DMs for private work.
 
 ## Stream Watching
 
-> **In 10 seconds:** you want the bot to know what `#general` has been discussing without it
+> You want the bot to know what `#general` has been discussing without it
 > answering every line.
 
 Two flags exist for this, and **they are alternatives — pick one**:
 
-| Flag | What happens | 10-second example |
+| Flag | What happens | Example |
 |------|--------------|-------------------|
 | `ZULIP_SOFT_GATE=1` | **every** monitored stream message is dispatched, tagged `addressed=true/false` in metadata, so the agent decides whether to speak | the bot sees the whole conversation and usually stays quiet |
 | `ZULIP_OBSERVE_GROUP=1` | non-addressed messages are **not** dispatched; they're buffered per topic (20 msgs / 4000 chars / 200 topics) and quoted into the prompt the next time the bot **is** addressed | `@**hermes-bot** what did I miss?` → it answers from the buffer |
@@ -428,7 +421,7 @@ context from the live message:
 
 ## Actionable Refs
 
-> **In 10 seconds:** the agent writes `see https://github.com/owner/repo/pull/128` → if that
+> The agent writes `see https://github.com/owner/repo/pull/128` → if that
 > PR exists you get a clickable `owner/repo#128` link; if it 404s, the URL is left exactly as
 > written.
 
@@ -469,7 +462,7 @@ fails:
 
 ## Sending Files
 
-> **In 10 seconds:** the agent saves `report.csv` to its workspace and sends it; the topic
+> The agent saves `report.csv` to its workspace and sends it; the topic
 > gets a clickable download link.
 
 ```python
@@ -513,15 +506,14 @@ Set these in `~/.hermes/.env`. Credentials can also be provided by the setup wiz
 | `ZULIP_ALLOW_ALL_USERS` | `false` | `false` | disables authorization entirely — **dev only** |
 | `ZULIP_MAX_MESSAGES_PER_MINUTE` | `60` | `10` | per-sender rate limit; `0` disables |
 
-**Pairing mode, in 10 seconds:** a new user DMs the bot → the bot replies
+**Pairing mode:** a new user DMs the bot → the bot replies
 `Your pairing code: PAIR-ABC123` and asks them to contact an admin → the admin adds that
 email to `ZULIP_ALLOWED_USERS` and restarts → they can now DM normally.
 
-> ⚠️ The issued code is **display-only today** — nothing consumes it yet (#198). Approval is
-> the admin adding the email, either via `ZULIP_ALLOWED_USERS` or by adding it to
-> `{data_dir}/zulip_allowlist.json` (`{"allowlist": ["them@org.zulipchat.com"]}`, merged over
-> the env list at startup). If you want approval without the code step, use
-> `ZULIP_DM_POLICY=allowlist`.
+> ⚠️ The code itself is informational. To grant access, add the email to
+> `ZULIP_ALLOWED_USERS`, or add it to `{data_dir}/zulip_allowlist.json` as
+> `{"allowlist": ["them@org.zulipchat.com"]}` (merged over the env list at startup). For
+> approval without the code step, use `ZULIP_DM_POLICY=allowlist`.
 
 ### Stream triggers and addressing
 
@@ -631,21 +623,6 @@ email to `ZULIP_ALLOWED_USERS` and restarts → they can now DM normally.
 
 More detail, including the gateway-compatibility matrix, lives in [AGENTS.md](AGENTS.md).
 
-## Updating
-
-```bash
-# one command — pulls latest and restarts the gateway
-ssh user@device "bash ~/.hermes/plugins/zulip/update.sh"
-```
-
-Or manually:
-
-```bash
-cd ~/.hermes/plugins/zulip
-git pull origin main
-hermes gateway restart
-```
-
 ## Contributing
 
 ```bash
@@ -665,9 +642,7 @@ Then open a PR. `main` is protected: PR required, linear history, squash merge, 
 ## Documentation
 
 - **[AGENTS.md](AGENTS.md)** — the runtime guide the agent itself reads: addressing rules, metadata, injected context labels, troubleshooting
-- **[docs/SETUP.md](docs/SETUP.md)** — step-by-step install for a fresh host
 - **[SECURITY.md](SECURITY.md)** — threat model, credential handling, explicit non-guarantees
-- **[docs/PARITY.md](docs/PARITY.md)** — capability matrix and shared adapter spec with the OpenClaw sibling
 - **[docs/RELEASING.md](docs/RELEASING.md)** — release procedure
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
 
