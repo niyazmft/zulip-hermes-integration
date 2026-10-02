@@ -38,6 +38,7 @@ PLUGIN_FILES = [
     "secret_guard.py",
     "session_queue.py",
     "text_utils.py",
+    "update.sh",
     "updater.py",
     "version.py",
     "workspace.py",

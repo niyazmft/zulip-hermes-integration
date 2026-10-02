@@ -336,6 +336,14 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
         if src.exists():
             try:
                 dst.write_bytes(src.read_bytes())
+                if filename.endswith(".sh"):
+                    # update.sh is deployed in order to be run. write_bytes does
+                    # not carry the mode across, so restore the executable bits
+                    # rather than shipping a script that only works via `bash`.
+                    try:
+                        dst.chmod(dst.stat().st_mode | 0o111)
+                    except OSError:
+                        pass
                 replaced.append(filename)
             except OSError as e:
                 logger.error("write failed [file=%s]: %s", filename, e)
