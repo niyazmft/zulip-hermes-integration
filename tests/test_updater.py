@@ -190,6 +190,61 @@ class TestPerformUpdateUsesTargetManifest:
         assert ok is False
 
 
+class TestUpdateShellScriptShips:
+    """update.sh must reach the installed plugin directory (#205/#207/#208).
+
+    The README documents ``bash ~/.hermes/plugins/zulip/update.sh``, but the
+    script lived at the repo root and was absent from PLUGIN_FILES -- so the
+    updater never deployed it and that documented path did not exist on a fresh
+    install. Device 8x had a hand-written replacement, which is how it drifted
+    into a variant that claimed restarts it never performed.
+    """
+
+    def test_listed_in_plugin_files(self):
+        from zulip.version import PLUGIN_FILES
+
+        assert "update.sh" in PLUGIN_FILES
+
+    def test_present_in_the_package(self):
+        package_dir = Path(__file__).parent.parent / "zulip"
+        assert (package_dir / "update.sh").is_file()
+
+    def test_checksummed(self):
+        """An unchecksummed file is installed unverified."""
+        checksums = (Path(__file__).parent.parent / "checksums.txt").read_text(
+            encoding="utf-8"
+        )
+        names = [line.split(None, 1)[1] for line in checksums.splitlines() if line.strip()]
+        assert "update.sh" in names
+
+    def test_every_declared_file_exists(self):
+        from zulip.version import PLUGIN_FILES
+
+        package_dir = Path(__file__).parent.parent / "zulip"
+        missing = [name for name in PLUGIN_FILES if not (package_dir / name).exists()]
+        assert missing == []
+
+    def test_deployed_script_is_executable(self, monkeypatch, tmp_path):
+        """write_bytes drops the mode, so the updater must restore it."""
+        archive_files = {
+            "version.py": _manifest_text("2.0.0", ["version.py", "update.sh"]),
+            "update.sh": "#!/bin/bash\necho hi\n",
+        }
+        archive = _make_archive(archive_files)
+        monkeypatch.setattr("zulip.updater._http_get_bytes", lambda *a, **k: archive)
+        monkeypatch.setattr(
+            "zulip.updater._http_get_text", lambda *a, **k: _checksums_block(archive_files)
+        )
+        plugin_dir = tmp_path / "installed"
+        plugin_dir.mkdir()
+        (plugin_dir / "version.py").write_text("old", encoding="utf-8")
+
+        ok, message = perform_update("owner/repo", str(plugin_dir), ["version.py"])
+        assert ok, message
+        mode = (plugin_dir / "update.sh").stat().st_mode
+        assert mode & 0o111, "deployed update.sh must be executable"
+
+
 class TestCheckOnlyDetectsIncompleteInstall:
     """--check-only must not call a broken tree 'up to date'."""
 

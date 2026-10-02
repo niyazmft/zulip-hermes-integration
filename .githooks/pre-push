@@ -30,7 +30,7 @@ echo "════════════════════════�
 
 # Auto-generate checksums.txt for updater integrity verification
 run_check "Checksums: checksums.txt" bash -c '
-  for f in zulip/*.py zulip/plugin.yaml zulip/__init__.py; do
+  for f in zulip/*.py zulip/*.sh zulip/plugin.yaml zulip/__init__.py; do
     [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d" " -f1)  ${f#zulip/}"
   done > checksums.txt
   echo "checksums.txt updated with $(wc -l < checksums.txt) entries"
