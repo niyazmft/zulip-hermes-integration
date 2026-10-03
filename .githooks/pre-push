@@ -30,6 +30,12 @@ echo "════════════════════════�
 
 # Auto-generate checksums.txt for updater integrity verification
 run_check "Checksums: checksums.txt" bash -c '
+  # LC_ALL=C pins glob collation. CI regenerates this file under the C locale
+  # and diffs it byte-for-byte, and the package now contains a collation-
+  # sensitive pair (inbound.py vs inbound_queue.py: "." sorts before "_"
+  # bytewise, but after it under e.g. en_US.UTF-8). Without this, the hook
+  # would silently write an order CI rejects.
+  export LC_ALL=C
   for f in zulip/*.py zulip/*.sh zulip/plugin.yaml zulip/__init__.py; do
     [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d" " -f1)  ${f#zulip/}"
   done > checksums.txt

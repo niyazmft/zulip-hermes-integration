@@ -37,6 +37,12 @@ jobs:
           # verifies downloaded files against the copy in the repo, so a stale
           # entry makes `zulip update` abort with a checksum mismatch for every
           # user. Regenerate exactly as .githooks/pre-push does and diff.
+          #
+          # LC_ALL=C pins glob collation so this comparison cannot drift with
+          # the runner's locale: the package has a collation-sensitive pair
+          # (inbound.py vs inbound_queue.py - "." sorts before "_" bytewise,
+          # but after it under e.g. en_US.UTF-8).
+          export LC_ALL=C
           for f in zulip/*.py zulip/*.sh zulip/plugin.yaml zulip/__init__.py; do
             [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d" " -f1)  ${f#zulip/}"
           done > /tmp/checksums.expected
