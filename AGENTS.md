@@ -38,7 +38,7 @@ Every `MessageEvent.metadata` contains:
     "conversation_turn": 12,        # int — cumulative messages in this chat
     "session_gap_seconds": 45.2,   # float — seconds since last message
     "topic_changed": False,         # bool — streams only
-    "addressed": True,             # bool — was this message aimed at you? (see below)
+    "addressed": True,             # bool — streams; present only under ZULIP_SOFT_GATE (see below)
 }
 ```
 
@@ -53,10 +53,14 @@ Every `MessageEvent.metadata` contains:
 
 **Example:** `conversation_turn=25, session_gap_seconds=12` → The user has been rapidly messaging. Avoid template recycling.
 
-**`addressed` is the important new one.** It is always present on streams. It is `True` when
-you were mentioned or a trigger prefix fired, and `False` when you are being shown traffic
-you were not asked to answer (only happens when the admin turns on `ZULIP_SOFT_GATE`). A
-stream message with `addressed=False` is *context*, not a request.
+**`addressed` is the important new one.** It is `True` when you were mentioned or a trigger
+prefix fired, and `False` when you are being shown traffic you were not asked to answer.
+
+It is present **only when the admin has turned on `ZULIP_SOFT_GATE`**. With the soft gate off,
+every stream message that reaches you is by definition addressed, and the key is omitted from
+the event metadata entirely (the metadata is byte-identical to before the soft gate existed —
+issue #153). So treat a *missing* `addressed` as "the soft gate is off", and a stream message
+with `addressed=False` as *context*, not a request.
 
 ---
 
@@ -267,7 +271,9 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 
 | User says | Likely cause | What to tell them |
 |-----------|-------------|-------------------|
-| "Bot isn't responding" | Not subscribed to stream / wrong trigger mode | "Ask your admin to check if the bot is subscribed to this stream and verify the trigger mode." |
+| "Bot isn't responding" | Not subscribed to stream / wrong trigger mode / stream policy blocks the sender | "Ask your admin to check if the bot is subscribed to this stream, verify the trigger mode, and check `ZULIP_GROUP_POLICY` with `ZULIP_GROUP_ALLOW_FROM`." |
+| "The bot works in DMs but is silent in every stream" | `ZULIP_GROUP_POLICY=allowlist` with an **empty** `ZULIP_GROUP_ALLOW_FROM` — an empty allowlist blocks *everyone* | "Your admin must list who may trigger the bot in streams in `ZULIP_GROUP_ALLOW_FROM`. Note the stream allowlist is separate from `ZULIP_ALLOWED_USERS`, which only covers DMs." |
+| "Anyone in the org can trigger the bot in a stream" | `ZULIP_GROUP_POLICY` left at its `open` default, so the stream allowlist is ignored entirely | "Your admin can set `ZULIP_GROUP_POLICY=allowlist` and populate `ZULIP_GROUP_ALLOW_FROM` to restrict who may trigger the bot in streams." |
 | "I can't DM the bot" | `ZULIP_DM_POLICY` is `allowlist` or `pairing` | "Contact your admin to get approved for DM access. Under `pairing` you will get a `PAIR-…` code to share with them." |
 | "The bot replies to everything" | `ZULIP_CHATMODE=onmessage` with mention-gating off | "The admin can switch to `oncall` mode so the bot only responds to mentions." |
 | "Bot went quiet mid-conversation" | sticky-engagement window lapsed | "Mention the bot again to reopen the conversation in that topic." |

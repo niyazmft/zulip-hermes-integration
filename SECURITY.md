@@ -106,15 +106,13 @@ platform config/extra**:
 self.api_key = os.getenv("ZULIP_API_KEY") or extra.get("api_key", "")
 ```
 
-(`zulip/adapter.py::ZulipAdapter.__init__`; same precedence in
-`zulip/accounts.py::AccountResolver._single_account`.) Put the API key in the
+(`zulip/adapter.py::ZulipAdapter.__init__`.) Put the API key in the
 environment, not a config file, so an agent that reads config files does not
 automatically read the key as well.
 
-`zulip/accounts.py::AccountResolver` can parse a multi-account `accounts:` map,
-but **the adapter itself is single-account** — it reads one `api_key`/`email`/
-`site` at construction and the resolver is not wired into `register()`. Treat
-multi-account as unshipped.
+**Multi-account is not supported.** The adapter is single-account: it reads one
+`api_key`/`email`/`site` at construction, and `plugin.yaml` exposes no
+`accounts:` option, so there is no way to configure more than one.
 
 ### Transmission
 
@@ -441,8 +439,14 @@ Issue #156.
 3. **Keep HTTPS.** Only set `ZULIP_ALLOW_INSECURE_HTTP=1` for a trusted,
    self-hosted realm, and understand it also permits private/localhost hosts.
 4. **Restrict DMs and streams.** Prefer `ZULIP_DM_POLICY=allowlist` or
-   `pairing`, and set `ZULIP_GROUP_POLICY`/`ZULIP_ALLOWED_USERS` rather than
-   leaving `open` — the default is permissive for backward compatibility.
+   `pairing`, and set `ZULIP_GROUP_POLICY=allowlist` together with
+   `ZULIP_GROUP_ALLOW_FROM`, rather than leaving `open` — the default is
+   permissive for backward compatibility. The two allowlists are **separate
+   and not interchangeable**: `ZULIP_ALLOWED_USERS` covers **DMs**, while
+   `ZULIP_GROUP_ALLOW_FROM` covers **streams**. Setting
+   `ZULIP_GROUP_POLICY=allowlist` while `ZULIP_GROUP_ALLOW_FROM` is empty
+   blocks *everyone* from triggering the bot in streams, and setting
+   `ZULIP_ALLOWED_USERS` alone leaves streams open to the whole realm.
 5. **Leave the secret guard on** (`ZULIP_BLOCK_SECRET_LEAKS` unset/true).
 6. **Tighten the data dir.** `chmod 700` `HERMES_DATA_DIR` so the `0600` state
    files and the umask-created audit log are not world-readable.
