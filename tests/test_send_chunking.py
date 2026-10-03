@@ -32,8 +32,8 @@ class TestResolveChunkConfig:
 class TestSendChunking:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch, tmp_path):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
         # Keep the delivery audit log (#145) out of ~/.hermes.
         monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
 
@@ -46,7 +46,7 @@ class TestSendChunking:
                     self._calls.append(request)
                     return {"result": "success", "id": msg_id}
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         return ZulipAdapter(mock_platform_config)
 

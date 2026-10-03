@@ -26,15 +26,15 @@ class TestTopicSessionsFlag:
 class TestTopicScoping:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
                 def __init__(self, email=None, api_key=None, site=None):
                     pass
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         a = ZulipAdapter(mock_platform_config)
         a.email = "bot@zulip.com"
@@ -45,8 +45,8 @@ class TestTopicScoping:
     def make_adapter(self, mock_platform_config, monkeypatch, tmp_path):
         """Adapter factory — the registry is built at construction time, so
         ZULIP_TOPIC_SESSIONS must be set before ZulipAdapter() is created."""
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
         monkeypatch.setenv("ZULIP_CHATMODE", "onmessage")
         monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
 
@@ -55,7 +55,7 @@ class TestTopicScoping:
                 def __init__(self, email=None, api_key=None, site=None):
                     pass
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
 
         def _make(topic_sessions: str):

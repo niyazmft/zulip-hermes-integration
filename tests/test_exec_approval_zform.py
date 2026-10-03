@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import zulip.adapter as adapter_module
+import zulip.zulip_client as zulip_client_module
 from gateway.platforms.base import ExecApprovalPrompt
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +50,7 @@ def _prompt(chat_id="635267", actions=None, metadata=None, smart_denied=False):
 @pytest.fixture
 def adapter(mock_platform_config, monkeypatch, tmp_path):
     """ZulipAdapter with the real SDK swapped for a mock client."""
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     # Keep the delivery audit log (#145) out of ~/.hermes.
     monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
     from tests.conftest import MockZulipClient
@@ -63,7 +63,7 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
             def __getattr__(self, name):
                 return getattr(self._client, name)
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     from zulip.adapter import ZulipAdapter
 
     return ZulipAdapter(mock_platform_config)

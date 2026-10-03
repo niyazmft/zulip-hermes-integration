@@ -15,7 +15,7 @@ from types import ModuleType
 import pytest
 
 import zulip.adapter as adapter_module
-from zulip.accounts import AccountResolver
+import zulip.zulip_client as zulip_client_module
 from zulip.adapter import ZulipAdapter
 from zulip.media import DEFAULT_MAX_MB, resolve_media_max_mb
 from zulip.policy import PolicyEngine
@@ -73,7 +73,7 @@ def fake_zulip_sdk(monkeypatch):
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
 
-    monkeypatch.setattr(adapter_module, "_import_zulip_sdk", lambda: _FakeSDK)
+    monkeypatch.setattr(zulip_client_module, "import_zulip_sdk", lambda: _FakeSDK)
     return _FakeSDK
 
 
@@ -183,11 +183,16 @@ def test_module_resolvers_follow_the_active_profile(hermes, tmp_path):
     assert PolicyEngine().can_dm("alice@example.test") is True
     assert ReactionConfig.from_env().enabled is False
     assert resolve_media_max_mb() == 9
-    assert AccountResolver().resolve()[0].email == "alice@example.test"
+    # ZULIP_EMAIL is profile-scoped the same way (it was previously asserted
+    # through the removed AccountResolver; get_setting is the same resolver the
+    # adapter itself uses).
+    assert get_setting("ZULIP_EMAIL") == "alice@example.test"
 
     hermes.install({}, tmp_path / "bob")
     assert PolicyEngine().mode == "open"
     assert PolicyEngine().can_dm("alice@example.test") is True
     assert ReactionConfig.from_env().enabled is True
     assert resolve_media_max_mb() == DEFAULT_MAX_MB
-    assert AccountResolver().resolve()[0].email == ""
+    # Absent from this profile. Note get_setting returns None when the name is
+    # unset, where the removed AccountResolver coerced it to "" via `or ""`.
+    assert get_setting("ZULIP_EMAIL") in (None, "")

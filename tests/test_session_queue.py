@@ -64,8 +64,9 @@ def dm_message(message_id, sender_id=42):
 def build_adapter(monkeypatch, mock_platform_config, tmp_path):
     """An adapter whose client and gateway dispatch are both recorded."""
     import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
     monkeypatch.setenv("ZULIP_EMAIL", EMAIL)
     monkeypatch.setenv("ZULIP_API_KEY", "k" * 32)
@@ -77,7 +78,7 @@ def build_adapter(monkeypatch, mock_platform_config, tmp_path):
             def __init__(self, **kwargs):
                 pass
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     adapter_module._clear_caches()
 
     from zulip.adapter import ZulipAdapter

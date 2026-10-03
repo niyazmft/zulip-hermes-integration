@@ -86,7 +86,7 @@ class TestStreamFilterIntegration:
             },
             clear=True,
         ):
-            with patch("zulip.adapter._import_zulip_sdk") as mock_sdk:
+            with patch("zulip.zulip_client.import_zulip_sdk") as mock_sdk:
                 client = MagicMock()
                 mock_sdk.return_value = MagicMock(Client=lambda **kw: client)
                 from zulip.adapter import ZulipAdapter
@@ -176,7 +176,7 @@ class TestResponsePrefixIntegration:
             },
             clear=True,
         ):
-            with patch("zulip.adapter._import_zulip_sdk") as mock_sdk:
+            with patch("zulip.zulip_client.import_zulip_sdk") as mock_sdk:
                 client = MagicMock()
                 mock_sdk.return_value = MagicMock(Client=lambda **kw: client)
                 from zulip.adapter import ZulipAdapter

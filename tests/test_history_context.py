@@ -57,8 +57,9 @@ class _FakeClient:
 def make_adapter(mock_platform_config, monkeypatch):
     def _make(**env):
         import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
 
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -68,7 +69,7 @@ def make_adapter(mock_platform_config, monkeypatch):
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         for key, value in env.items():
             monkeypatch.setenv(key, value)
 
@@ -296,9 +297,12 @@ class TestHistoryDispatch:
 class TestHistoryBestEffort:
     @pytest.mark.asyncio
     async def test_slow_client_cannot_delay_dispatch(self, make_adapter, monkeypatch):
-        import zulip.adapter as adapter_module
+        import zulip.history as history_module
 
-        monkeypatch.setattr(adapter_module, "HISTORY_FETCH_TIMEOUT", 0.05)
+        # HISTORY_FETCH_TIMEOUT is owned by zulip.history and read there at
+        # call time, so it must be patched on that module — patching
+        # zulip.adapter would silently no-op.
+        monkeypatch.setattr(history_module, "HISTORY_FETCH_TIMEOUT", 0.05)
         adapter = make_adapter(ZULIP_HISTORY_MODE="always")
 
         def slow(request):

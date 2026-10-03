@@ -28,7 +28,7 @@ class TestResolveTopic:
             },
             clear=True,
         ):
-            with patch("zulip.adapter._import_zulip_sdk") as mock_sdk:
+            with patch("zulip.zulip_client.import_zulip_sdk") as mock_sdk:
                 client = MagicMock()
                 mock_sdk.return_value = MagicMock(Client=lambda **kw: client)
                 adapter = ZulipAdapter(config)

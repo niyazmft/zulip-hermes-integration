@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zulip import adapter as adapter_module
+import zulip.media as media_module
+import zulip.zulip_client as zulip_client_module
 from zulip.adapter import _standalone_send
 from zulip.activity_trace import TraceConfig
 
@@ -101,12 +103,12 @@ class _RecordingClient:
 
 @pytest.fixture(autouse=True)
 def _fake_sdk(monkeypatch):
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
     class MockZulipModule:
         Client = _RecordingClient
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     adapter_module._clear_caches()
     yield
     adapter_module._clear_caches()
@@ -181,7 +183,7 @@ class TestMediaSend:
         attachment = tmp_path / "report.csv"
         attachment.write_text("a,b\n")
         upload = AsyncMock(return_value="/user_uploads/1/report.csv")
-        monkeypatch.setattr(adapter_module, "upload_file_to_zulip", upload)
+        monkeypatch.setattr(media_module, "upload_file_to_zulip", upload)
 
         result = await adapter.send(
             "573423",
@@ -213,7 +215,7 @@ class TestStandaloneSend:
         client = MagicMock(spec_set=["send_message"])
         client.send_message.return_value = {"result": "success", "id": 42}
 
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "20", "body", thread_id="Weekly"
             )
@@ -239,7 +241,7 @@ class TestStandaloneSend:
         client = MagicMock(spec_set=["send_message"])
         client.send_message.side_effect = _hang
 
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(SimpleNamespace(extra={}), "20", "body")
 
         assert "timed out" in result["error"]
@@ -257,7 +259,7 @@ class TestStandaloneSend:
             "code": "STREAM_DOES_NOT_EXIST",
         }
 
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(SimpleNamespace(extra={}), "999", "body")
 
         assert "error" in result

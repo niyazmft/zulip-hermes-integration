@@ -18,8 +18,8 @@ def _isolate_data_dir(monkeypatch, tmp_path):
 class TestOutboundUpload:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -30,7 +30,7 @@ class TestOutboundUpload:
                     self._calls.append(request)
                     return {"result": "success", "id": msg_id}
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         return ZulipAdapter(mock_platform_config)
 
@@ -41,7 +41,7 @@ class TestOutboundUpload:
         tmp.write("hello")
         tmp.close()
 
-        with patch("zulip.adapter.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/doc.pdf"):
+        with patch("zulip.media.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/doc.pdf"):
             result = await adapter.send("dm:42", "See attached", media_files=[tmp.name])
         assert result.success is True
         call = adapter.client._calls[0]
@@ -56,7 +56,7 @@ class TestOutboundUpload:
         tmp.write("x")
         tmp.close()
 
-        with patch("zulip.adapter.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/doc.pdf"):
+        with patch("zulip.media.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/doc.pdf"):
             result = await adapter.send("dm:42", "", media_files=[tmp.name])
         assert result.success is True
         call = adapter.client._calls[0]
@@ -66,7 +66,7 @@ class TestOutboundUpload:
     @pytest.mark.asyncio
     async def test_path_traversal_rejected(self, adapter, monkeypatch):
         monkeypatch.setenv("HERMES_DATA_DIR", tempfile.gettempdir())
-        with patch("zulip.adapter.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
+        with patch("zulip.media.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
             result = await adapter.send("dm:42", "hi", media_files=["/etc/passwd"])
         assert result.success is True
         assert adapter.client._calls[0]["content"] == "hi"
@@ -82,8 +82,8 @@ class TestSendImageFileAndDocument:
 
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -94,7 +94,7 @@ class TestSendImageFileAndDocument:
                     self._calls.append(request)
                     return {"result": "success", "id": msg_id}
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         return ZulipAdapter(mock_platform_config)
 
@@ -106,7 +106,7 @@ class TestSendImageFileAndDocument:
         tmp.close()
         expected_name = Path(tmp.name).name
 
-        with patch("zulip.adapter.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/shot.png"):
+        with patch("zulip.media.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/shot.png"):
             result = await adapter.send_image_file("dm:42", tmp.name, caption="Here you go")
         assert result.success is True
         call = adapter.client._calls[0]
@@ -124,7 +124,7 @@ class TestSendImageFileAndDocument:
         tmp.close()
         expected_name = Path(tmp.name).name
 
-        with patch("zulip.adapter.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/report.pdf"):
+        with patch("zulip.media.upload_file_to_zulip", return_value="https://z.com/user_uploads/1/report.pdf"):
             result = await adapter.send_document("dm:42", tmp.name)
         assert result.success is True
         call = adapter.client._calls[0]
@@ -135,7 +135,7 @@ class TestSendImageFileAndDocument:
     @pytest.mark.asyncio
     async def test_send_image_file_upload_failure_sends_warning_not_stub_text(self, adapter, monkeypatch):
         monkeypatch.setenv("HERMES_DATA_DIR", tempfile.gettempdir())
-        with patch("zulip.adapter.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
+        with patch("zulip.media.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
             result = await adapter.send_image_file("dm:42", "/etc/passwd")
         assert result.success is True
         assert "Couldn't deliver the image attachment" in adapter.client._calls[0]["content"]
@@ -145,7 +145,7 @@ class TestSendImageFileAndDocument:
         """The failure fallback keeps the caller's caption as a prefix so the
         context of what failed isn't lost."""
         monkeypatch.setenv("HERMES_DATA_DIR", tempfile.gettempdir())
-        with patch("zulip.adapter.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
+        with patch("zulip.media.upload_file_to_zulip", side_effect=ValueError("unauthorized path")):
             result = await adapter.send_image_file("dm:42", "/etc/passwd", caption="Screenshot")
         assert result.success is True
         content = adapter.client._calls[0]["content"]

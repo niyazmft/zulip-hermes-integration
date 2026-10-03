@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zulip import adapter as adapter_module
+import zulip.refs as refs_module
+import zulip.zulip_client as zulip_client_module
 from zulip.adapter import _standalone_send
 from zulip.refs import clear_ref_cache
 
@@ -41,12 +43,12 @@ class _RecordingClient:
 
 @pytest.fixture(autouse=True)
 def _fake_sdk(monkeypatch):
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
     class MockZulipModule:
         Client = _RecordingClient
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     adapter_module._clear_caches()
     clear_ref_cache()
     yield
@@ -67,7 +69,7 @@ class TestLiveSendPath:
     @pytest.mark.asyncio
     async def test_render_is_called_with_the_unchunked_reply(self, adapter, monkeypatch):
         rendered = AsyncMock(return_value=LINK)
-        monkeypatch.setattr(adapter_module, "render_refs", rendered)
+        monkeypatch.setattr(refs_module, "render_refs", rendered)
 
         result = await adapter.send("dm:42", f"Opened a PR: {MARKER}")
 
@@ -82,7 +84,7 @@ class TestLiveSendPath:
     async def test_a_marker_is_never_split_across_chunks(self, adapter, monkeypatch):
         monkeypatch.setenv("ZULIP_TEXT_CHUNK_LIMIT", "60")
         rendered = AsyncMock(return_value=LINK)
-        monkeypatch.setattr(adapter_module, "render_refs", rendered)
+        monkeypatch.setattr(refs_module, "render_refs", rendered)
 
         result = await adapter.send("dm:42", "pad " * 12 + MARKER)
 
@@ -96,7 +98,7 @@ class TestLiveSendPath:
     @pytest.mark.asyncio
     async def test_rendering_is_best_effort(self, adapter, monkeypatch):
         rendered = AsyncMock(side_effect=RuntimeError("github down"))
-        monkeypatch.setattr(adapter_module, "render_refs", rendered)
+        monkeypatch.setattr(refs_module, "render_refs", rendered)
 
         result = await adapter.send("dm:42", f"Opened a PR: {MARKER}")
 
@@ -128,11 +130,11 @@ class TestStandaloneSendPath:
         for key, value in _STANDALONE_ENV.items():
             monkeypatch.setenv(key, value)
         rendered = AsyncMock(return_value=LINK)
-        monkeypatch.setattr(adapter_module, "render_refs", rendered)
+        monkeypatch.setattr(refs_module, "render_refs", rendered)
 
         client = MagicMock(spec_set=["send_message"])
         client.send_message.return_value = {"result": "success", "id": 1}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "20", f"Opened a PR: {MARKER}"
             )
@@ -149,11 +151,11 @@ class TestStandaloneSendPath:
         for key, value in _STANDALONE_ENV.items():
             monkeypatch.setenv(key, value)
         rendered = AsyncMock(side_effect=RuntimeError("github down"))
-        monkeypatch.setattr(adapter_module, "render_refs", rendered)
+        monkeypatch.setattr(refs_module, "render_refs", rendered)
 
         client = MagicMock(spec_set=["send_message"])
         client.send_message.return_value = {"result": "success", "id": 1}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "20", f"Opened a PR: {MARKER}"
             )

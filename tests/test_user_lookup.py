@@ -131,10 +131,10 @@ class TestAdminActionsGetUserInfo:
 def _adapter_with(monkeypatch, mock_platform_config, client):
     """Build a real adapter (construction uses the conftest mock) then swap in
     ``client`` so the lookup methods run against the SDK shape under test."""
-    import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
     from tests.conftest import MockZulipClient
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
     class FakeZulipModule:
         class Client:
@@ -144,7 +144,7 @@ def _adapter_with(monkeypatch, mock_platform_config, client):
             def __getattr__(self, name):
                 return getattr(self._client, name)
 
-    monkeypatch.setattr(adapter_module, "zulip", FakeZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", FakeZulipModule())
     from zulip.adapter import ZulipAdapter
 
     adapter = ZulipAdapter(mock_platform_config)

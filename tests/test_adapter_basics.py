@@ -20,8 +20,9 @@ class TestAdapterImport:
 class TestAdapterInstantiation:
     def test_adapter_can_be_instantiated(self, mock_platform_config, monkeypatch):
         import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
         # Patch ZULIP_AVAILABLE so the adapter doesn't bail out
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
         # Patch the zulip module (official SDK) to return our mock client
         from tests.conftest import MockZulipClient
 
@@ -32,7 +33,7 @@ class TestAdapterInstantiation:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
 
         from zulip.adapter import ZulipAdapter
         adapter = ZulipAdapter(mock_platform_config)
@@ -41,8 +42,8 @@ class TestAdapterInstantiation:
         assert adapter.site == "https://test.zulipchat.com"
 
     def test_adapter_missing_zulip_raises(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "_import_zulip_sdk", lambda: None)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "import_zulip_sdk", lambda: None)
 
         from zulip.adapter import ZulipAdapter
         with pytest.raises(ImportError, match="zulip package not installed"):
@@ -84,7 +85,8 @@ class TestNewApiMethods:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
         import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
         from tests.conftest import MockZulipClient
 
         class MockZulipModule:
@@ -94,7 +96,7 @@ class TestNewApiMethods:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         return ZulipAdapter(mock_platform_config)
 

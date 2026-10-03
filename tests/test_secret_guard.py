@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import zulip.zulip_client as zulip_client_module
 from zulip.secret_guard import (
     MAX_WALK_DEPTH,
     MIN_SECRET_LENGTH,
@@ -199,8 +200,9 @@ _ENV = {
 @pytest.fixture
 def adapter(mock_platform_config, monkeypatch, tmp_path):
     import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     monkeypatch.setenv("ZULIP_API_KEY", SECRET)
     monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
     monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
@@ -215,7 +217,7 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
                 self._calls.append(request)
                 return {"result": "success", "id": len(self._calls) + 100}
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     from zulip.adapter import ZulipAdapter
 
     a = ZulipAdapter(mock_platform_config)
@@ -273,7 +275,7 @@ class TestSendRefusesCredentials:
     async def test_refusal_happens_before_media_upload(self, adapter, monkeypatch):
         """A refused message must not leave a stray upload behind."""
         uploaded = AsyncMock(side_effect=AssertionError("upload must not run"))
-        monkeypatch.setattr("zulip.adapter.upload_file_to_zulip", uploaded)
+        monkeypatch.setattr("zulip.media.upload_file_to_zulip", uploaded)
 
         result = await adapter.send(
             "dm:42", f"key: {SECRET}", media_files=["/tmp/report.pdf"]
@@ -314,7 +316,7 @@ class TestStandaloneSendRefusesCredentials:
 
         client = MagicMock()
         client.send_message.return_value = {"result": "success", "id": 1}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "dm:8", f"here: {SECRET}"
             )
@@ -334,7 +336,7 @@ class TestStandaloneSendRefusesCredentials:
 
         client = MagicMock()
         client.send_message.return_value = {"result": "success", "id": 1}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "dm:8", f"here: {SECRET}"
             )
@@ -352,7 +354,7 @@ class TestStandaloneSendRefusesCredentials:
 
         client = MagicMock()
         client.send_message.return_value = {"result": "success", "id": 1}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "dm:8", "cron job finished"
             )

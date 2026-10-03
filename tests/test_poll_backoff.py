@@ -30,10 +30,10 @@ from zulip.adapter import (
 
 @pytest.fixture
 def adapter(mock_platform_config, monkeypatch):
-    import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
 
     monkeypatch.setenv("ZULIP_TOPIC_SESSIONS", "true")
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     monkeypatch.delenv("ZULIP_READ_TIMEOUT", raising=False)
 
     class MockZulipModule:
@@ -41,7 +41,7 @@ def adapter(mock_platform_config, monkeypatch):
             def __init__(self, **kwargs):
                 pass
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     from zulip.adapter import ZulipAdapter
 
     a = ZulipAdapter(mock_platform_config)
@@ -191,10 +191,13 @@ class TestPollLoopPacing:
     @pytest.mark.asyncio
     async def test_fast_answers_are_paced_by_the_loop_itself(self, adapter, monkeypatch):
         """The loop must apply the delay, not merely compute it."""
-        import zulip.adapter as adapter_module
+        import zulip.settings as settings_module
 
-        monkeypatch.setattr(adapter_module, "POLL_BACKOFF_START", 0.01)
-        monkeypatch.setattr(adapter_module, "POLL_BACKOFF_MAX", 0.04)
+        # The pacing constants are owned by zulip.settings and read by
+        # zulip.settings.next_poll_backoff at call time, so they must be
+        # patched there — patching zulip.adapter would not take effect.
+        monkeypatch.setattr(settings_module, "POLL_BACKOFF_START", 0.01)
+        monkeypatch.setattr(settings_module, "POLL_BACKOFF_MAX", 0.04)
 
         seen_timeouts = []
 
@@ -218,5 +221,10 @@ class TestPollLoopPacing:
         assert len(seen_timeouts) == 4
         # 0.01 + 0.02 + 0.04 + 0.04 of pacing actually happened.
         assert elapsed >= 0.1
+        # The pacing must come from the *patched* settings constants. The
+        # unpatched defaults (1.0/5.0) would pace this loop for ~12s, so this
+        # upper bound is what makes a stale patch (one that no-ops) fail
+        # instead of passing slowly.
+        assert elapsed < 5.0
         # ...and the poll used the learned abort budget, not the read default.
         assert seen_timeouts[0] == adapter._events_timeout

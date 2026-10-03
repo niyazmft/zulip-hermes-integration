@@ -6,13 +6,13 @@ from unittest.mock import patch
 from zulip.adapter import (
     _client_cache,
     _target_cache,
-    _get_cached_client,
     _parse_target,
     _set_cached_target,
     _clear_caches,
     _MAX_CLIENT_CACHE,
     _MAX_TARGET_CACHE,
 )
+from zulip.zulip_client import get_cached_client as _get_cached_client
 
 
 class TestClientCache:

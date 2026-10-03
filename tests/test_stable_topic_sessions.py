@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import zulip.adapter as adapter_module
+import zulip.commands as commands_module
+import zulip.zulip_client as zulip_client_module
 from tests.conftest import MockZulipClient
 from zulip.conversations import TopicConversationRegistry
 
@@ -91,7 +93,7 @@ mode) and a recording client."""
     monkeypatch.setenv("ZULIP_CHATMODE", "onmessage")
     monkeypatch.setenv("ZULIP_TOPIC_SESSIONS", "true")
     monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
     class MockZulipModule:
         class Client:
@@ -101,7 +103,7 @@ mode) and a recording client."""
             def __getattr__(self, name):
                 return getattr(self._client, name)
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     from zulip.adapter import ZulipAdapter
 
     a = ZulipAdapter(mock_platform_config)
@@ -1025,7 +1027,7 @@ class TestContinueCommand:
         monkeypatch.setenv("ZULIP_CHATMODE", "onmessage")
         monkeypatch.setenv("ZULIP_TOPIC_SESSIONS", "false")
         monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -1035,9 +1037,9 @@ class TestContinueCommand:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         core = MagicMock(return_value=MagicMock(handled=True, reply="core-listing"))
-        monkeypatch.setattr(adapter_module, "handle_command", core)
+        monkeypatch.setattr(commands_module, "handle_command", core)
         from zulip.adapter import ZulipAdapter
 
         adapter = ZulipAdapter(mock_platform_config)
@@ -1059,7 +1061,7 @@ class TestContinueCommand:
         # /topic-sessions and the core gateway keeps /sessions — typing the
         # core command reaches the core handler untouched.
         core = MagicMock(return_value=MagicMock(handled=True, reply="core-listing"))
-        monkeypatch.setattr(adapter_module, "handle_command", core)
+        monkeypatch.setattr(commands_module, "handle_command", core)
         await adapter._handle_message(
             _stream_msg("Discuss about XY", msg_id=9, content="/sessions")
         )

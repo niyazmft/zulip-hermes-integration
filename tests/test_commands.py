@@ -124,14 +124,14 @@ class TestAdapterIntegration:
 
     @pytest.mark.asyncio
     async def test_command_bypasses_ai_dispatch(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
         from zulip.adapter import ZulipAdapter
         from tests.conftest import MockZulipClient
 
         monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
         monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
         monkeypatch.setenv("ZULIP_API_KEY", "key")
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -140,7 +140,7 @@ class TestAdapterIntegration:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
 
         adapter = ZulipAdapter(mock_platform_config)
 
@@ -165,14 +165,14 @@ class TestAdapterIntegration:
         self, mock_platform_config, monkeypatch
     ):
         """Issue #154: /streams in a group DM must answer the whole conversation."""
-        import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
         from zulip.adapter import ZulipAdapter
         from tests.conftest import MockZulipClient
 
         monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
         monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
         monkeypatch.setenv("ZULIP_API_KEY", "key")
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -181,7 +181,7 @@ class TestAdapterIntegration:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         adapter = ZulipAdapter(mock_platform_config)
 
         await adapter._handle_message(
@@ -205,14 +205,14 @@ class TestAdapterIntegration:
 
     @pytest.mark.asyncio
     async def test_non_command_goes_to_ai(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
         from zulip.adapter import ZulipAdapter
         from tests.conftest import MockZulipClient
 
         monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
         monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
         monkeypatch.setenv("ZULIP_API_KEY", "key")
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -221,7 +221,7 @@ class TestAdapterIntegration:
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
 
         adapter = ZulipAdapter(mock_platform_config)
 

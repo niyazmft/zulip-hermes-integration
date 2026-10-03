@@ -17,8 +17,10 @@ import pytest
 @pytest.fixture
 def adapter(mock_platform_config, monkeypatch, tmp_path):
     import zulip.adapter as adapter_module
+    import zulip.tracing as tracing_module
+    import zulip.zulip_client as zulip_client_module
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
     monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
     monkeypatch.setenv("ZULIP_API_KEY", "k" * 32)
@@ -40,7 +42,7 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
                 self.edited.append(request)
                 return {"result": "success"}
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     # The live-adapter registry is module-level, so adapters built by earlier tests
     # in the same process stay registered and can answer for this one — the handler
     # iterates them all. That made a "wrong topic is dropped" test report success on
@@ -53,9 +55,10 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
     from zulip.adapter import ZulipAdapter
 
     a = ZulipAdapter(mock_platform_config)
+    # The guarded host import lives in zulip.tracing (the module that reads it).
     context: dict = {}
     monkeypatch.setattr(
-        adapter_module,
+        tracing_module,
         "_host_get_session_env",
         lambda name, default=None: context.get(name, default),
     )

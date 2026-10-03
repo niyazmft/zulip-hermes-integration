@@ -36,15 +36,15 @@ class TestResolveChatmode:
 class TestStreamGating:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
                 def __init__(self, email=None, api_key=None, site=None):
                     pass
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         a = ZulipAdapter(mock_platform_config)
         a.email = "bot@zulip.com"  # for mention detection
@@ -261,15 +261,15 @@ class TestPerStreamGating:
 
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
                 def __init__(self, email=None, api_key=None, site=None):
                     pass
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         from zulip.adapter import ZulipAdapter
         a = ZulipAdapter(mock_platform_config)
         a.email = "bot@zulip.com"

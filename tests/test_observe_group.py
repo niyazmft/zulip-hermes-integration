@@ -54,9 +54,9 @@ def make_adapter(mock_platform_config, monkeypatch):
     """Build an adapter with a fake client, applying env before construction."""
 
     def _make(**env):
-        import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
 
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
@@ -66,7 +66,7 @@ def make_adapter(mock_platform_config, monkeypatch):
                 def __getattr__(self, name):
                     return getattr(self._client, name)
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         for key, value in env.items():
             monkeypatch.setenv(key, value)
 

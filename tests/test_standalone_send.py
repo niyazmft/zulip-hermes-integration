@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zulip import adapter as adapter_module
+import zulip.media as media_module
+import zulip.zulip_client as zulip_client_module
 from zulip.adapter import _standalone_send
 
 
@@ -86,7 +88,7 @@ class TestStreamDelivery:
     async def test_sends_to_stream_with_default_topic(self, env):
         """``deliver: zulip:20`` → stream 20, topic falls back to the default."""
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client) as get_client:
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client) as get_client:
             result = await _standalone_send(_pconfig(), "20", "weekly report body")
 
         assert result == {"success": True, "message_id": "4242"}
@@ -104,7 +106,7 @@ class TestStreamDelivery:
     async def test_thread_id_becomes_topic(self, env):
         """``deliver: zulip:20:Weekly currency`` → Hermes passes the 3rd segment as thread_id."""
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "20", "hi", thread_id="Weekly currency")
 
         assert result["success"] is True
@@ -113,7 +115,7 @@ class TestStreamDelivery:
     @pytest.mark.asyncio
     async def test_inline_topic_directive_wins_and_is_stripped(self, env):
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             await _standalone_send(_pconfig(), "20", "[[zulip_topic: Alerts]]\nDisk 91% full", thread_id="ignored")
 
         payload = client.send_message.call_args[0][0]
@@ -125,7 +127,7 @@ class TestStreamDelivery:
     async def test_response_prefix_applied(self, env, monkeypatch):
         monkeypatch.setenv("ZULIP_RESPONSE_PREFIX", "🤖 ")
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             await _standalone_send(_pconfig(), "20", "hello")
         assert client.send_message.call_args[0][0]["content"] == "🤖 hello"
 
@@ -133,7 +135,7 @@ class TestStreamDelivery:
     async def test_max_message_length_truncates(self, env, monkeypatch):
         monkeypatch.setenv("ZULIP_MAX_MESSAGE_LENGTH", "100")
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "20", "x" * 5000)
         assert result["success"] is True
         content = client.send_message.call_args[0][0]["content"]
@@ -146,7 +148,7 @@ class TestDmDelivery:
     async def test_sends_private_message(self, env):
         """``deliver: zulip:dm:8`` → private message to user 8; thread_id is irrelevant."""
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "dm:8", "ping", thread_id="whatever")
 
         assert result == {"success": True, "message_id": "4242"}
@@ -158,7 +160,7 @@ class TestDmDelivery:
     async def test_group_dm_target_addresses_every_recipient(self, env):
         """Issue #154: ``deliver: zulip:dm:7,42,99`` reaches the whole group."""
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "dm:7,42,99", "ping")
 
         assert result == {"success": True, "message_id": "4242"}
@@ -170,7 +172,7 @@ class TestDmDelivery:
 class TestCredentials:
     @pytest.mark.asyncio
     async def test_missing_credentials_reports_error_without_network(self):
-        with patch.object(adapter_module, "_get_cached_client") as get_client:
+        with patch.object(zulip_client_module, "get_cached_client") as get_client:
             result = await _standalone_send(_pconfig(), "20", "x")
         assert "error" in result and "ZULIP_SITE" in result["error"]
         get_client.assert_not_called()
@@ -180,7 +182,7 @@ class TestCredentials:
         """Out-of-process callers may carry creds on PlatformConfig.extra, not env."""
         client = _fake_client()
         extra = {"site": "https://cfg.example.test", "email": "cfg@example.test", "api_key": "x" * 32}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client) as get_client:
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client) as get_client:
             result = await _standalone_send(_pconfig(extra), "20", "x")
         assert result["success"] is True
         get_client.assert_called_once_with(extra["site"], extra["email"], extra["api_key"])
@@ -189,13 +191,13 @@ class TestCredentials:
     async def test_env_wins_over_extra(self, env):
         client = _fake_client()
         extra = {"site": "https://cfg.example.test", "email": "cfg@example.test", "api_key": "x" * 32}
-        with patch.object(adapter_module, "_get_cached_client", return_value=client) as get_client:
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client) as get_client:
             await _standalone_send(_pconfig(extra), "20", "x")
         get_client.assert_called_once_with(_ENV["ZULIP_SITE"], _ENV["ZULIP_EMAIL"], _ENV["ZULIP_API_KEY"])
 
     @pytest.mark.asyncio
     async def test_missing_sdk_reports_error(self, env):
-        with patch.object(adapter_module, "_get_cached_client", side_effect=ImportError("zulip package not installed")):
+        with patch.object(zulip_client_module, "get_cached_client", side_effect=ImportError("zulip package not installed")):
             result = await _standalone_send(_pconfig(), "20", "x")
         assert result == {"error": "zulip package not installed"}
 
@@ -207,7 +209,7 @@ class TestFailures:
     @pytest.mark.asyncio
     async def test_invalid_target(self, env):
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "#platform", "x")
         assert "error" in result and "Invalid Zulip target" in result["error"]
         client.send_message.assert_not_called()
@@ -215,7 +217,7 @@ class TestFailures:
     @pytest.mark.asyncio
     async def test_api_error_result(self, env):
         client = _fake_client({"result": "error", "msg": "Stream does not exist", "code": "STREAM_DOES_NOT_EXIST"})
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "999", "x")
         assert "error" in result and "STREAM_DOES_NOT_EXIST" in result["error"]
 
@@ -223,7 +225,7 @@ class TestFailures:
     async def test_sdk_exception(self, env):
         client = _fake_client()
         client.send_message.side_effect = ConnectionError("boom")
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "20", "x")
         assert result == {"error": "Zulip send failed: boom"}
 
@@ -238,7 +240,7 @@ class TestFailures:
             return {"result": "success", "id": 1}
 
         client.send_message.side_effect = _hang
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "20", "x")
         assert "error" in result and "timed out" in result["error"]
 
@@ -250,8 +252,8 @@ class TestMedia:
         f.write_text("a,b\n")
         client = _fake_client()
         upload = AsyncMock(return_value="/user_uploads/1/ab/report.csv")
-        with patch.object(adapter_module, "_get_cached_client", return_value=client), \
-             patch.object(adapter_module, "upload_file_to_zulip", upload):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client), \
+             patch.object(media_module, "upload_file_to_zulip", upload):
             result = await _standalone_send(_pconfig(), "20", "see attached", media_files=[str(f)])
 
         assert result["success"] is True
@@ -266,8 +268,8 @@ class TestMedia:
     async def test_rejects_urls_in_media_files(self, env):
         client = _fake_client()
         upload = AsyncMock()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client), \
-             patch.object(adapter_module, "upload_file_to_zulip", upload):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client), \
+             patch.object(media_module, "upload_file_to_zulip", upload):
             result = await _standalone_send(_pconfig(), "20", "x", media_files=["https://evil.test/a.png"])
         assert result["success"] is True
         upload.assert_not_awaited()
@@ -276,6 +278,6 @@ class TestMedia:
     @pytest.mark.asyncio
     async def test_force_document_is_accepted_and_ignored(self, env):
         client = _fake_client()
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(_pconfig(), "20", "x", force_document=True)
         assert result["success"] is True

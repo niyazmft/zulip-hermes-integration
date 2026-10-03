@@ -138,16 +138,16 @@ class TestProbeErrorNamesTheFlag:
 class TestAdapterSiteEnforcement:
     @pytest.fixture
     def _sdk(self, monkeypatch, tmp_path):
-        import zulip.adapter as adapter_module
+        import zulip.zulip_client as zulip_client_module
 
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         class MockZulipModule:
             class Client:
                 def __init__(self, **kwargs):
                     pass
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         monkeypatch.setenv("ZULIP_EMAIL", "bot@example.com")
         monkeypatch.setenv("ZULIP_API_KEY", "k" * 32)
         # Keep the adapter's state (audit log, queue, dedupe) out of ~/.hermes.

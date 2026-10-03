@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zulip import adapter as adapter_module
+import zulip.zulip_client as zulip_client_module
 from zulip.adapter import _standalone_send
 from zulip.text_utils import strip_think_blocks
 
@@ -67,12 +68,12 @@ class _RecordingClient:
 @pytest.fixture(autouse=True)
 def _fake_sdk(monkeypatch):
     """Swap the real SDK for the recording client on every test."""
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
     class MockZulipModule:
         Client = _RecordingClient
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     adapter_module._clear_caches()
     yield
     adapter_module._clear_caches()
@@ -134,7 +135,7 @@ class TestStripOnStandaloneSendPath:
         client = MagicMock(spec_set=["send_message"])
         client.send_message.return_value = {"result": "success", "id": 1}
 
-        with patch.object(adapter_module, "_get_cached_client", return_value=client):
+        with patch.object(zulip_client_module, "get_cached_client", return_value=client):
             result = await _standalone_send(
                 SimpleNamespace(extra={}), "20", CLOSED_BLOCK_REPLY
             )

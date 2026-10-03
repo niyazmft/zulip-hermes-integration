@@ -182,9 +182,9 @@ class TestUnsubscribedStreams:
 
 def _build_adapter(monkeypatch, tmp_path, triggers):
     """Construct a ZulipAdapter with a MagicMock client and given triggers."""
-    import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     from tests.conftest import MockZulipClient
 
     class MockZulipModule:
@@ -195,7 +195,7 @@ def _build_adapter(monkeypatch, tmp_path, triggers):
             def __getattr__(self, name):
                 return getattr(self._client, name)
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
 
     class FakeConfig:
         extra = {

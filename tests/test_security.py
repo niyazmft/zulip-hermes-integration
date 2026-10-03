@@ -51,8 +51,8 @@ class TestSsrfUrlValidation:
         monkeypatch.setenv("ZULIP_EMAIL", "bot@example.com")
         monkeypatch.setenv("ZULIP_API_KEY", "key123")
 
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         from zulip.adapter import ZulipAdapter
         with pytest.raises(ValueError, match="refused insecure ZULIP_SITE"):
@@ -63,8 +63,8 @@ class TestSsrfUrlValidation:
         monkeypatch.setenv("ZULIP_EMAIL", "bot@example.com")
         monkeypatch.setenv("ZULIP_API_KEY", "key123")
 
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         from zulip.adapter import ZulipAdapter
         with pytest.raises(ValueError, match="invalid ZULIP_SITE"):

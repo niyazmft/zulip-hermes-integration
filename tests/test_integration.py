@@ -9,13 +9,16 @@ import pytest
 class TestFullFlow:
     @pytest.fixture
     def adapter(self, mock_platform_config, monkeypatch, tmp_path):
-        import zulip.adapter as adapter_module
-        monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+        import zulip.probe as probe_module
+        import zulip.zulip_client as zulip_client_module
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
 
         # Patch probe so connect() doesn't make real HTTP calls
         async def fake_probe(*args, **kwargs):
             return {"ok": True, "bot": {"id": "1", "email": "bot@test.com", "full_name": "Test"}}
-        monkeypatch.setattr(adapter_module, "probe_zulip", fake_probe)
+        # ``probe_zulip`` is defined in zulip.probe and read there by
+        # ZulipConnection.connect; patching zulip.adapter would not take effect.
+        monkeypatch.setattr(probe_module, "probe_zulip", fake_probe)
 
         calls = {"send_message": [], "set_typing_status": [], "add_reaction": []}
 
@@ -58,7 +61,7 @@ class TestFullFlow:
         class MockZulipModule:
             Client = MockClient
 
-        monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
         monkeypatch.setenv("HERMES_DATA_DIR", str(tmp_path))
 
         from zulip.adapter import ZulipAdapter

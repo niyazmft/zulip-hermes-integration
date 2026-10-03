@@ -24,8 +24,9 @@ CANCELLED = SimpleNamespace(value="cancelled")
 @pytest.fixture
 def adapter(mock_platform_config, monkeypatch, tmp_path):
     import zulip.adapter as adapter_module
+    import zulip.zulip_client as zulip_client_module
 
-    monkeypatch.setattr(adapter_module, "ZULIP_AVAILABLE", True)
+    monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
     monkeypatch.setenv("ZULIP_SITE", "https://test.zulipchat.com")
     monkeypatch.setenv("ZULIP_EMAIL", "bot@test.com")
     monkeypatch.setenv("ZULIP_API_KEY", "k" * 32)
@@ -52,7 +53,7 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
             def set_typing_status(self, *a, **k):
                 return {"result": "success"}
 
-    monkeypatch.setattr(adapter_module, "zulip", MockZulipModule())
+    monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
     # The live-adapter registry is module-level, so adapters built by earlier tests
     # in the same process stay registered and can answer for this one — the handler
     # iterates them all. That made a "wrong topic is dropped" test report success on
