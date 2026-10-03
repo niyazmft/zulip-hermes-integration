@@ -12,35 +12,12 @@ Stream creation/deletion requires admin privileges on the Zulip server.
 from __future__ import annotations
 
 import logging
-from functools import partial
 from typing import Any, Optional
 
 from .logger import mask_pii
+from .zulip_client import user_lookup_call as _user_lookup_call
 
 logger = logging.getLogger(__name__)
-
-
-def _user_lookup_call(client: Any, user_id_or_email: Any):
-    """Resolve ``(callable, args)`` for a single-user lookup.
-
-    ``zulip`` 0.9.1 exposes ``get_user_by_id`` and ``call_endpoint`` but has no
-    ``get_user`` (issue #196); ``GET /users/{value}`` accepts either a numeric
-    id or an email address, so the raw endpoint covers the email case that
-    ``get_user_by_id`` cannot. Kept in step with ``zulip/adapter.py``.
-    """
-    raw = str(user_id_or_email or "").strip()
-    if not raw:
-        return None, ()
-    by_id = getattr(client, "get_user_by_id", None)
-    if raw.isdigit() and callable(by_id):
-        return by_id, (int(raw),)
-    endpoint = getattr(client, "call_endpoint", None)
-    if callable(endpoint):
-        return partial(endpoint, url=f"users/{raw}", method="GET"), ()
-    legacy = getattr(client, "get_user", None)
-    if callable(legacy):
-        return legacy, (raw,)
-    return None, ()
 
 
 async def list_streams(client: Any, include_all_public: bool = False) -> list[dict]:

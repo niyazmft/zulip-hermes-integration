@@ -62,6 +62,33 @@ class PolicyEngine:
         self._loaded_stamp: Optional[tuple[float, int, int]] = None
         self._load_from_disk()
 
+        # Make the effective authorization posture visible at startup. Two
+        # silent misconfigurations are otherwise indistinguishable from a
+        # working bot: (a) `open` group policy, where the stream allowlist is
+        # ignored entirely, so any realm member can trigger the bot; and
+        # (b) `allowlist` mode with an EMPTY allowlist, which blocks everyone
+        # -- including the operator. Both are only discoverable by reading the
+        # resolver, so they are logged here instead.
+        logger.info(
+            "zulip policy resolved [dm_mode=%s dm_allowlist=%d "
+            "group_mode=%s stream_allowlist=%d]",
+            self.mode,
+            len(self.allowlist),
+            self.group_mode,
+            len(self.group_allowlist),
+        )
+        if self.mode == POLICY_ALLOWLIST and not self.allowlist:
+            logger.warning(
+                "zulip DM policy is 'allowlist' but ZULIP_ALLOWED_USERS is "
+                "empty -- NO ONE can DM the bot"
+            )
+        if self.group_mode == POLICY_ALLOWLIST and not self.group_allowlist:
+            logger.warning(
+                "zulip group policy is 'allowlist' but "
+                "ZULIP_GROUP_ALLOW_FROM is empty -- NO ONE can trigger the "
+                "bot in streams"
+            )
+
     def _persistence_path(self) -> Optional[Path]:
         """Return path to allowlist persistence file."""
         if not self._data_dir:
