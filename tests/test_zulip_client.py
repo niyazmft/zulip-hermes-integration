@@ -73,8 +73,11 @@ def test_import_zulip_sdk_prefers_a_real_sdk_over_this_plugin(
         "MARKER = 'real-sdk'\n", encoding="utf-8"
     )
 
-    # Plugin dir first, real SDK last: naive import resolves to the plugin.
-    monkeypatch.setattr(sys, "path", [str(repo_root), *sys.path, str(sdk_dir)])
+    # Control sys.path EXACTLY: plugin dir first, fake SDK second, and NO
+    # site-packages. CI installs the real SDK from requirements.txt, so leaving
+    # site-packages on the path made this pass locally (SDK absent) and fail in
+    # CI, where resolution continued past the plugin and found the real SDK.
+    monkeypatch.setattr(sys, "path", [str(repo_root), str(sdk_dir)])
     monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", False)
     monkeypatch.setattr(zulip_client_module, "zulip", None)
     monkeypatch.delitem(sys.modules, "zulip", raising=False)
@@ -90,8 +93,12 @@ def test_import_zulip_sdk_reports_absent_instead_of_returning_this_plugin(
     monkeypatch
 ):
     """With no SDK installed the plugin must never be handed back as the SDK."""
+    # sys.path is replaced outright so no INSTALLED SDK can satisfy the import:
+    # the point of this test is that a genuinely absent SDK is reported absent,
+    # which is only testable if the environment cannot supply one. (CI installs
+    # the real SDK, which is what broke the first version of this test.)
     repo_root = Path(__file__).resolve().parent.parent
-    monkeypatch.setattr(sys, "path", [str(repo_root), *sys.path])
+    monkeypatch.setattr(sys, "path", [str(repo_root)])
     monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", False)
     monkeypatch.setattr(zulip_client_module, "zulip", None)
     monkeypatch.delitem(sys.modules, "zulip", raising=False)
