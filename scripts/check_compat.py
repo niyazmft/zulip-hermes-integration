@@ -13,6 +13,22 @@ straight from the ``compat`` workflow. It is *not* part of the fast unit lane:
 it needs a real Hermes install, which public PyPI may not provide at or above
 ``__min_hermes__``.
 
+Two kinds of assertion, and the difference matters:
+
+* **Requirements** — a missing one is fatal (exit 1): the module symbols the
+  plugin imports unguarded, the ``thread_id`` reply-routing contract, and the
+  registration kwargs. Their absence breaks the plugin or silently misroutes
+  replies.
+* **Capabilities** — reported, never fatal: the version-gated exec-approval
+  symbols and the metadata-aware stop-typing helpers. The plugin guards these
+  and degrades, which is the whole point of ``__min_hermes__`` being a *floor*
+  rather than a "fully featured" version. See ``GATED_BASE_METHODS`` for why
+  their absence is not an incompatibility.
+
+Separately, the host version itself is checked against ``__min_hermes__``: a
+host *below* the declared floor is a failure, so the floor is asserted in both
+directions rather than being a number nothing reads.
+
 Usage
 -----
     python scripts/check_compat.py
@@ -28,7 +44,8 @@ Usage
 Exit codes
 ----------
 0  host present and compatible, or an explicit skip with no host
-1  host present but a required symbol / contract is missing (see stderr)
+1  host present but a required symbol / contract is missing, or the host is
+   below ``__min_hermes__`` (see stderr)
 2  no host importable and HERMES_COMPAT_SKIP was not set
 """
 
@@ -61,9 +78,24 @@ REQUIRED_MODULE_SYMBOLS: dict[str, tuple[str, ...]] = {
 # reply with no error and no log, so it is asserted *behaviourally*.
 THREAD_METADATA_ATTR = "_thread_metadata_for_source"
 
-# Metadata-aware stop-typing (#144): if these disappear, stop-typing silently
-# loses the turn's topic.
-REQUIRED_BASE_METHODS = ("_stop_typing_with_metadata", "_accepts_kwarg")
+# Metadata-aware stop-typing helpers (#144). These are *capabilities*, not
+# requirements, because the plugin does not need them to work — they only make
+# typing more precise, and the host is what consumes them:
+#
+#   * Below 0.19.0 there is no ``_stop_typing_with_metadata`` at all, so the host
+#     calls ``stop_typing(chat_id)`` positionally. The plugin's hook takes
+#     ``metadata=None`` and clears typing on the stream's last-seen topic.
+#   * 0.19.0 - 0.21.2 have ``_stop_typing_with_metadata`` but not the
+#     ``_accepts_kwarg`` introspection helper this harness (and the
+#     ``tests/stubs`` mirror) is written against, so whether the host forwards
+#     metadata is not something we can verify from here.
+#   * 0.21.3+ have both, and the run's own topic is used.
+#
+# Either way stop-typing is a best-effort path (``zulip/outbound.py`` swallows
+# send failures) whose fallback is covered by
+# ``tests/test_topic_routing.py::test_stop_typing_without_metadata_still_works``.
+# Treating this as fatal is what made the declared 0.18.2 floor look false (#230).
+GATED_BASE_METHODS = ("_stop_typing_with_metadata", "_accepts_kwarg")
 
 # Version-gated (>= 0.21.3) symbols. The plugin guards these, so their absence
 # is not fatal — but when present their contract must hold, and the harness
@@ -249,24 +281,68 @@ def _check_thread_metadata_contract() -> list[str]:
     return []
 
 
-def _check_typing_helpers() -> list[str]:
+def _report_gated_base_methods() -> None:
+    """Print the metadata-aware stop-typing capabilities. Never fatal (#230)."""
     try:
         base = importlib.import_module("gateway.platforms.base")
-    except Exception as exc:  # noqa: BLE001
-        return [f"gateway.platforms.base import failed: {exc}"]
+    except Exception:  # noqa: BLE001
+        return
     adapter_cls = getattr(base, "BasePlatformAdapter", None)
     if adapter_cls is None:
-        return ["gateway.platforms.base.BasePlatformAdapter is missing"]
-
-    failures = []
-    for name in REQUIRED_BASE_METHODS:
-        if not hasattr(adapter_cls, name):
-            failures.append(
-                f"gateway.platforms.base.BasePlatformAdapter.{name} is missing; "
-                "the metadata-aware stop-typing path (#144) would silently lose "
-                "the turn's topic."
+        return
+    for name in GATED_BASE_METHODS:
+        if hasattr(adapter_cls, name):
+            print(f"  gated hook BasePlatformAdapter.{name}: present")
+        else:
+            print(
+                f"  gated hook BasePlatformAdapter.{name}: absent "
+                "(typing falls back to the stream's last-seen topic)"
             )
-    return failures
+
+
+def _parse_version(raw: str) -> tuple[int, ...] | None:
+    """Numeric parts of a version string, or None when unparseable.
+
+    Deliberately dependency-free (no ``packaging``): this harness runs before
+    the plugin's own dependencies are guaranteed to be installed.
+    """
+    parts: list[int] = []
+    for chunk in raw.split("."):
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) or None
+
+
+def _check_host_meets_floor() -> list[str]:
+    """Fail when the host is below the declared ``__min_hermes__``.
+
+    The capability checks cannot assert the floor — by design they pass on old
+    hosts. Without this, ``__min_hermes__`` is a number that nothing reads and
+    the claim can drift either way: it read 0.18.2 while the harness failed
+    every host below 0.21.3 (#230), and nothing would have noticed the reverse.
+    """
+    floor = _read_min_hermes()
+    host = _host_version()
+    parsed_host = _parse_version(host)
+    parsed_floor = _parse_version(floor)
+    if parsed_host is None or parsed_floor is None:
+        # An unparseable host version is not evidence of an unsupported host:
+        # HERMES_COMPAT_PATH pointed at a bare checkout reports "unknown".
+        return []
+    if parsed_host >= parsed_floor:
+        return []
+    return [
+        f"host Hermes {host} is below the declared floor "
+        f"__min_hermes__={floor}: the plugin does not claim to support it, so "
+        "this run proves nothing. Test at or above the floor, or lower "
+        "__min_hermes__ in zulip/version.py."
+    ]
 
 
 def _check_registration(adapter) -> list[str]:
@@ -330,8 +406,8 @@ def _print_failure(lines: list[str]) -> None:
     for line in lines:
         print(f"  - {line}", file=sys.stderr)
     print(
-        "  Fix the host ref (HERMES_COMPAT_REF / HERMES_COMPAT_PATH) or the "
-        "plugin, then re-run.",
+        "  Fix the host ref (HERMES_COMPAT_PATH, or the ref a `compat` CI "
+        "leg pins) or the plugin, then re-run.",
         file=sys.stderr,
     )
 
@@ -364,6 +440,11 @@ def main() -> int:
 
     print(f"check_compat: host Hermes {_host_version()} detected", flush=True)
 
+    floor_failures = _check_host_meets_floor()
+    if floor_failures:
+        _print_failure(floor_failures)
+        return 1
+
     try:
         from zulip import adapter
     except Exception as exc:  # noqa: BLE001
@@ -375,7 +456,6 @@ def main() -> int:
     if missing:
         failures.append("missing required gateway symbol(s): " + ", ".join(missing))
     failures.extend(_check_thread_metadata_contract())
-    failures.extend(_check_typing_helpers())
     failures.extend(_check_registration(adapter))
 
     if failures:
@@ -383,6 +463,7 @@ def main() -> int:
         return 1
 
     print("check_compat: plugin registration surface verified")
+    _report_gated_base_methods()
     _report_gated_symbols()
     print("check_compat: OK")
     return 0

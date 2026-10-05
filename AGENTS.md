@@ -283,16 +283,24 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 
 ## 🔌 Gateway Compatibility
 
-| Hermes gateway | Native exec-approval buttons | Reply routing (`thread_id`) |
-|----------------|------------------------------|-----------------------------|
-| **≥ 0.21.3** | ✅ Clickable buttons — Allow Once / Allow Session / Always Allow / Deny | ✅ |
-| 0.21.0 – 0.21.2 | ➖ Falls back to plain-text `/approve` / `/deny` instructions | ✅ |
-| **0.18.2** (`__min_hermes__`) | ➖ Not available (import guarded) | ✅ |
-| < 0.18.2 | ❌ Unsupported | — |
+| Hermes gateway | Native exec-approval buttons | Reply routing (`thread_id`) | Typing cleared in the run's own topic |
+|----------------|------------------------------|-----------------------------|--------------------------------------|
+| **≥ 0.21.3** | ✅ Clickable buttons — Allow Once / Allow Session / Always Allow / Deny | ✅ | ✅ via `_stop_typing_with_metadata` + `_accepts_kwarg` |
+| **0.18.2 – 0.21.2** (`__min_hermes__`) | ➖ Not available (import guarded) — plain-text `/approve` / `/deny` | ✅ | ➖ Falls back to the stream's last-seen topic |
+| < 0.18.2 | ❌ Unsupported | — | — |
 
 Native buttons rely on the gateway's `_send_exec_approval_prompt` hook, imported defensively
 so older gateways still load. A real-host contract gate for these symbols lives in
-[scripts/check_compat.py](scripts/check_compat.py).
+[scripts/check_compat.py](scripts/check_compat.py), and `__min_hermes__` is one of its matrix
+legs — the floor above is asserted against a real 0.18.2 host on every CI run, not just claimed.
+
+**Why the floor is 0.18.2 and not 0.21.3.** The typing row above is the only thing that is
+less than exact below 0.21.3. Below 0.19.0 the host has no `_stop_typing_with_metadata` at all
+and calls `stop_typing(chat_id)` positionally; 0.19.0 – 0.21.2 have the hook but not the
+`_accepts_kwarg` helper it introspects with. Either way typing is a best-effort path that
+clears on the stream's last-seen topic, and the plugin's hook takes `metadata=None`, so nothing
+raises and no reply is affected. The gate reports these two as *capabilities*, never as
+failures — treating them as failures is what made a true floor look false (#230).
 
 ---
 

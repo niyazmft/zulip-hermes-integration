@@ -39,7 +39,8 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 
 ## Prerequisites
 
-- **Hermes** `>= 0.18.2` (native exec-approval buttons need `>= 0.21.3`)
+- **Hermes** `>= 0.18.2` (native exec-approval buttons need `>= 0.21.3`; below that, typing
+  clears on the stream's last-seen topic — see [gateway compatibility](AGENTS.md#-gateway-compatibility))
 - **Python** 3.10+
 - **A Zulip bot** — see below
 
