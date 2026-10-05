@@ -6,9 +6,11 @@ workflow depends on, and prints the sister-only / hermes-only delta.
 
 Exit code is non-zero **only** for a schema error. Drift (a non-empty delta) is
 reported but never fails the build: the matrix exists to make drift *visible*,
-not to block a merge on a documentation file. The scheduled workflow in
-``.github/workflows/parity.yml`` surfaces the delta on every run; a human decides
-whether it is accepted or a parity item.
+not to block a merge on a documentation file. The delta is surfaced only when
+someone runs this checker (by hand, or from a local hook); a human then decides
+whether it is accepted or a parity item. There is deliberately no scheduled CI
+job: the former ``.github/workflows/parity.yml`` was removed for being noise
+nobody acted on.
 
 Usage::
 
