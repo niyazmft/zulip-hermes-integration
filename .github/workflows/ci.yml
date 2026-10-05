@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        # Manual escape hatch for the `current` leg, so an arbitrary host tag or
+        # commit can still be tested on demand (the old compat.yml's hermes_ref
+        # input). The `floor` leg is always the pinned tag below.
+        description: "Override the current-host leg's Hermes ref (default: v2026.9.24)"
+        required: false
+        type: string
 
 jobs:
   zulip-bridge:
@@ -70,3 +79,104 @@ jobs:
             echo "Working directory is not clean. Generated files might be out of sync."
             false
           }
+
+  compat:
+    # Real-host compatibility gate (#141).
+    #
+    # This runs here, behind `needs: zulip-bridge`, rather than in its own
+    # workflow — the same shape the OpenClaw sibling uses. `tests/stubs/` can
+    # never notice that a real gateway lacks a symbol, so this job installs an
+    # actual Hermes host and asserts every gateway symbol, registration kwarg and
+    # behavioural contract the plugin depends on. It is *not* in the fast lane:
+    # `needs:` means the cheap checks decide first, and a red py_compile or
+    # pytest run never pays for two host installs. The fast lane itself is not
+    # slowed — its steps are unchanged and it still reports as soon as it is done.
+    #
+    # Two things the previous separate `compat.yml` got wrong, both fixed here:
+    #
+    # 1. It read the host ref from `HERMES_COMPAT_REF` (repo variable or secret).
+    #    Nothing ever set it, so the weekly cron died in the *first* step with a
+    #    configuration error and never reached the host install. Both refs are
+    #    now pinned in this file: there is no variable to forget, and a missing
+    #    ref is not a possible failure mode.
+    # 2. It installed the host with
+    #    `pip install "hermes-agent @ git+https://...@${ref}"`, which cannot work
+    #    against any current host: Hermes's build backend refuses a wheel or
+    #    sdist build from a source tree ("Building wheels or sdists for
+    #    hermes-agent is not supported. Hermes is distributed via the shell
+    #    installer, Docker image, or Nix."). Setting the variable alone would
+    #    therefore have moved the failure one step later, not fixed it. The
+    #    install is editable now, which is the one form the backend supports.
+    needs: zulip-bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Report both legs even if one fails: a cancelled sibling hides whether the
+      # other host regressed.
+      fail-fast: false
+      matrix:
+        # floor   - the oldest host this plugin is verified green against. Also
+        #           the floor for the native exec-approval buttons (AGENTS.md).
+        # current - the newest host release.
+        #
+        # Neither leg is the *declared* floor, on purpose. zulip/version.py says
+        # __min_hermes__ = 0.18.2, but 0.18.2, 0.19.0 and 0.21.0 all fail this
+        # gate: BasePlatformAdapter._accepts_kwarg is absent, so the
+        # metadata-aware stop-typing path (#144) cannot forward the turn's topic.
+        # Adding 0.18.2 here today would only add a leg that is red on purpose;
+        # what the real floor should be is tracked as #230.
+        leg: [floor, current]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve host ref
+        id: host
+        env:
+          INPUT_REF: ${{ inputs.hermes_ref }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          case "$LEG" in
+            floor)   ref="v2026.9.14" ;;                 # host 0.21.3
+            current) ref="${INPUT_REF:-v2026.9.24}" ;;   # host 0.21.5
+            *) echo "::error::unknown leg '${LEG}'"; exit 1 ;;
+          esac
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Testing Hermes ref: ${ref} (leg=${LEG})"
+
+      - name: Cache pip (host dependency tree)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          # Keyed on the host ref, with no restore-keys: a partial key match
+          # could restore wheels cached for a different host ref, and the host's
+          # dependency tree changes between refs. A miss just re-downloads.
+          key: pip-hermes-${{ steps.host.outputs.ref }}
+
+      - name: Install pinned Hermes host (editable)
+        env:
+          # Escape hatch for a host that is not on the default upstream (e.g. a
+          # private host repo). Unset is fine: it defaults, and the job still
+          # needs no configuration.
+          HERMES_COMPAT_REPO: ${{ vars.HERMES_COMPAT_REPO || 'NousResearch/hermes-agent' }}
+          HERMES_REF: ${{ steps.host.outputs.ref }}
+        run: |
+          python -m pip install --upgrade pip
+          # Editable is not a style choice: a plain PEP 508 direct reference
+          # (`pip install "hermes-agent @ git+..."`) fails to build against a
+          # current host, because the backend supports only an editable build
+          # from a source tree. --src keeps the clone out of the checkout so the
+          # workspace stays clean.
+          pip install -e \
+            "git+https://github.com/${HERMES_COMPAT_REPO}@${HERMES_REF}#egg=hermes-agent" \
+            --src "$RUNNER_TEMP/host-src"
+
+      - name: Run real-host compatibility gate
+        # Prints the detected host version and each gated symbol, and exits
+        # non-zero with an actionable message naming the missing gateway symbol
+        # when the host is present but incompatible.
+        run: python scripts/check_compat.py
