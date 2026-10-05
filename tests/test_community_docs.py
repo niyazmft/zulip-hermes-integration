@@ -12,6 +12,7 @@ is wrong; so the copy-paste failure is asserted against directly.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # The community-profile set. README.md, LICENSE and SECURITY.md already existed.
+# NOTE the uppercase PULL_REQUEST_TEMPLATE.md: that is the committed name, and it
+# only looks interchangeable on macOS, where the filesystem is case-insensitive.
 EXPECTED_FILES = [
     "CONTRIBUTING.md",
     "SUPPORT.md",
@@ -26,7 +29,7 @@ EXPECTED_FILES = [
     "SECURITY.md",
     "CHANGELOG.md",
     "AGENTS.md",
-    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/CODEOWNERS",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -40,15 +43,44 @@ SIBLING_ONLY = ["pnpm", "npm run", "openclaw plugins", "typecheck", "node --test
 VALID_BODY_TYPES = {"markdown", "textarea", "input", "dropdown", "checkboxes"}
 
 
+def _tracked_files() -> set[str]:
+    """Paths tracked in the git index, which is case-sensitive everywhere.
+
+    `Path.is_file()` is not a sufficient check: on macOS it returns True for a
+    path whose case differs from the committed one, so a wrong-case path passes
+    locally and fails on Linux CI. That is exactly how this test first failed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):  # not a git checkout
+        return set()
+    return {entry for entry in result.stdout.split("\0") if entry}
+
+
+def _exists(rel: str) -> bool:
+    tracked = _tracked_files()
+    if tracked:
+        return rel in tracked
+    return (REPO_ROOT / rel).is_file()
+
+
 def _read(rel: str) -> str:
     path = REPO_ROOT / rel
     assert path.is_file(), f"{rel} must exist"
     return path.read_text(encoding="utf-8")
 
 
-def test_community_profile_files_exist():
-    missing = [rel for rel in EXPECTED_FILES if not (REPO_ROOT / rel).is_file()]
-    assert not missing, f"missing community/documentation files: {missing}"
+def test_community_profile_files_exist_and_are_committed():
+    """Present *and tracked*: a file in the working tree that was never added is
+    invisible to GitHub and missing from every CI checkout."""
+    missing = [rel for rel in EXPECTED_FILES if not _exists(rel)]
+    assert not missing, f"missing (or untracked) community/documentation files: {missing}"
 
 
 def test_contributing_describes_this_repo_not_the_sibling():
