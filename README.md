@@ -1,7 +1,7 @@
 # 📬 Zulip Plugin for Hermes
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fniyazmft%2Fzulip-hermes-integration%2Fbadges%2Ftests.json)](https://github.com/niyazmft/zulip-hermes-integration/actions)
+[![Tests](https://github.com/niyazmft/zulip-hermes-integration/actions/workflows/ci.yml/badge.svg?branch=main&label=tests)](https://github.com/niyazmft/zulip-hermes-integration/actions/workflows/ci.yml)
 [![Hermes](https://img.shields.io/badge/Hermes-%3E%3D0.18.2-green)](https://hermes-agent.nousresearch.com)
 [![Latest Release](https://img.shields.io/github/v/release/niyazmft/zulip-hermes-integration?label=release)](https://github.com/niyazmft/zulip-hermes-integration/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -657,9 +657,10 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the checks CI 
 repo-specific rules (the updater manifest, `plugin.yaml` declarations, `checksums.txt`).
 
 Then open a PR. `main` is protected: PR required, linear history, squash merge, and the
-`zulip-bridge` GitHub Actions job must pass. The test count is the badge at the top of this
-file, which CI publishes — it is deliberately not written down here, because a copied number
-is wrong the moment the next test lands.
+`zulip-bridge` GitHub Actions job must pass — the **Tests** badge at the top of this file is
+that workflow's live status. No test *count* is written down here: a copied number is wrong the
+moment the next test lands, and a published one needs a branch and a write-permission job to
+stay true.
 
 ## Documentation
 

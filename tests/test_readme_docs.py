@@ -1,18 +1,22 @@
-"""Guards for the README's test-count badge.
+"""Guards for the README's badges.
 
-The badge read ``tests-1168 passing`` while the suite ran 1471 — a stale number
-in the first thing a visitor sees, and one that only degrades as tests are added.
-It is published from the suite itself now (the ``badges`` job in
-``.github/workflows/ci.yml`` writes ``tests.json`` on the ``badges`` branch), so
-these tests keep it from regressing to a frozen number and keep the README and
-the workflow agreeing on where that data lives.
+The Tests badge has been wrong in two shapes before this one. First a hand-written
+shields.io counter — `tests-1168 passing` while the suite ran 1471. Then a count
+published from CI onto a `badges` branch: truthful, but it needed a
+write-permission job and a branch of its own to serve a number nobody acted on,
+and it read stale the first time a run could not start at all (a GitHub Actions
+incident left the publish job queued, so the badge sat on a seeded value while
+`main` had moved on).
+
+It is the workflow's own status badge now: always true, nothing to publish, no
+branch to keep. These tests hold that, and keep a count from coming back in any
+of the three shapes.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from urllib.parse import unquote
 
 import yaml
 
@@ -21,8 +25,6 @@ from zulip.version import __repo__
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-BADGE_BRANCH = "badges"
-BADGE_FILE = "tests.json"
 
 
 def _readme() -> str:
@@ -35,52 +37,37 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
-def test_test_count_is_not_a_hardcoded_number():
+def test_tests_badge_is_the_workflow_status_badge():
+    """Built from ``__repo__``, so a rename cannot leave a 404 behind."""
     text = _readme()
-    frozen = re.findall(r"img\.shields\.io/badge/tests-[0-9]+", text)
-    assert not frozen, (
-        f"the test count must not be hardcoded: {frozen} "
-        "(it drifted to 1168 while the suite ran 1471)"
+    expected = f"github.com/{__repo__}/actions/workflows/ci.yml/badge.svg?branch=main"
+    assert expected in text, f"the Tests badge must be the ci.yml status badge, got: {expected}"
+    # ...and it links to the runs, not to a bare image.
+    assert f"](https://github.com/{__repo__}/actions/workflows/ci.yml)" in text
+
+
+def test_no_test_count_is_written_down_anywhere():
+    """Three shapes have been wrong here: a static counter, an inline comment,
+    and a published JSON endpoint."""
+    text = _readme()
+    static = re.findall(r"img\.shields\.io/badge/tests-[\d,]+", text)
+    assert not static, f"a hardcoded count badge came back: {static}"
+    inline = re.findall(r"[\d,]{3,}\s+tests?\b", text)
+    assert not inline, f"a test count was written into the README: {inline}"
+    published = re.findall(r"img\.shields\.io/endpoint", text)
+    assert not published, "the README must not depend on a published badge file"
+
+
+def test_the_badge_branch_machinery_is_gone():
+    """A `badges` branch plus a `contents: write` job cannot stay accurate when
+    Actions is degraded, and it exists only to serve a number."""
+    workflow = _workflow()
+    assert "badges" not in workflow["jobs"], "the badge-publishing job came back"
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "tests.json" not in text, "the published-badge file came back"
+    assert "outputs" not in workflow["jobs"]["zulip-bridge"] or set(
+        workflow["jobs"]["zulip-bridge"]["outputs"]
+    ) == {"code"}, (
+        "the fast job should export only the docs-only flag (the test-count "
+        "output belongs to the removed badge machinery)"
     )
-    assert "img.shields.io/endpoint" in text, (
-        "the test badge must read its number from the published badge data"
-    )
-    # The badge was not the only copy: the Contributing snippet said
-    # `python3 -m pytest tests/   # 1,168 tests`. Any written-down count is wrong
-    # as soon as the next test lands, so neither form is allowed.
-    inline = re.findall(r"#\s*[\d,]+\s+tests?\b", text)
-    assert not inline, f"the test count must not be written into the README: {inline}"
-
-
-def test_readme_badge_url_matches_the_canonical_repo_and_path():
-    """A repo rename must not leave the badge pointing at a 404."""
-    match = re.search(r"img\.shields\.io/endpoint\?url=([^)\s]+)", _readme())
-    assert match, "no shields.io endpoint badge found in README"
-    assert unquote(match.group(1)) == (
-        f"https://raw.githubusercontent.com/{__repo__}/{BADGE_BRANCH}/{BADGE_FILE}"
-    )
-
-
-def test_badge_job_publishes_the_file_the_readme_reads():
-    job = _workflow()["jobs"]["badges"]
-    # Write access is opt-in: the repo default for GITHUB_TOKEN is read-only.
-    assert job["permissions"]["contents"] == "write"
-    # Main only — a fork PR's token cannot push, so running it there would just
-    # turn contributors' checks red.
-    assert "refs/heads/main" in job["if"]
-    assert "pull_request" in job["if"]
-    assert job["needs"] == "zulip-bridge"
-    publish = "\n".join(step.get("run", "") for step in job["steps"])
-    assert f"origin {BADGE_BRANCH}" in publish, "the job must push the badge branch"
-    assert BADGE_FILE in publish, f"the job must write {BADGE_FILE}"
-
-
-def test_the_published_count_comes_from_the_run_not_from_hand():
-    """The fast job must extract the count from its own pytest output."""
-    fast = _workflow()["jobs"]["zulip-bridge"]
-    assert fast["outputs"]["tests_passed"] == "${{ steps.tests.outputs.count }}"
-    step = next(s for s in fast["steps"] if s.get("id") == "tests")
-    assert "set -o pipefail" in step["run"], (
-        "without pipefail the step's status is tee's, not pytest's"
-    )
-    assert "pytest" in step["run"] and "passed" in step["run"]

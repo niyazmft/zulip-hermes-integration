@@ -49,8 +49,6 @@ jobs:
     # a runner for six hours before failing.
     timeout-minutes: 15
     outputs:
-      # Feeds the README's test-count badge (see the `badges` job below).
-      tests_passed: ${{ steps.tests.outputs.count }}
       # "true" when anything other than documentation changed. Consumed by the
       # `compat` job to skip up to three real host installs for docs-only PRs.
       code: ${{ steps.filter.outputs.code }}
@@ -159,17 +157,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run tests (3.12)
-        id: tests
-        run: |
-          # pipefail so a failing suite still fails the step: without it the
-          # pipeline's exit status is tee's, not pytest's.
-          set -o pipefail
-          python -m pytest tests/ -v --tb=short 2>&1 | tee /tmp/pytest.log
-          # "===== 1471 passed in 58.99s =====" -> 1471. Publish the count from
-          # the run that just happened rather than a number kept by hand.
-          count="$(grep -oE '[0-9]+ passed' /tmp/pytest.log | tail -1 | grep -oE '^[0-9]+')"
-          echo "count=${count}" >> "$GITHUB_OUTPUT"
-          echo "tests passed: ${count}"
+        run: python -m pytest tests/ -v --tb=short
 
       - name: Enforce pristine working directory
         run: |
@@ -312,57 +300,3 @@ jobs:
             exit 1
           fi
           echo "floor enforced: 0.18.1 rejected, 0.18.2 accepted"
-
-  badges:
-    # Publishes the README's test-count badge from the suite that just ran, so the
-    # number cannot go stale the way a hand-maintained shields.io `tests-<N>`
-    # badge did (it read 1168 while the suite ran 1471).
-    #
-    # The data lives on its own `badges` branch rather than on main: the
-    # Production Safeguard ruleset covers `refs/heads/main` (its ref_name
-    # condition includes only that ref), so main is not writable from CI, and a
-    # published count is not something a contributor should have to update in a
-    # PR. The README reads it from
-    # https://raw.githubusercontent.com/<repo>/badges/tests.json
-    #
-    # Main only: a pull request from a fork gets a read-only token and could not
-    # push, so running it there would only produce a red check for contributors.
-    needs: zulip-bridge
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Publish the test count
-        env:
-          COUNT: ${{ needs.zulip-bridge.outputs.tests_passed }}
-        run: |
-          set -euo pipefail
-          if [ -z "${COUNT}" ]; then
-            echo "::error::the fast job reported no test count; refusing to publish a badge that says nothing."
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git fetch --depth=1 origin badges 2>/dev/null; then
-            git checkout -B badges FETCH_HEAD
-          else
-            # First run, or the branch was deleted: start it clean so it holds
-            # the badge data and nothing else.
-            git checkout --orphan badges
-            git rm -rf --cached . >/dev/null 2>&1 || true
-            find . -mindepth 1 -maxdepth 1 -not -name .git -exec rm -rf {} +
-          fi
-          printf '{"schemaVersion":1,"label":"tests","message":"%s passing","color":"brightgreen"}\n' \
-            "$COUNT" > tests.json
-          if [ -z "$(git status --porcelain tests.json)" ]; then
-            echo "badge already reports ${COUNT} passing; nothing to push"
-            exit 0
-          fi
-          git add tests.json
-          git commit -m "badge: tests ${COUNT} passing"
-          git push origin badges
-          echo "published: tests ${COUNT} passing"
