@@ -17,6 +17,10 @@ name: ci
 # verification, not part of clearing the Node 20 warning.
 
 on:
+  # Push is restricted to the default branch on purpose: without this, a push to
+  # a branch that already has an open PR fires both `push` and `pull_request`, so
+  # every job runs twice (the sibling repo hit this on #304 — 8 checks for 4
+  # jobs).
   push:
     branches: [main]
   pull_request:
@@ -31,14 +35,60 @@ on:
         required: false
         type: string
 
+# Cancel superseded runs for the same ref. A rapid series of pushes to one PR
+# should not queue N full runs — and that matters more here than in most repos,
+# because each `compat` leg installs a real host.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   zulip-bridge:
     runs-on: ubuntu-latest
-    # Feeds the README's test-count badge (see the `badges` job below).
+    # Bounded on purpose: the default is 360 minutes, so a wedged job would hold
+    # a runner for six hours before failing.
+    timeout-minutes: 15
     outputs:
+      # Feeds the README's test-count badge (see the `badges` job below).
       tests_passed: ${{ steps.tests.outputs.count }}
+      # "true" when anything other than documentation changed. Consumed by the
+      # `compat` job to skip up to three real host installs for docs-only PRs.
+      code: ${{ steps.filter.outputs.code }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The docs-only filter needs the PR base commit, and gitleaks needs the
+          # commit range it scans; a shallow clone makes both unavailable.
+          fetch-depth: 0
+
+      # NOTE: documentation-only changes must still run THIS job. The doc claims
+      # are themselves tested here — tests/test_security_docs.py,
+      # tests/test_readme_docs.py and tests/test_compat_floor.py all assert
+      # against README.md/AGENTS.md/SECURITY.md contents — so a docs edit can
+      # legitimately fail CI. Only the behavioural `compat` job is skipped.
+      - id: filter
+        name: Detect non-documentation changes
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "base commit unavailable — assuming code changed"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" HEAD)"
+          if [ -z "$changed" ]; then
+            echo "no files changed"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed files:"
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qvE '\.md$|^docs/|^LICENSE$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v6
@@ -49,6 +99,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Dependency audit (runtime + test deps)
+        # The sibling's `check:audit` is `npm audit --omit=dev`; this audits
+        # requirements.txt whole, including pytest, on purpose — anything the CI
+        # environment installs is something we are willing to be told is
+        # vulnerable. Clean when this landed (pip-audit: "No known
+        # vulnerabilities found").
+        run: |
+          python -m pip install pip-audit
+          pip-audit --requirement requirements.txt
+
+      - name: gitleaks (secret detection)
+        # v3 is the Node 24 major; v2 is node20 and would re-introduce the
+        # deprecation warning. No GITLEAKS_LICENSE needed: that is only required
+        # for organization-owned repos, and this is a personal account.
+        # Findings are tuned by .gitleaks.toml (one synthetic test fixture).
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Syntax check adapter.py
         run: python -m py_compile zulip/adapter.py
@@ -137,6 +206,10 @@ jobs:
     #    therefore have moved the failure one step later, not fixed it. The
     #    install is editable now, which is the one form the backend supports.
     needs: zulip-bridge
+    # Skip up to three real host installs when a PR only touches documentation.
+    # The fast job above still runs (and still gates the merge), because the doc
+    # claims are tested there — see the note on the filter step.
+    if: needs.zulip-bridge.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -257,6 +330,7 @@ jobs:
     needs: zulip-bridge
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

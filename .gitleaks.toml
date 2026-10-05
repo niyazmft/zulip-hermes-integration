@@ -1,0 +1,24 @@
+# Gitleaks configuration — CI runs gitleaks/gitleaks-action, which picks this up
+# automatically (`gitleaks git` / `gitleaks dir` do too).
+#
+# The repository's only finding is a synthetic credential in the secret-guard
+# tests:
+#
+#     tests/test_secret_guard.py: SECRET = "sk-live-0123456789abcdef"
+#
+# It has to look like a real key — it exists to prove the outbound guard blocks
+# credential-looking payloads (`zulip/secret_guard.py`, #136) — and it is
+# sequential hex, not a credential. Full history contains this one finding and
+# nothing else.
+#
+# The allowlist is deliberately narrow: one file, one rule. A different rule
+# firing in that file (a real AWS key, a private key block) is still reported,
+# and every other file is scanned in full.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic API key fixture for the secret-guard tests (#136)"
+paths = ['''^tests/test_secret_guard\.py$''']
+ruleIDs = ["generic-api-key"]
