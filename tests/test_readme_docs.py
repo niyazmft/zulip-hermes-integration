@@ -45,6 +45,11 @@ def test_test_count_is_not_a_hardcoded_number():
     assert "img.shields.io/endpoint" in text, (
         "the test badge must read its number from the published badge data"
     )
+    # The badge was not the only copy: the Contributing snippet said
+    # `python3 -m pytest tests/   # 1,168 tests`. Any written-down count is wrong
+    # as soon as the next test lands, so neither form is allowed.
+    inline = re.findall(r"#\s*[\d,]+\s+tests?\b", text)
+    assert not inline, f"the test count must not be written into the README: {inline}"
 
 
 def test_readme_badge_url_matches_the_canonical_repo_and_path():

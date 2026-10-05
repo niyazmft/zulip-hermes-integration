@@ -1,0 +1,21 @@
+# Default owner for everything in this repository.
+* @niyazmft
+
+# Plugin package (what actually ships to installed gateways).
+/zulip/ @niyazmft
+
+# Tests, the real-host compatibility gate and the packaging scripts.
+/tests/ @niyazmft
+/scripts/ @niyazmft
+/checksums.txt @niyazmft
+
+# Documentation and the claims the test suite asserts against.
+/docs/ @niyazmft
+/README.md @niyazmft
+/AGENTS.md @niyazmft
+/SECURITY.md @niyazmft
+
+# CI/CD — the workflows, the secret-scan config and the hook.
+/.github/workflows/ @niyazmft
+/.gitleaks.toml @niyazmft
+/.githooks/ @niyazmft

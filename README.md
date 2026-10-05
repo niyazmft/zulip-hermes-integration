@@ -649,17 +649,24 @@ bash scripts/setup-hooks.sh          # install the pre-push hook
 
 # ... make changes ...
 
-python3 -m pytest tests/             # 1,168 tests
+python3 -m pytest tests/             # the full unit suite
 bash .githooks/pre-push              # checksums + syntax + manifest + tests
 ```
 
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the checks CI runs and the
+repo-specific rules (the updater manifest, `plugin.yaml` declarations, `checksums.txt`).
+
 Then open a PR. `main` is protected: PR required, linear history, squash merge, and the
-`zulip-bridge` GitHub Actions job must pass.
+`zulip-bridge` GitHub Actions job must pass. The test count is the badge at the top of this
+file, which CI publishes — it is deliberately not written down here, because a copied number
+is wrong the moment the next test lands.
 
 ## Documentation
 
 - **[AGENTS.md](AGENTS.md)** — the runtime guide the agent itself reads: addressing rules, metadata, injected context labels, troubleshooting
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — development setup, what CI runs, repo-specific rules
 - **[SECURITY.md](SECURITY.md)** — threat model, credential handling, explicit non-guarantees
+- **[SUPPORT.md](SUPPORT.md)** — where to ask for help
 - **[docs/RELEASING.md](docs/RELEASING.md)** — release procedure
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
 
