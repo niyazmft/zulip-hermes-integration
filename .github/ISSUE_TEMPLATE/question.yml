@@ -1,0 +1,38 @@
+name: Question or Discussion
+description: Ask a question about installing, configuring or running the plugin
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? Feel free to ask.
+
+        Please check the two documents that answer most of them first:
+        [README.md](https://github.com/niyazmft/zulip-hermes-integration#readme) (install,
+        configuration, the full env-var reference, troubleshooting) and
+        [AGENTS.md](https://github.com/niyazmft/zulip-hermes-integration/blob/main/AGENTS.md)
+        (how the bot behaves in a room — addressing, trigger modes, ignored traffic).
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to achieve? Versions, configuration and logs help.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I have checked the README and AGENTS.md
+          required: true
+        - label: I have searched existing issues
+          required: true

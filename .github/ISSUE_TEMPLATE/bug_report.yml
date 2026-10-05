@@ -1,0 +1,88 @@
+name: Bug Report
+description: Create a report to help us improve
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+        Before filing, please check the README's
+        [Troubleshooting](https://github.com/niyazmft/zulip-hermes-integration#troubleshooting)
+        table — most "bot is silent" reports are a configuration or subscription issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: When I mention the bot in a topic, ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: To Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. In stream #general / topic 'x', send '@bot ...'
+        2. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please provide details about your environment. The Hermes version matters: the
+        plugin's declared floor is stated in SECURITY.md, and features are gated on it.
+      placeholder: |
+        - Plugin version: [e.g. 1.10.1 — see zulip/version.py or the release you installed]
+        - Hermes gateway version: [e.g. 0.21.5 — `pip show hermes-agent`]
+        - Python version: [e.g. 3.12.4]
+        - OS: [e.g. Ubuntu 24.04, macOS 14, Android/Termux, Docker image]
+        - How it is deployed: [e.g. `zulip update`, update.sh, manual copy into plugins/]
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: |
+        Which `ZULIP_*` variables are set? **Redact `ZULIP_API_KEY`** and anything else
+        sensitive — this is a public issue tracker.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Gateway logs are the fastest way to diagnose this. Include the lines from the last
+        startup banner onwards, not the whole file.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I have checked the README [Troubleshooting](https://github.com/niyazmft/zulip-hermes-integration#troubleshooting) table
+          required: true
+        - label: I have searched existing issues to avoid duplicates
+          required: true
+        - label: I am running a [supported version](https://github.com/niyazmft/zulip-hermes-integration/blob/main/SECURITY.md#supported-versions)
+          required: true
+        - label: This is not a security vulnerability (those go through [SECURITY.md](https://github.com/niyazmft/zulip-hermes-integration/blob/main/SECURITY.md), not a public issue)
+          required: true
