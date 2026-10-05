@@ -1,5 +1,21 @@
 name: ci
 
+# Actions are pinned to the *oldest* major that runs on Node 24 (Node 20 is
+# deprecated on the hosted runners). Every later major of these three is an
+# unrelated behaviour change, not another runtime bump:
+#
+#   checkout      v5 = node24. v6 moves persisted credentials to a separate
+#                 file; v7 rewrites to ESM and blocks fork-PR checkout under
+#                 pull_request_target / workflow_run.
+#   setup-python  v6 = node24. v7 rewrites to ESM, removes the pip-install
+#                 input and drops EOL Python versions from its manifest.
+#   cache         v5 = node24. v6 ships no release notes at all.
+#
+# All three need actions-runner >= 2.327.1; the hosted ubuntu-latest runner is
+# far past that (2.337.0 as of the last run) and this repo has no self-hosted
+# runners. Bumping past these majors is a separate decision with its own
+# verification, not part of clearing the Node 20 warning.
+
 on:
   push:
     branches: [main]
@@ -19,10 +35,10 @@ jobs:
   zulip-bridge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -61,7 +77,7 @@ jobs:
           fi
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -127,10 +143,10 @@ jobs:
         # what the real floor should be is tracked as #230.
         leg: [floor, current]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -149,7 +165,7 @@ jobs:
           echo "Testing Hermes ref: ${ref} (leg=${LEG})"
 
       - name: Cache pip (host dependency tree)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           # Keyed on the host ref, with no restore-keys: a partial key match
