@@ -51,6 +51,7 @@ jobs:
     outputs:
       # "true" when anything other than documentation changed. Consumed by the
       # `compat` job to skip up to three real host installs for docs-only PRs.
+      # It gates that job's *steps*, never the job itself -- see the note there.
       code: ${{ steps.filter.outputs.code }}
     steps:
       - uses: actions/checkout@v5
@@ -194,10 +195,20 @@ jobs:
     #    therefore have moved the failure one step later, not fixed it. The
     #    install is editable now, which is the one form the backend supports.
     needs: zulip-bridge
-    # Skip up to three real host installs when a PR only touches documentation.
-    # The fast job above still runs (and still gates the merge), because the doc
-    # claims are tested there — see the note on the filter step.
-    if: needs.zulip-bridge.outputs.code == 'true'
+    # Docs-only PRs must not pay for up to three real host installs, but this job
+    # must still *report*. It is meant to be a required status check, and a
+    # required check that is skipped at the job level never reports success:
+    # GitHub shows "Expected — Waiting for status to be reported" and a docs-only
+    # PR becomes permanently unmergeable (issue #241).
+    #
+    # So the job is unconditional and the *steps* carry the condition. A
+    # docs-only PR still pays for three runners, but each one only checks out and
+    # exits, and every leg reports success. The fast job above always runs too,
+    # because the doc claims are tested there.
+    env:
+      # Whether this PR touched anything but documentation. Read once, from the
+      # fast job's filter, so every step below agrees and no step is forgotten.
+      CODE_CHANGED: ${{ needs.zulip-bridge.outputs.code }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -218,11 +229,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup Python 3.11
+        if: env.CODE_CHANGED == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Resolve host ref
+        if: env.CODE_CHANGED == 'true'
         id: host
         env:
           INPUT_REF: ${{ inputs.hermes_ref }}
@@ -239,6 +252,7 @@ jobs:
           echo "Testing Hermes ${source} ref: ${ref} (leg=${LEG})"
 
       - name: Cache pip (host dependency tree)
+        if: env.CODE_CHANGED == 'true'
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
@@ -248,6 +262,7 @@ jobs:
           key: pip-hermes-${{ matrix.leg }}-${{ steps.host.outputs.ref }}
 
       - name: Install pinned Hermes host (editable)
+        if: env.CODE_CHANGED == 'true'
         env:
           # Escape hatch for a host that is not on the default upstream (e.g. a
           # private host repo). Unset is fine: it defaults, and the job still
@@ -272,6 +287,7 @@ jobs:
           fi
 
       - name: Run real-host compatibility gate
+        if: env.CODE_CHANGED == 'true'
         # Prints the detected host version, each gated capability, and exits
         # non-zero with an actionable message naming the missing gateway symbol
         # when the host is present but incompatible.
@@ -283,7 +299,7 @@ jobs:
         # while the harness rejected every host below 0.21.3 (#230). Prove the
         # new check on a host *below* the floor rather than trusting it to not
         # be dead code.
-        if: matrix.leg == 'floor'
+        if: matrix.leg == 'floor' && env.CODE_CHANGED == 'true'
         run: |
           python -m pip install "hermes-agent==0.18.1" >/dev/null
           set +e

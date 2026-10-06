@@ -7,8 +7,10 @@ trade-off, so a future edit that drops it has to argue with a failing test:
 * N queued runs for one PR — `concurrency` must cancel superseded runs;
 * a wedged job holding a runner for the 360-minute default;
 * docs-only PRs paying for up to three real host installs (the `code` filter),
-  without the *required* check ever being skipped — if `zulip-bridge` were gated
-  on the filter, a docs-only PR would produce no required check at all.
+  without *any* required check ever being skipped at the job level — if
+  `zulip-bridge` were gated on the filter, a docs-only PR would produce no
+  required check at all, and if `compat` were gated at the job level it would
+  produce no status either, which wedges the PR just as badly (issue #241).
 
 The filter's own behaviour is covered end-to-end by the matrix in the PR that
 added it; what is asserted here is the wiring that makes it true.
@@ -84,17 +86,50 @@ def test_every_job_has_a_timeout():
         )
 
 
-def test_the_expensive_job_is_skipped_for_docs_only_changes():
-    workflow = _workflow()
-    assert workflow["jobs"][EXPENSIVE_JOB]["if"] == (
-        "needs.zulip-bridge.outputs.code == 'true'"
-    )
-    # ...and the flag it keys off must actually be produced.
-    fast = workflow["jobs"][REQUIRED_CHECK_JOB]
+def test_docs_only_changes_are_detected_by_the_filter():
+    """The flag the `compat` steps key off must actually be produced."""
+    fast = _workflow()["jobs"][REQUIRED_CHECK_JOB]
     assert fast["outputs"]["code"] == "${{ steps.filter.outputs.code }}"
     filter_step = next(s for s in _steps(fast) if s.get("id") == "filter")
     assert '"$GITHUB_OUTPUT"' in filter_step["run"]
     assert "code=false" in filter_step["run"] and "code=true" in filter_step["run"]
+
+
+def test_the_expensive_job_always_reports_but_skips_its_work_for_docs_only_changes():
+    """`compat` must produce a status on every PR, including docs-only ones.
+
+    This job is meant to be a required status check (#241). A required check that
+    is skipped at the job level never reports success -- GitHub shows "Expected —
+    Waiting for status to be reported" -- so a required `compat` that is skipped
+    for docs-only changes would leave every docs-only PR permanently unmergeable.
+    The job is therefore unconditional, and each step that costs a real host
+    install carries the condition instead, read once from job-level `env` so no
+    step can be forgotten.
+    """
+    compat = _workflow()["jobs"][EXPENSIVE_JOB]
+    assert "if" not in compat, (
+        "compat must not be conditional at the job level: it is a required check "
+        "in waiting, and a skipped required check never reports, which wedges "
+        "every docs-only PR"
+    )
+    assert compat["env"]["CODE_CHANGED"] == (
+        "${{ needs.zulip-bridge.outputs.code }}"
+    ), "the docs-only flag must come from the fast job's filter"
+
+    ungated = [
+        step.get("name") or step.get("uses")
+        for step in _steps(compat)
+        if "if" not in step
+    ]
+    assert ungated == ["actions/checkout@v5"], (
+        "these compat steps would do their work even for a docs-only PR, paying "
+        f"for real host installs: {ungated}"
+    )
+    # Every gated step keys off the one flag rather than re-deriving it, so a
+    # step cannot silently diverge from the others.
+    gated = [step["if"] for step in _steps(compat) if "if" in step]
+    assert gated, "no compat step is gated: the docs-only saving is gone"
+    assert all("env.CODE_CHANGED" in condition for condition in gated), gated
 
 
 def test_the_required_check_is_never_gated_on_the_filter():

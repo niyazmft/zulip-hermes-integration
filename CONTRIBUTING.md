@@ -58,8 +58,10 @@ CI will run on your PR, and the handful of repo-specific rules that are easy to 
 | `python3 scripts/parity_check.py` | **nothing** — the parity workflow was removed (#229); this is manual |
 
 The fast job is the required status check. It runs for documentation-only PRs too, because
-[the doc claims are tested](#documentation-claims-are-tested). Only the `compat` legs are
-skipped for docs-only changes.
+[the doc claims are tested](#documentation-claims-are-tested). The `compat` matrix is shaped so
+it can be a required check as well (issue #241): it always starts and always reports, and only
+its *work* is skipped for docs-only changes, because a required check that is skipped at the
+job level never reports and would leave such a PR permanently unmergeable.
 
 ---
 
