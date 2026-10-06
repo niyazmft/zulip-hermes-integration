@@ -91,6 +91,11 @@ def env_enablement() -> dict | None:
 def interactive_setup() -> None:
     """Interactive `hermes gateway setup` flow for the Zulip platform.
 
+    Three credentials, then **one** question: use the recommended setup?
+    Answering yes writes the ``ZULIP_PROFILE`` marker and stops — the marker is
+    what makes a fresh install behave like a complete shared-room teammate
+    without editing any file (epic #211). Answering no keeps the longer walk.
+
     Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
     """
@@ -153,7 +158,39 @@ def interactive_setup() -> None:
         return
     save_env_value("ZULIP_API_KEY", api_key.strip())
 
-    # Authorization (optional but recommended)
+    # One question, default yes (epic #211, child #215).
+    #
+    # The manifest declares 54 knobs. Walking them is a wall of prompts for
+    # someone who just wants a working bot, and the recommended profile exists
+    # so they never have to answer any of them: it supplies the whole posture
+    # (mention-gated streams, DMs limited to the bot owner, activity trace,
+    # on-demand history, observation, per-session queue, per-topic sessions and
+    # the reaction triggers), while every ZULIP_* value set later still wins
+    # over it. So the marker is written and the walk is skipped entirely.
+    #
+    # The "Allowed user emails" prompt is deliberately not asked on this path:
+    # the owner is resolved from Zulip itself (#214), so the question is
+    # redundant here, and it stays available to anyone who wants it.
+    #
+    # Re-running and answering yes is idempotent: save_env_value overwrites.
+    if prompt_yes_no("Use the recommended setup?", True):
+        save_env_value("ZULIP_PROFILE", runtime_scope.PROFILE_RECOMMENDED)
+        print_success("Zulip configured with the recommended setup.")
+        print_info(
+            "   Answers @mentions in streams; DMs are for your Zulip bot owner."
+        )
+        print_info(
+            "   Tip: Subscribe your bot to streams via Stream settings → "
+            "Subscribers"
+        )
+        return
+
+    # Declining keeps today's behaviour rather than inventing a second one: the
+    # remaining declared settings are still walked here. Child #216 replaces
+    # this branch with the curated wizard (~10 knobs, the rest behind
+    # --advanced), which does not exist yet — pointing at it before it lands
+    # would be exactly the fix-that-isn't-there this repo has been bitten by
+    # (#204/#208).
     allowed = prompt(
         "Allowed user emails (comma-separated, or empty for none yet)",
         default=get_env_value("ZULIP_ALLOWED_USERS") or "",
