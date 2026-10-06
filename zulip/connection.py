@@ -130,6 +130,13 @@ class ZulipConnection:
                     bot=mask_pii(bot_name),
                 )
             )
+
+            # 2b. Seed the DM allowlist from the bot's Zulip owner (#214). This
+            # is the payload from the call above, so no extra round-trip is
+            # needed to learn who the owner is. Best-effort: it logs and returns
+            # rather than raising, because streams work regardless and a DM-only
+            # misconfiguration must not take the bot offline.
+            await adapter.seed_bot_owner_dm_allowlist(result)
         except Exception as e:
             logger.error(
                 format_zulip_log(

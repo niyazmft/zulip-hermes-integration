@@ -23,6 +23,9 @@ optional_env:
   - name: ZULIP_ALLOWED_USERS
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
+  - name: ZULIP_OWNER_EMAIL
+    description: "The bot owner's Zulip email. Under ZULIP_PROFILE=recommended this is discovered from Zulip automatically; set it when the bot is organisation-owned, when auto-detection is wrong, or when no one can DM the bot (default: empty)"
+    prompt: "Owner email (usually auto-detected)"
   - name: ZULIP_REACTIONS_ENABLED
     description: "Enable emoji reaction status indicators (default: true)"
     prompt: "Enable reactions"

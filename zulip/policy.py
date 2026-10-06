@@ -29,6 +29,69 @@ POLICY_DISABLED = "disabled"
 _VALID_POLICIES = frozenset({POLICY_OPEN, POLICY_ALLOWLIST, POLICY_PAIRING, POLICY_DISABLED})
 _PAIRING_CODE_TTL_SECONDS = 86_400  # 24 hours
 
+#: The bot owner's DM address, stated explicitly (#214).  Normally unnecessary:
+#: under ``ZULIP_PROFILE=recommended`` the address is discovered from Zulip.  It
+#: exists for the cases discovery cannot cover -- an org-owned bot with no
+#: personal owner, an older SDK, an API error -- and is what ``zulip config``
+#: writes when auto-detection is wrong or impossible.
+OWNER_EMAIL_ENV = "ZULIP_OWNER_EMAIL"
+
+
+def owner_email_override() -> str:
+    """The explicit ``ZULIP_OWNER_EMAIL``, normalised, or ``''`` when unset.
+
+    Honoured whatever the profile: a variable nobody had set before cannot be a
+    silent change on upgrade, and naming an address is an explicit instruction.
+    """
+    return (runtime_scope.effective_value(OWNER_EMAIL_ENV, "") or "").strip().lower()
+
+
+def bot_owner_address(profile: object) -> str:
+    """The bot owner, as an id or an address, from a ``GET /users/me`` payload.
+
+    Zulip reports ``bot_owner_id``; some builds inline the owner's address too.
+    An address is preferred when present because it saves a second round-trip,
+    but the id is the documented field, and ``user_lookup_call`` already accepts
+    either form.
+    """
+    if not isinstance(profile, dict):
+        return ""
+    for key in ("bot_owner", "bot_owner_email"):
+        value = profile.get(key)
+        if isinstance(value, str) and "@" in value:
+            return value.strip()
+    owner_id = profile.get("bot_owner_id")
+    if owner_id is None or owner_id == "":
+        return ""
+    return str(owner_id).strip()
+
+
+def owner_email_from_user(result: object) -> str:
+    """The address out of a single-user lookup result, or ``''``.
+
+    The SDK's ``get_user_by_id`` and the raw ``users/{id}`` endpoint both answer
+    ``{"result": "success", "user": {...}}``; a members-style payload nests the
+    same object under ``members``.  Anything else yields ``''`` so the caller can
+    fall back to the loud warning rather than seeding a bogus address.
+    """
+    if not isinstance(result, dict):
+        return ""
+    if result.get("result") not in (None, "success"):
+        return ""
+    candidates: list[object] = [result.get("user")]
+    members = result.get("members")
+    if isinstance(members, list):
+        candidates.extend(members)
+    candidates.append(result)
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            candidate = candidate[0] if candidate else None
+        if isinstance(candidate, dict):
+            email = candidate.get("email")
+            if isinstance(email, str) and "@" in email:
+                return email.strip().lower()
+    return ""
+
 
 @dataclass
 class PairingCode:
@@ -61,6 +124,13 @@ class PolicyEngine:
         # the inode).
         self._loaded_stamp: Optional[tuple[float, int, int]] = None
         self._load_from_disk()
+
+        # The DM address the operator named explicitly, if any (#214). Seeded
+        # after the disk merge so a reload cannot drop it, and before the
+        # emptiness check below so the seed is visible in the startup line.
+        self.owner_email = owner_email_override()
+        if self.owner_email:
+            self.seed_dm_allowlist(self.owner_email)
 
         # Make the effective authorization posture visible at startup. Two
         # silent misconfigurations are otherwise indistinguishable from a
@@ -247,6 +317,59 @@ class PolicyEngine:
         if not raw:
             return set()
         return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+    def seed_dm_allowlist(self, email: str) -> bool:
+        """Allow one address to DM, persist it, and say whether it was new (#214).
+
+        The allowlist is the one place a Zulip user becomes authorised to DM, so
+        this is deliberately the only way the owner is added: the caller decides
+        *whose* address is trustworthy (an explicit setting, or a lookup that
+        answered), and this method only records it.  A value that is not
+        address-shaped is refused rather than stored, because an allowlist entry
+        that can never match a sender is worse than an absent one -- it looks
+        like it works.
+        """
+        address = (email or "").strip().lower()
+        if "@" not in address or address.startswith("@") or address.endswith("@"):
+            return False
+        if address in self.allowlist:
+            return False
+        self.allowlist.add(address)
+        self._save_to_disk()
+        return True
+
+    def needs_bot_owner_lookup(self) -> bool:
+        """Whether the DM allowlist still needs the owner discovered from Zulip.
+
+        Scoped to the recommended profile on purpose.  Auto-detection is a
+        preset behaviour; doing it for every ``allowlist`` install would widen
+        an existing user's allowlist on upgrade, which is a silent authorization
+        change and exactly what epic #211's migration contract forbids.  Nothing
+        to do either when the policy does not consult the allowlist, or when the
+        operator has already named the owner.
+        """
+        return (
+            self.mode == POLICY_ALLOWLIST
+            and not self.owner_email
+            and runtime_scope.active_profile() == runtime_scope.PROFILE_RECOMMENDED
+        )
+
+    def report_unresolved_bot_owner(self) -> None:
+        """Say *why* the DM allowlist is empty, and what to do about it (#214).
+
+        The startup warning for an empty allowlist states the symptom. Under the
+        recommended profile the operator never chose to run an allowlist at all,
+        so the symptom alone is unexplainable: this names the cause and the one
+        setting that fixes it. It deliberately points at no other command -- a
+        fix that does not exist yet is not a fix.
+        """
+        logger.warning(
+            "zulip: DM policy is 'allowlist' under ZULIP_PROFILE=%s but the bot "
+            "owner could not be resolved -- set %s to the owner's Zulip email "
+            "or no one can DM the bot",
+            runtime_scope.PROFILE_RECOMMENDED,
+            OWNER_EMAIL_ENV,
+        )
 
     def can_dm(self, email: str) -> bool:
         """Return True if this email is allowed to DM the bot."""

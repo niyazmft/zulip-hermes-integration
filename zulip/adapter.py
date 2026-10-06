@@ -63,7 +63,11 @@ from .session_queue import (
     SessionQueueConfig,
 )
 from .commands import is_command
-from .policy import PolicyEngine
+from .policy import (
+    PolicyEngine,
+    bot_owner_address as _bot_owner_address,
+    owner_email_from_user as _owner_email_from_user,
+)
 from . import runtime_scope
 from .probe import (
     INSECURE_HTTP_ENV,
@@ -611,6 +615,59 @@ class ZulipAdapter(BasePlatformAdapter):
                 getattr(fn, "__name__", repr(fn)),
             )
             raise
+
+    async def seed_bot_owner_dm_allowlist(self, profile: dict) -> None:
+        """Seed the DM allowlist with the bot's Zulip owner, best-effort (#214).
+
+        The recommended profile sets ``ZULIP_DM_POLICY=allowlist``, but a fresh
+        install has no address to allow-list, so the owner is read from Zulip:
+        the ``GET /users/me`` payload reports ``bot_owner_id``, which resolves to
+        an address through ``user_lookup_call`` (the SDK exposes no single
+        consistent single-user method -- issue #196).
+
+        Best-effort by design: a lookup that fails must never stop the adapter
+        connecting. Streams still work, and a DM-only problem is not worth a dead
+        bot. Every failure path ends in the loud, actionable warning that names
+        the setting which fixes it, so an operator is never left guessing why
+        nobody can DM the bot.
+        """
+        if not self._policy.needs_bot_owner_lookup():
+            return
+
+        target = _bot_owner_address(profile)
+        if "@" in target:
+            # The payload already named the owner, so no round-trip is needed.
+            email = target.lower()
+        else:
+            lookup, args = (
+                _user_lookup_call(self.client, target) if target else (None, ())
+            )
+            if lookup is None:
+                self._policy.report_unresolved_bot_owner()
+                return
+
+            try:
+                result = await self._sdk_call(
+                    lookup, *args, timeout=self._connect_timeout
+                )
+            except Exception as exc:
+                logger.warning(
+                    "zulip bot-owner lookup failed [error=%s]", mask_pii(str(exc))
+                )
+                self._policy.report_unresolved_bot_owner()
+                return
+
+            email = _owner_email_from_user(result)
+
+        if not email:
+            self._policy.report_unresolved_bot_owner()
+            return
+
+        if self._policy.seed_dm_allowlist(email):
+            logger.info(
+                "zulip DM allowlist seeded with the bot owner [owner=%s]",
+                mask_pii(email),
+            )
 
     @staticmethod
     def _validate_message_id(message_id: Any) -> int:
