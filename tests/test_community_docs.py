@@ -42,6 +42,15 @@ SIBLING_ONLY = ["pnpm", "npm run", "openclaw plugins", "typecheck", "node --test
 
 VALID_BODY_TYPES = {"markdown", "textarea", "input", "dropdown", "checkboxes"}
 
+# The defect-class ledger in CONTRIBUTING.md § Rules That Bite. Each `guarded` row names
+# the check that stops it; the test below asserts the named check still exists, so deleting
+# a guard cannot leave a stale promise behind in the docs.
+GUARDED_RULES = [
+    ("PLUGIN_FILES", "tests/test_version.py", "test_every_package_module_is_shipped"),
+    ("plugin.yaml", "tests/test_manifest_parity.py", None),
+    ("checksums.txt", ".githooks/pre-push", None),
+]
+
 
 def _tracked_files() -> set[str]:
     """Paths tracked in the git index, which is case-sensitive everywhere.
@@ -95,12 +104,32 @@ def test_contributing_describes_this_repo_not_the_sibling():
         assert required in text, f"CONTRIBUTING.md must mention {required!r}"
 
 
-def test_contributing_documents_the_three_shipping_rules():
-    """Each of these has caused an incident; they belong in the contributor docs."""
+def test_rules_that_bite_is_a_ledger_with_live_guards():
+    """The ledger's guarded rows must name checks that still exist.
+
+    A row claiming a guard the repo no longer has is worse than no row: it tells the
+    next reader that CI will catch something it will not. The ledger is also required
+    to keep admitting at least one `open` class, because a table that can only ever
+    list solved problems cannot record the class that is still biting — which is the
+    only class worth writing down.
+    """
     text = _read("CONTRIBUTING.md")
-    assert "PLUGIN_FILES" in text, "the updater-manifest rule must be documented (#177)"
-    assert "plugin.yaml" in text, "the env-var declaration rule must be documented (#147)"
-    assert "checksums.txt" in text
+    assert "## Rules That Bite" in text
+    assert "**open**" in text, (
+        "the ledger must admit classes with no guard yet; a gate must not be a "
+        "precondition for an entry, or recurring unsolved classes have nowhere to live"
+    )
+    for keyword, guard_path, guard_symbol in GUARDED_RULES:
+        assert keyword in text, f"the ledger must still carry the {keyword!r} class"
+        assert guard_path in text, f"the ledger must name {guard_path!r} as its guard"
+        assert _exists(guard_path), (
+            f"{guard_path!r} is named as the guard for {keyword!r} but is missing"
+        )
+        if guard_symbol:
+            assert guard_symbol in _read(guard_path), (
+                f"{guard_path!r} is named as the guard for {keyword!r} but no longer "
+                f"defines {guard_symbol!r}"
+            )
 
 
 def test_support_and_contributing_links_resolve():

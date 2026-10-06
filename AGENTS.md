@@ -258,6 +258,7 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 ## 📋 Quick Reference
 
 ### Do
+- ✅ Before changing anything under `zulip/`, read [CONTRIBUTING.md § Rules That Bite](CONTRIBUTING.md#rules-that-bite) — the defect classes that have bitten this repo, and which of them CI will **not** catch
 - ✅ Preserve topic for stream replies
 - ✅ Check `metadata.addressed` before deciding to stay silent
 - ✅ Reference previous context naturally
@@ -308,7 +309,10 @@ and calls `stop_typing(chat_id)` positionally; 0.19.0 – 0.21.2 have the hook b
 `_accepts_kwarg` helper it introspects with. Either way typing is a best-effort path that
 clears on the stream's last-seen topic, and the plugin's hook takes `metadata=None`, so nothing
 raises and no reply is affected. The gate reports these two as *capabilities*, never as
-failures — treating them as failures is what made a true floor look false (#230).
+failures — treating them as failures is what made a true floor look false (#230). That episode
+is recorded as an `open` class in
+[CONTRIBUTING.md § Rules That Bite](CONTRIBUTING.md#rules-that-bite): a gate that does not run,
+or that asserts the wrong contract, is worse than no gate.
 
 ---
 

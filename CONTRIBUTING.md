@@ -87,19 +87,60 @@ docs/             RELEASING.md, PARITY.md, parity-matrix.yaml
 
 ## Rules That Bite
 
-Three of these have caused production incidents; each is guarded by a test, so CI will tell
-you — but knowing them saves a round trip.
+Every entry below is a defect **class**, not a one-off: each has bitten this repo at least
+once, and the instances are listed so that a repeat is visible as a repeat. Two statuses:
+
+- **guarded** — a test or CI check fails if you get it wrong. CI will tell you; knowing the
+  rule just saves you a round trip.
+- **open** — nothing catches it yet, so CI will *not* tell you. These are the expensive ones.
+
+An entry stays `open` after its latest instance is fixed, because fixing an instance is not
+fixing the class. Rows are added as fixes land, not in a separate retrospective.
 
 1. **A new module under `zulip/` must be added to `PLUGIN_FILES`** in `zulip/version.py`.
    The self-updater only *replaces* files named in that list, so a module missing from it is
    absent after every `zulip update` while `adapter.py` imports it — the plugin then fails to
-   import and the bot is down for every user (#177; caught by
-   `tests/test_version.py::test_every_package_module_is_shipped`).
+   import and the bot is down for every user.
+   *Instances:* #100, #177, #204. The third is the one that hurt: the updater was reading the
+   *installed* list, so a tree could report the new version while missing the modules that
+   version needed, and could not repair itself. #205 made the updater read the file list out
+   of the release being installed, so the installed manifest is no longer the source of truth.
+   *Status:* **guarded** — `tests/test_version.py::test_every_package_module_is_shipped`.
 2. **A new environment variable must be declared in `zulip/plugin.yaml`.** Reads and the
-   manifest are compared by `tests/test_manifest_parity.py` (#147).
+   manifest are compared by the suite, so an undeclared read fails CI.
+   *Instances:* #147.
+   *Status:* **guarded** — `tests/test_manifest_parity.py`.
 3. **Any change under `zulip/` changes `checksums.txt`.** The pre-push hook regenerates it;
    CI regenerates it independently under `LC_ALL=C` and diffs. A stale entry makes `zulip
    update` abort with a checksum mismatch for every user, so commit the regenerated file.
+   *Status:* **guarded** — `.githooks/pre-push`, plus the CI step added in #133.
+4. **A gate that does not run, or that asserts the wrong contract, is worse than no gate.**
+   Both halves have happened: the real-host `compat` job was not actually running (#231), and
+   once it ran it reported a false failure because the *gate* was wrong and the declared floor
+   was right (#233, from #230).
+   *Status:* **open** — #242 makes the gate report on every PR so it can be a required check
+   (issue #241) and `tests/test_ci_workflow.py` pins the workflow *shape*, but nothing asserts
+   that a deliberately broken host is caught. Read the gate's own output before believing it.
+5. **Do not assume a host surface; check the installed artifact.** The plugin collided with
+   Hermes slash commands twice — `/version` → `!version` (#43), then `/help`, `/status` and
+   `/model` shadowing the gateway that owns them (#190/#191) — and called `client.get_user`,
+   which the installed SDK does not expose, silently dropping every reaction trigger
+   (#196/#197). Older hosts also lack the exec-approval hook entirely (#131/#132).
+   *Status:* **open** — `scripts/check_compat.py` checks host *symbols* against real hosts and
+   `tests/test_guarded_imports.py` checks optional imports, but nothing checks host
+   *namespaces*, which is the variant that has bitten twice.
+6. **A failure path that reports success.** A turn that delivered nothing was
+   indistinguishable from one that did (#145/#186), an incomplete install reported "Already
+   up to date" (#205), and `update.sh` claimed a restart that never happened (#207).
+   *Status:* **open** — the delivery audit and `tests/test_audit_delivery.py` cover the first
+   instance; the rest are tracked as issue #219, milestone v1.12.0. Report what happened, never
+   what was supposed to happen.
+7. **Documentation states behaviour the code does not implement.** See
+   [Documentation Claims Are Tested](#documentation-claims-are-tested) — the fix is a test,
+   not a rewrite.
+   *Instances:* #199, #202, #207, #234.
+   *Status:* **guarded** — `tests/test_readme_docs.py`, `tests/test_security_docs.py`,
+   `tests/test_community_docs.py`, `tests/test_compat_floor.py`, `tests/test_ci_workflow.py`.
 
 ---
 
