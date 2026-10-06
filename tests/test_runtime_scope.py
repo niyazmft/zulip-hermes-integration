@@ -7,6 +7,7 @@ never by the process environment — with a deliberate standalone fallback.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -186,6 +187,23 @@ def test_standalone_fallback_is_deliberate_and_documented(
     # An empty override is treated as unset, never as the cwd.
     monkeypatch.setenv("HERMES_DATA_DIR", "")
     assert get_profile_data_dir() == str(tmp_path / "home" / ".hermes")
+
+
+def test_the_suite_cannot_reach_the_real_hermes_home():
+    """The isolation fixture keeps tests out of the developer's real home (#243).
+
+    Without it, ``get_profile_data_dir()`` falls back to ``~/.hermes`` and the
+    adapter writes audit logs, dedupe state and queue state there for real --
+    invisibly, outside the repository, and possibly into a live install.
+    """
+    assert os.environ.get("HERMES_DATA_DIR"), (
+        "HERMES_DATA_DIR should be pinned per test by the autouse fixture in "
+        "tests/conftest.py; without it tests write into the real ~/.hermes"
+    )
+    assert get_profile_data_dir() != str(Path.home() / ".hermes"), (
+        "a test resolved the developer's real ~/.hermes, so the isolation "
+        "fixture is missing or was bypassed"
+    )
 
 
 def test_extra_keys_match_the_adapter_contract():

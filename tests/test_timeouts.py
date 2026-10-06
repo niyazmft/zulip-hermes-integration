@@ -76,7 +76,7 @@ class TestSdkCallTimeout:
     """Test that _sdk_call enforces timeouts."""
 
     @pytest.mark.asyncio
-    async def test_sdk_call_succeeds_within_timeout(self, caplog):
+    async def test_sdk_call_succeeds_within_timeout(self, caplog, tmp_path):
         """Normal completion when function returns in time."""
         config = MagicMock()
         config.extra = {}
@@ -87,6 +87,10 @@ class TestSdkCallTimeout:
                 "ZULIP_API_KEY": "test-key",
                 "ZULIP_EMAIL": "bot@test.com",
                 "ZULIP_SITE": "https://test.zulipchat.com",
+                # clear=True wipes the whole environment, including the data dir
+                # tests/conftest.py pins, so it has to be listed here or the
+                # adapter writes into the developer's real ~/.hermes (#243).
+                "HERMES_DATA_DIR": str(tmp_path),
             },
             clear=True,
         ):
@@ -102,7 +106,7 @@ class TestSdkCallTimeout:
         assert result == {"result": "success"}
 
     @pytest.mark.asyncio
-    async def test_sdk_call_raises_timeout_error(self, caplog):
+    async def test_sdk_call_raises_timeout_error(self, caplog, tmp_path):
         """asyncio.TimeoutError raised when function exceeds timeout."""
         config = MagicMock()
         config.extra = {}
@@ -113,6 +117,10 @@ class TestSdkCallTimeout:
                 "ZULIP_API_KEY": "test-key",
                 "ZULIP_EMAIL": "bot@test.com",
                 "ZULIP_SITE": "https://test.zulipchat.com",
+                # clear=True wipes the whole environment, including the data dir
+                # tests/conftest.py pins, so it has to be listed here or the
+                # adapter writes into the developer's real ~/.hermes (#243).
+                "HERMES_DATA_DIR": str(tmp_path),
             },
             clear=True,
         ):
@@ -136,7 +144,7 @@ class TestSdkCallTimeout:
         )
 
     @pytest.mark.asyncio
-    async def test_sdk_call_logs_warning_on_timeout(self, caplog):
+    async def test_sdk_call_logs_warning_on_timeout(self, caplog, tmp_path):
         """Timeout produces a warning log with function name."""
         config = MagicMock()
         config.extra = {}
@@ -147,6 +155,10 @@ class TestSdkCallTimeout:
                 "ZULIP_API_KEY": "test-key",
                 "ZULIP_EMAIL": "bot@test.com",
                 "ZULIP_SITE": "https://test.zulipchat.com",
+                # clear=True wipes the whole environment, including the data dir
+                # tests/conftest.py pins, so it has to be listed here or the
+                # adapter writes into the developer's real ~/.hermes (#243).
+                "HERMES_DATA_DIR": str(tmp_path),
             },
             clear=True,
         ):

@@ -72,7 +72,7 @@ class TestStreamFilterIntegration:
     """Test stream filtering in adapter._handle_message."""
 
     @pytest.fixture
-    def mock_adapter(self):
+    def mock_adapter(self, tmp_path):
         """Create a minimally initialized adapter with mocked internals."""
         config = MagicMock()
         config.extra = {}
@@ -83,6 +83,10 @@ class TestStreamFilterIntegration:
                 "ZULIP_API_KEY": "test-key",
                 "ZULIP_EMAIL": "bot@test.com",
                 "ZULIP_SITE": "https://test.zulipchat.com",
+                # clear=True wipes the whole environment, including the data dir
+                # tests/conftest.py pins, so it has to be listed here or the
+                # adapter writes into the developer's real ~/.hermes (#243).
+                "HERMES_DATA_DIR": str(tmp_path),
             },
             clear=True,
         ):
