@@ -3,8 +3,10 @@
 Every environment setting the adapter reads is resolved here into typed,
 validated values, together with the module-level defaults and pacing
 constants those resolvers fall back to. The module is pure: it reads the
-process environment only through :mod:`zulip.runtime_scope` and holds a single
-memoised ``ZULIP_STREAM_OVERRIDES`` parse.
+process environment only through :mod:`zulip.runtime_scope` -- and, for the
+knobs the recommended profile decides, through that module's preset gate, so
+``ZULIP_PROFILE=recommended`` can supply a value for a knob the operator did not
+set (epic #211, child #213).
 """
 
 from __future__ import annotations
@@ -17,6 +19,24 @@ from . import runtime_scope
 from .text_utils import resolve_onchar_prefixes
 
 logger = logging.getLogger(__name__)
+
+
+def _preset_value(name: str, default: str = "") -> str:
+    """Read a setting through the preset gate (epic #211, child #213).
+
+    An explicit env value still wins and an install with no marker is
+    unaffected -- ``effective_value`` is a strict superset of
+    ``runtime_scope.get_setting`` -- so this is a change of *source*, never of
+    precedence.
+
+    The parsing at each call site below is deliberately left alone, because
+    unifying it would change what an unrecognised value means:
+    ``ZULIP_REQUIRE_MENTION=maybe`` is truthy today (its test is "not one of the
+    falsey spellings"), while ``ZULIP_SOFT_GATE=maybe`` is false. Those are
+    documented quirks, and the migration contract forbids quietly fixing them
+    here.
+    """
+    return runtime_scope.effective_value(name, default) or ""
 
 # Max input string length to prevent DoS via huge query strings
 MAX_INPUT_LENGTH = 10000
@@ -264,11 +284,11 @@ def resolve_chatmode(stream_name: str | None = None) -> tuple[str, list[str], bo
     ``ZULIP_STREAM_OVERRIDES`` takes precedence over the global
     ``ZULIP_CHATMODE`` for that stream only.
     """
-    mode = runtime_scope.get_setting("ZULIP_CHATMODE", "onmessage").strip().lower()
+    mode = _preset_value("ZULIP_CHATMODE", "onmessage").strip().lower()
     if mode not in ("onmessage", "oncall", "onchar"):
         mode = "onmessage"
     prefixes = resolve_onchar_prefixes(runtime_scope.get_setting("ZULIP_ONCHAR_PREFIXES", ""))
-    require_mention = runtime_scope.get_setting("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
+    require_mention = _preset_value("ZULIP_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
 
     if stream_name:
         override = resolve_stream_overrides().get(stream_name.strip().lower())
@@ -286,7 +306,7 @@ def resolve_soft_gate() -> bool:
     unless the bot was mentioned or an onchar prefix fired, so the agent can
     watch a busy stream without answering all of it.
     """
-    return runtime_scope.get_setting("ZULIP_SOFT_GATE", "").strip().lower() in (
+    return _preset_value("ZULIP_SOFT_GATE").strip().lower() in (
         "true", "1", "yes", "on",
     )
 
@@ -298,7 +318,7 @@ def resolve_observe_group() -> bool:
     in-adapter buffer and never dispatched; the buffer is prepended to the
     agent-facing text the next time the bot is addressed in the same topic.
     """
-    return runtime_scope.get_setting("ZULIP_OBSERVE_GROUP", "").strip().lower() in (
+    return _preset_value("ZULIP_OBSERVE_GROUP").strip().lower() in (
         "true", "1", "yes", "on",
     )
 
@@ -311,7 +331,7 @@ def resolve_session_queue() -> bool:
     turn, so one person in a shared topic cannot redirect another's work.
     Separate sessions are untouched and still run in parallel.
     """
-    return runtime_scope.get_setting("ZULIP_SESSION_QUEUE", "").strip().lower() in (
+    return _preset_value("ZULIP_SESSION_QUEUE").strip().lower() in (
         "true", "1", "yes", "on",
     )
 
@@ -324,7 +344,7 @@ def resolve_history_mode() -> str:
     know this?" question; ``always`` harvests for every inbound stream message.
     Anything unrecognised falls back to ``off`` with a warning.
     """
-    raw = (runtime_scope.get_setting("ZULIP_HISTORY_MODE", "") or "").strip().lower()
+    raw = _preset_value("ZULIP_HISTORY_MODE").strip().lower()
     if raw in ("off", "on-demand", "always"):
         return raw
     if raw:
@@ -364,4 +384,4 @@ def topic_sessions_enabled() -> bool:
     This is opt-in because turning it on splits an existing stream's history
     into per-topic sessions, which changes what an agent remembers.
     """
-    return runtime_scope.get_setting("ZULIP_TOPIC_SESSIONS", "").strip().lower() in ("true", "1", "yes", "on")
+    return _preset_value("ZULIP_TOPIC_SESSIONS").strip().lower() in ("true", "1", "yes", "on")

@@ -72,9 +72,12 @@ class TraceConfig:
     def from_env(cls, env: Optional[dict] = None) -> "TraceConfig":
         if env is None:
             # Resolve through the active Hermes profile so trace settings cannot
-            # leak across profiles under multiplexing (#156).
+            # leak across profiles under multiplexing (#156) -- and through the
+            # preset gate, so ZULIP_PROFILE=recommended turns the trace on for a
+            # fresh install (#213). The other four are not preset knobs, so for
+            # them this resolves exactly as ``get_setting`` always has.
             env = {
-                key: runtime_scope.get_setting(key)
+                key: runtime_scope.effective_value(key)
                 for key in (
                     "ZULIP_ACTIVITY_TRACE",
                     "ZULIP_TRACE_COALESCE_MS",

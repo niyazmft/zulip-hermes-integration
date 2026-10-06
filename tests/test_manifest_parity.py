@@ -26,6 +26,26 @@ MANIFEST_PATH = PLUGIN_DIR / "plugin.yaml"
 
 _ENV_NAME = re.compile(r"^(?:ZULIP|HERMES)_[A-Z0-9_]+$")
 
+#: Callables that resolve a setting by name.  The parity check must follow
+#: every path a name can be read through, or rewiring a read onto a new
+#: accessor silently drops it from the check and the manifest drifts again --
+#: the exact failure this module exists to prevent.
+#:   * ``os.getenv`` / ``os.environ`` / a mapping's ``.get``  -- the original reads
+#:   * ``runtime_scope.get_setting``   -- profile-scoped accessor (issue #156)
+#:   * ``runtime_scope.effective_value`` / ``resolve_setting`` -- the preset gate
+#:     (epic #211, child #213), which resolvers now read through
+#:   * ``settings._preset_value``  -- that module's local wrapper over the gate
+_SETTING_ACCESSORS = frozenset(
+    {
+        "getenv",
+        "get",
+        "get_setting",
+        "effective_value",
+        "resolve_setting",
+        "_preset_value",
+    }
+)
+
 # Read by the code but intentionally absent from the manifest: not an
 # operator-facing setting. Each entry must actually be read (see
 # test_internal_allowlist_entries_are_read), so the allowlist cannot rot.
@@ -88,16 +108,18 @@ def _env_names_from_call(node: ast.Call, constants: dict[str, str]) -> list[str]
     """Names read by ``os.getenv(...)`` / ``<mapping>.get(...)`` calls.
 
     Also recognises ``get_setting("ZULIP_...")`` (issue #156's profile-scoped
-    accessor), so rewiring a read through ``runtime_scope`` does not silently
+    accessor) and the preset gate's ``effective_value`` / ``resolve_setting`` /
+    ``_preset_value`` (epic #211), so rewiring a read through ``runtime_scope``
+    -- which child #213 did to every behaviour resolver -- does not silently
     drop it from this parity check.
     """
     func = node.func
     is_accessor = (
         isinstance(func, ast.Name)
-        and func.id in ("getenv", "get_setting")
+        and func.id in _SETTING_ACCESSORS
     ) or (
         isinstance(func, ast.Attribute)
-        and func.attr in ("getenv", "get", "get_setting")
+        and func.attr in _SETTING_ACCESSORS
     )
     if not is_accessor or not node.args:
         return []
@@ -205,3 +227,30 @@ def test_reads_are_detected():
         "HERMES_DATA_DIR",
     ):
         assert name in reads, f"expected {name} to be detected as read"
+
+
+def test_preset_gate_reads_are_detected():
+    """A read that only exists through the preset gate is still a read (#213).
+
+    These knobs were moved off ``get_setting`` in child #213. If the scanner
+    stops following ``effective_value`` / ``_preset_value``, they disappear
+    from :func:`test_every_read_env_var_is_declared_or_allowlisted` -- which
+    passes vacuously -- instead of failing here.
+    """
+    reads = _code_env_reads()
+    for name in (
+        "ZULIP_DM_POLICY",
+        "ZULIP_GROUP_POLICY",
+        "ZULIP_HISTORY_MODE",
+        "ZULIP_SOFT_GATE",
+        "ZULIP_OBSERVE_GROUP",
+        "ZULIP_SESSION_QUEUE",
+        "ZULIP_TOPIC_SESSIONS",
+        "ZULIP_REQUIRE_MENTION",
+        "ZULIP_CHATMODE",
+        "ZULIP_ACTIVITY_TRACE",
+    ):
+        assert name in reads, (
+            f"{name} is read through the preset gate but the parity scanner no "
+            "longer sees it; add the accessor to _SETTING_ACCESSORS"
+        )

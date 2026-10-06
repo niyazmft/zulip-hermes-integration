@@ -295,6 +295,30 @@ from .cli import (
 _GATEWAY_SESSION_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]+$")
 
 
+def _resolve_reaction_triggers() -> ReactionTriggerConfig:
+    """Reaction-trigger config with the recommended-profile default applied (#213).
+
+    The preset default has to be resolved *here* rather than inside
+    ``reaction_triggers``: that module is L0 and ``runtime_scope`` is also L0, so
+    it cannot import it -- ``tests/test_layering.py`` forbids same-level imports.
+    The adapter is the composition root (L6) and is allowed to know both.
+
+    ``ReactionTriggerConfig.from_env()`` stays as the env-only legacy path; this
+    is the profile-aware one.  Without the marker the two agree, because
+    ``runtime_scope.effective_value`` is a strict superset of ``get_setting``.
+    """
+    any_message = runtime_scope.effective_value(
+        "ZULIP_REACTION_TRIGGER_ANY_MESSAGE", "false"
+    )
+    return ReactionTriggerConfig.from_mapping(
+        runtime_scope.effective_value("ZULIP_REACTION_TRIGGERS", ""),
+        # Same truthiness test as ``from_env``, so the escape hatch keeps its
+        # exact meaning: only an explicit falsey spelling turns it off.
+        any_message=str(any_message or "").strip().lower()
+        not in ("", "false", "0", "no", "off"),
+    )
+
+
 class ZulipAdapter(BasePlatformAdapter):
     """Zulip platform adapter for Hermes Gateway."""
 
@@ -467,8 +491,9 @@ class ZulipAdapter(BasePlatformAdapter):
 
         # In-channel action triggers (epic #149): a configured reaction on the
         # bot's own message dispatches a turn for that topic. Off by default —
-        # when off, the "reaction" event type is not requested at all.
-        self._reaction_trigger_cfg = ReactionTriggerConfig.from_env()
+        # when off, the "reaction" event type is not requested at all. Under
+        # ZULIP_PROFILE=recommended the preset supplies the trigger set (#213).
+        self._reaction_trigger_cfg = _resolve_reaction_triggers()
 
         # Extra Zulip event types beyond "message" that this install needs.
         # Features opt in here (reaction triggers need "reaction"; stable

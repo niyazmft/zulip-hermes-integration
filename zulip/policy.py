@@ -216,13 +216,20 @@ class PolicyEngine:
 
     @staticmethod
     def _resolve_dm_mode() -> str:
-        raw = runtime_scope.get_setting("ZULIP_DM_POLICY", "open").strip().lower()
+        # Through the preset gate (#213): ZULIP_PROFILE=recommended sets the DM
+        # policy to ``allowlist`` so a fresh install's DMs belong to the owner
+        # without the operator editing anything.
+        raw = (runtime_scope.effective_value("ZULIP_DM_POLICY", "open") or "open").strip().lower()
         return raw if raw in _VALID_POLICIES else POLICY_OPEN
 
     @staticmethod
     def _resolve_group_mode() -> str:
         """Group policy defaults to 'open' for backward compatibility."""
-        raw = runtime_scope.get_setting("ZULIP_GROUP_POLICY", "open").strip().lower()
+        # The recommended profile pins ``open`` explicitly rather than leaving it
+        # to the built-in default: the preset states the whole posture, so a later
+        # default change cannot silently move what the profile means. Explicit env
+        # still wins.
+        raw = (runtime_scope.effective_value("ZULIP_GROUP_POLICY", "open") or "open").strip().lower()
         # Group policy does not support 'pairing'
         valid = frozenset({POLICY_OPEN, POLICY_ALLOWLIST, POLICY_DISABLED})
         return raw if raw in valid else POLICY_OPEN

@@ -95,6 +95,17 @@ RECOMMENDED_REACTION_TRIGGERS: dict[str, str] = {
 #: on and soft gate off.  ``zulip config`` must not present the two as
 #: independently togglable without that explanation.
 RECOMMENDED_PRESET: dict[str, str] = {
+    # The epic's locked trigger scope is "every stream the bot is subscribed to,
+    # mention-gated".  Mention-gating is *not* what ``ZULIP_REQUIRE_MENTION``
+    # does: that flag is inert in every mode (each mode already implies its own
+    # trigger, so the extra gate in ``inbound._handle_message`` can only lower a
+    # value that is already False).  It comes from the chatmode, whose default
+    # ``onmessage`` answers *every* message -- and under ``onmessage`` nothing
+    # reaches the drop path, so ``ZULIP_OBSERVE_GROUP=on`` below would be a
+    # no-op.  ``oncall`` is therefore what makes this profile mention-gated and
+    # observation meaningful, so it is set here; ``ZULIP_REQUIRE_MENTION`` is
+    # kept as the statement of intent it always was.
+    "ZULIP_CHATMODE": "oncall",
     "ZULIP_REQUIRE_MENTION": "true",
     "ZULIP_GROUP_POLICY": "open",
     "ZULIP_DM_POLICY": "allowlist",

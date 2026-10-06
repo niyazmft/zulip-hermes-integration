@@ -43,6 +43,7 @@ from zulip.runtime_scope import (
 #: epic's locked-design table states them.  Spelled out rather than derived from
 #: ``RECOMMENDED_PRESET`` so a silent edit to the table fails here.
 EXPECTED_PRESET = {
+    "ZULIP_CHATMODE": "oncall",
     "ZULIP_REQUIRE_MENTION": "true",
     "ZULIP_GROUP_POLICY": "open",
     "ZULIP_DM_POLICY": "allowlist",
@@ -219,6 +220,7 @@ def test_resolve_setting_matches_get_setting_without_the_marker(monkeypatch):
 #: rather than from a hardcoded constant -- so this table cannot drift from the
 #: code it is asserting about.
 LEGACY_RESOLVERS = {
+    "ZULIP_CHATMODE": (lambda: settings.resolve_chatmode()[0], "onmessage"),
     "ZULIP_REQUIRE_MENTION": (lambda: settings.resolve_chatmode()[2], True),
     "ZULIP_GROUP_POLICY": (PolicyEngine._resolve_group_mode, "open"),
     "ZULIP_DM_POLICY": (PolicyEngine._resolve_dm_mode, "open"),
