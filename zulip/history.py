@@ -135,6 +135,46 @@ class ObservedContextBuffer:
             lines[0] = truncate_text(lines[0], self._max_chars)
 
 
+class AddressedTopicTracker:
+    """Bounded memory of the topics the bot has been addressed in (#217).
+
+    The recommended profile's memory is *conversation-scoped*: a topic is
+    remembered only once the bot was addressed in it. The observed-message buffer
+    answers "what was said here"; this answers "was the bot ever part of this
+    conversation", which is the question that decides whether the first answer is
+    allowed to be kept at all.
+
+    Bounded and least-recently-used for the same reason the buffer is: an install
+    attached to a busy realm must not grow without limit just because it was
+    watching. Eviction is the documented trade-off -- a topic that has been quiet
+    for a long time stops being "engaged", and starts fresh.
+    """
+
+    def __init__(self, max_topics: int = OBSERVED_MAX_TOPICS):
+        self._max_topics = max(1, max_topics)
+        self._topics: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+    @staticmethod
+    def _key(stream_id: Any, topic: Any) -> tuple[str, str]:
+        """The same key the observed buffer uses, so the two cannot disagree."""
+        return (str(stream_id), str(topic or ""))
+
+    def mark(self, stream_id: Any, topic: Any) -> None:
+        """Record that the bot was addressed in this topic."""
+        key = self._key(stream_id, topic)
+        self._topics[key] = None
+        self._topics.move_to_end(key)
+        while len(self._topics) > self._max_topics:
+            self._topics.popitem(last=False)
+
+    def was_addressed(self, stream_id: Any, topic: Any) -> bool:
+        """Whether the bot has been addressed in this topic, and still tracks it."""
+        return self._key(stream_id, topic) in self._topics
+
+    def __len__(self) -> int:
+        return len(self._topics)
+
+
 def history_sort_key(message: dict[str, Any]) -> int:
     """Integer message id for a stable oldest-first order; 0 when unusable."""
     try:

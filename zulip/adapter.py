@@ -446,6 +446,16 @@ class ZulipAdapter(BasePlatformAdapter):
             logger.warning("zulip: %s", _SOFT_GATE_OBSERVE_CONFLICT)
         self._observed_context = history.ObservedContextBuffer()
 
+        # Conversation-scoped memory (#217). The tracker records the topics the bot
+        # has been addressed in; under the recommended profile observation consults
+        # it, so the bot remembers conversations it is part of rather than every
+        # room it happens to be watching.
+        self._addressed_topics = history.AddressedTopicTracker()
+        self._conversation_scoped_observe = (
+            self._observe_group
+            and runtime_scope.active_profile() == runtime_scope.PROFILE_RECOMMENDED
+        )
+
         # Bounded history-aware context (issue #148). "off" adds no round-trip.
         self._history_mode = _resolve_history_mode()
         self._history_max_messages = _resolve_int_setting("ZULIP_HISTORY_MAX_MESSAGES", 8)
@@ -1580,9 +1590,19 @@ class ZulipAdapter(BasePlatformAdapter):
             or "Unknown"
         )
         topic = str(message.get("subject") or "")
-        self._observed_context.add(
-            message.get("stream_id"), topic, f"[{sender}] {text}"
-        )
+        stream_id = message.get("stream_id")
+
+        # Conversation-scoped memory (#217): under the recommended profile a topic
+        # is remembered only once the bot was addressed in it, so watching a busy
+        # realm cannot accumulate rooms nobody asked the bot to join. Explicit
+        # opt-in observe keeps its existing room-scoped behaviour -- those users
+        # chose it, and narrowing it on upgrade would be a second silent change.
+        if self._conversation_scoped_observe and not self._addressed_topics.was_addressed(
+            stream_id, topic
+        ):
+            return
+
+        self._observed_context.add(stream_id, topic, f"[{sender}] {text}")
         logger.debug(
             "zulip observed stream msg [stream=%s topic=%s]",
             mask_pii(stream_name),
@@ -1607,6 +1627,13 @@ class ZulipAdapter(BasePlatformAdapter):
         reaches a slash command or a policy/rate-limit gate, which have already
         been decided by the time this runs.
         """
+        # Bookkeeping first (#217): a turn the bot was addressed in makes this topic
+        # part of the conversation, which is what later lets chatter here be
+        # observed at all. Deliberately independent of whether anything is quoted,
+        # and before the command guard, because a command still addressed the bot.
+        if addressed:
+            self._addressed_topics.mark(stream_id, topic)
+
         # Slash commands belong to the gateway — never spend a harvest on them
         # and never modify their body (#148, #190).
         if is_command(content):
