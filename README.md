@@ -87,6 +87,40 @@ gateway:
 > ⚠️ Install the whole repository, not individual files — the plugin is 28 modules that
 > import from each other, so copying only `adapter.py` fails to load.
 
+### Recommended setup — the whole product, one question
+
+The plugin reads 50+ knobs, but a fresh install needs none of them. Run setup,
+answer **one** question, and stop:
+
+```bash
+hermes gateway setup   # site, bot email, API key, then "Use the recommended setup?" (yes)
+```
+
+Answering yes writes `ZULIP_PROFILE=recommended` and asks nothing else — no
+prompt wall, and `.env` stays at three credentials plus that one line. That
+marker turns on a complete shared-room teammate: mention-gated streams, DMs for
+the bot's Zulip owner only, the activity trace, on-demand history, observation,
+per-session queueing, per-topic sessions and the reaction triggers. Sticky
+engagement and actionable refs stay off. Any `ZULIP_*` value you set later still
+wins over it.
+
+To see what it decided — every value with its source, `env` / `profile` /
+`default` — or to change it:
+
+```bash
+bash ~/.hermes/plugins/zulip/config.sh             # the settings that matter
+bash ~/.hermes/plugins/zulip/config.sh --advanced  # every knob the plugin reads
+bash ~/.hermes/plugins/zulip/config.sh --wizard    # change them, deviations only
+```
+
+The [Environment Variable Reference](#environment-variable-reference) below is
+the **advanced** surface: every knob, with examples.
+
+**Unset `ZULIP_PROFILE` and none of this applies.** An install without the marker
+behaves exactly as it did before the flag existed — that is a tested contract, not
+a hope. The full spec is in
+[docs/RECOMMENDED-PROFILE.md](docs/RECOMMENDED-PROFILE.md).
+
 ### Container / system-wide install
 
 To install for every user on the host instead:

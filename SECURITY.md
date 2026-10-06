@@ -453,3 +453,32 @@ Issue #156.
 7. **Set a rate limit** (`ZULIP_MAX_MESSAGES_PER_MINUTE`, default 60 per sender).
 8. **Review the audit log** at `{HERMES_DATA_DIR}/audit/` — and remember the
    [gaps](#gaps--what-is-not-audited) above when reading it.
+
+### `ZULIP_PROFILE=recommended` moves security-relevant defaults
+
+Setting the profile is a convenience posture, and it changes defaults that this
+file otherwise tells you to set by hand. Stated plainly, because an operator who
+sets it should know what they did not type:
+
+* `ZULIP_DM_POLICY` becomes `allowlist`, and the allowlist is seeded with the
+  **bot owner** resolved from Zulip (`ZulipAdapter.seed_bot_owner_dm_allowlist`,
+  `zulip/policy.py::PolicyEngine.seed_dm_allowlist`). If the owner cannot be
+  resolved, the allowlist stays **empty** — failing closed, so nobody can DM —
+  and one warning names `ZULIP_OWNER_EMAIL` as the fix.
+* `ZULIP_OBSERVE_GROUP` becomes on, so non-addressed stream messages are buffered
+  as topic context and quoted into a later prompt. The buffer is bounded
+  (`zulip/history.py::ObservedContextBuffer`) and, under this profile,
+  conversation-scoped — only topics the bot was addressed in are kept
+  (`zulip/history.py::AddressedTopicTracker`).
+* `ZULIP_ACTIVITY_TRACE` becomes on: one bot-owned status message per run, edited
+  in place.
+
+**The stream posture does not move.** `ZULIP_GROUP_POLICY` stays `open`, so any
+realm member who can mention the bot can also trigger it in a stream — exactly as
+on an install with no profile. Setting the profile is **not** a substitute for
+item 4 above.
+
+An install **without** `ZULIP_PROFILE` is unaffected: the preset supplies a value
+only for a knob the operator did not set, and only while the marker is present
+(`zulip/runtime_scope.py::resolve_setting`). `tests/test_profile_gate.py` pins that
+contract, and `docs/RECOMMENDED-PROFILE.md` is the full spec.

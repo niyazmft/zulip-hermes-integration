@@ -225,6 +225,7 @@ situation:
 
 | Behaviour | What changes for you | How to tell it's on |
 |-----------|---------------------|---------------------|
+| **Recommended profile** | Several rows below are on because the install set `ZULIP_PROFILE=recommended` — **not** because an admin configured each one: streams are mention-gated, DMs belong to the bot owner, and the trace, history, observation, session queue and reaction triggers are on | a value reports `profile` as its source rather than `env` |
 | **Sticky engagement** | Follow-ups arrive with no mention, in a topic you were already talking in | the message is `addressed` but has no @mention in it |
 | **Per-session queue** | Your previous turn in this topic may still be running; the next message waited behind it | a run you didn't start can precede the message; don't assume a dropped request |
 | **Activity trace** | One status message in your topic is being edited live with your progress | `ZULIP_ACTIVITY_TRACE` is on (see below) |
@@ -234,6 +235,13 @@ situation:
 **If a request seems to have been ignored, it may have been queued rather than dropped** —
 the reply is coming, after the turn ahead of it finishes. Don't apologise for a message you
 haven't actually seen.
+
+**A preset-set behaviour is not an admin-configured one.** If the install runs with
+`ZULIP_PROFILE=recommended`, the mention-gating, the trace, the observation buffer and the
+reaction triggers were switched on by the *profile*, not by a person. Don't offer to "ask the
+admin to turn it off" — it is one line in `.env`, and `zulip config` says which layer supplied
+each value (`env` / `profile` / `default`). The contract is in
+[docs/RECOMMENDED-PROFILE.md](docs/RECOMMENDED-PROFILE.md).
 
 ---
 
