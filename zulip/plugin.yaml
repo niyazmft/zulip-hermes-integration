@@ -17,6 +17,9 @@ requires_env:
     description: "Zulip organization URL (e.g. https://your-org.zulipchat.com)"
     prompt: "Zulip site URL"
 optional_env:
+  - name: ZULIP_PROFILE
+    description: 'Named default posture. "recommended" turns on the shared-teammate defaults (mention-gated streams, DM allowlist seeded from the Zulip bot owner, activity trace, on-demand history, observation, per-session queue, per-topic sessions, reaction triggers) without editing any other setting. An explicit ZULIP_* value always wins; unset means unchanged legacy behaviour (default: none)'
+    prompt: "Profile (recommended | leave empty)"
   - name: ZULIP_ALLOWED_USERS
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
