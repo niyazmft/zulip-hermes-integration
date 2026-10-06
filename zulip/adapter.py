@@ -96,6 +96,7 @@ from .settings import (
     POLL_BACKOFF_MAX,
     POLL_BACKOFF_START,
     POLL_FAST_RETURN_SECONDS,
+    SOFT_GATE_OBSERVE_CONFLICT as _SOFT_GATE_OBSERVE_CONFLICT,
     clamp_longpoll_budget as _clamp_longpoll_budget,
     next_poll_backoff as _next_poll_backoff,
     resolve_chatmode as _resolve_chatmode,
@@ -439,13 +440,10 @@ class ZulipAdapter(BasePlatformAdapter):
             # drop path where observation happens and ZULIP_OBSERVE_GROUP silently
             # does nothing. Make the conflict loud instead of letting an admin
             # believe observation is running when it is not.
-            logger.warning(
-                "zulip: ZULIP_SOFT_GATE and ZULIP_OBSERVE_GROUP are both enabled "
-                "— the soft gate dispatches every message, so nothing reaches "
-                "the drop path where observation happens and "
-                "ZULIP_OBSERVE_GROUP is a no-op. Turn the soft gate off to "
-                "observe stream traffic without replying."
-            )
+            #
+            # The wording lives in ``settings`` because ``zulip config`` reports
+            # the same conflict and the two must not drift apart.
+            logger.warning("zulip: %s", _SOFT_GATE_OBSERVE_CONFLICT)
         self._observed_context = history.ObservedContextBuffer()
 
         # Bounded history-aware context (issue #148). "off" adds no round-trip.

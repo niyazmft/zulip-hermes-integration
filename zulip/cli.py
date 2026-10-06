@@ -6,6 +6,11 @@ Everything the plugin does *outside* a live gateway process lives here:
   — the requirements probe, credential validation and env seeding the plugin
   hands to ``register(ctx)`` so Hermes can decide whether and how to enable it.
 * :func:`interactive_setup` — the ``hermes gateway setup`` flow.
+* :func:`main` / :func:`effective_config` / :func:`run_config_wizard` — the
+  ``zulip config`` command: what the plugin *effectively* resolved for every knob
+  and where each value came from, plus a curated wizard that writes only
+  deviations to ``.env`` (epic #211, child #216). Reached through the
+  ``config.sh`` shim, because Hermes exposes no ``plugins config`` subcommand.
 * :func:`standalone_send` — out-of-process delivery
   (``PlatformEntry.standalone_sender_fn``), which Hermes calls from
   ``tools/send_message_tool._send_via_adapter`` when no gateway adapter is live
@@ -31,11 +36,15 @@ reached through their owning modules (the Wave 5 rule).
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
+import re
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from . import media
 from . import refs
@@ -428,3 +437,407 @@ async def standalone_send(
     else:
         detail = mask_pii(str(result))
     return {"error": f"Zulip send failed: {detail}"}
+
+
+# ---------------------------------------------------------------------------
+# Effective configuration and the curated wizard (epic #211, child #216)
+# ---------------------------------------------------------------------------
+
+_TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
+
+
+@dataclass(frozen=True)
+class CuratedKnob:
+    """One decision the wizard asks about.
+
+    ``default`` is the *built-in* default, not the profile's value: it is what the
+    plugin does with nothing set at all, and the wizard needs it to tell a
+    deviation from a restatement of the baseline.
+    """
+
+    name: str
+    default: str
+    summary: str
+    choices: tuple[str, ...] = ()
+
+
+#: The tier that matters: the decisions which change what the bot *is*. The other
+#: ~40 declared knobs are plumbing with a defensible default and stay behind
+#: ``--advanced``, so this list stays short enough to read (#216).
+#:
+#: ``ZULIP_REQUIRE_MENTION`` is deliberately absent. It is inert in every mode --
+#: each mode already implies its own trigger (#213) -- and offering a knob that
+#: does nothing is worse than omitting it. ``ZULIP_CHATMODE`` is the one that
+#: actually gates.
+CURATED_KNOBS: tuple[CuratedKnob, ...] = (
+    CuratedKnob(
+        "ZULIP_CHATMODE",
+        "onmessage",
+        "Which stream messages the bot answers",
+        ("onmessage", "oncall", "onchar"),
+    ),
+    CuratedKnob(
+        "ZULIP_GROUP_POLICY",
+        "open",
+        "Who may trigger the bot in streams",
+        ("open", "allowlist", "disabled"),
+    ),
+    CuratedKnob(
+        "ZULIP_DM_POLICY",
+        "open",
+        "Who may DM the bot",
+        ("open", "allowlist", "pairing", "disabled"),
+    ),
+    CuratedKnob(
+        "ZULIP_OWNER_EMAIL",
+        "",
+        "The owner's Zulip email; found automatically under 'recommended'",
+    ),
+    CuratedKnob(
+        "ZULIP_ACTIVITY_TRACE",
+        "false",
+        "Post one status message per run, edited while it works",
+        ("true", "false"),
+    ),
+    CuratedKnob(
+        "ZULIP_HISTORY_MODE",
+        "off",
+        "Quote real topic history into the prompt",
+        ("off", "on-demand", "always"),
+    ),
+    CuratedKnob(
+        "ZULIP_OBSERVE_GROUP",
+        "false",
+        "Remember non-addressed stream messages as topic context",
+        ("true", "false"),
+    ),
+    CuratedKnob(
+        "ZULIP_SESSION_QUEUE",
+        "false",
+        "Queue a message that arrives mid-run behind the running turn",
+        ("true", "false"),
+    ),
+    CuratedKnob(
+        "ZULIP_TOPIC_SESSIONS",
+        "false",
+        "Give each stream topic its own conversation session",
+        ("true", "false"),
+    ),
+    CuratedKnob(
+        "ZULIP_REACTION_TRIGGERS",
+        "",
+        'JSON emoji-name -> instruction map, e.g. {"+1": "Proceed."}',
+    ),
+    CuratedKnob(
+        "ZULIP_MAX_MESSAGES_PER_MINUTE",
+        "60",
+        "Per-sender outbound rate limit; 0 disables",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class ConfigRow:
+    """One line of the effective-configuration view."""
+
+    name: str
+    value: Optional[str]
+    source: str
+    summary: str = ""
+
+
+def _is_true(raw: Optional[str]) -> bool:
+    return (raw or "").strip().lower() in _TRUE_WORDS
+
+
+def manifest_path() -> Path:
+    """The plugin manifest, which declares every knob the plugin reads."""
+    return Path(__file__).resolve().parent / "plugin.yaml"
+
+
+def declared_settings() -> list[tuple[str, str]]:
+    """``(name, description)`` for every declared knob, in manifest order.
+
+    The manifest is the single source of truth for *which* knobs exist, so the
+    view cannot drift from what the plugin actually reads -- the parity test in
+    ``tests/test_manifest_parity.py`` already ties the manifest to the code.
+    """
+    import yaml  # local: the plugin must import without PyYAML outside the CLI
+
+    data = yaml.safe_load(manifest_path().read_text(encoding="utf-8")) or {}
+    rows: list[tuple[str, str]] = []
+    for section in ("requires_env", "optional_env"):
+        for entry in data.get(section) or []:
+            rows.append((entry["name"], str(entry.get("description", "")).strip()))
+    return rows
+
+
+def baseline_value(knob: CuratedKnob) -> str:
+    """What the profile-or-built-in default supplies, *ignoring* the environment.
+
+    This is what the wizard measures a deviation against: restating it must leave
+    no entry in ``.env``, or the file stops being a list of deviations and becomes
+    a copy of the profile.
+    """
+    preset = runtime_scope.preset_for_profile(runtime_scope.active_profile())
+    if preset is not None and knob.name in preset:
+        return preset[knob.name]
+    return knob.default
+
+
+def effective_config(*, advanced: bool = False) -> list[ConfigRow]:
+    """The effective value and its origin for every knob (#216).
+
+    ``source`` is ``env`` (set explicitly), ``profile`` (supplied by
+    ``ZULIP_PROFILE``) or ``default`` (neither, so the built-in applies).
+    Provenance is the whole reason child #212's resolver returns it.
+    """
+    rows: list[ConfigRow] = []
+    curated = {knob.name for knob in CURATED_KNOBS}
+    for knob in CURATED_KNOBS:
+        resolved = runtime_scope.resolve_setting(knob.name, knob.default)
+        rows.append(
+            ConfigRow(knob.name, resolved.value, resolved.source, knob.summary)
+        )
+    if advanced:
+        for name, description in declared_settings():
+            if name in curated:
+                continue
+            resolved = runtime_scope.resolve_setting(name)
+            rows.append(ConfigRow(name, resolved.value, resolved.source, description))
+    return rows
+
+
+def soft_gate_observe_conflict() -> bool:
+    """Whether the two mutually exclusive knobs are both effectively on."""
+    return _is_true(
+        runtime_scope.resolve_setting("ZULIP_SOFT_GATE", "false").value
+    ) and _is_true(runtime_scope.resolve_setting("ZULIP_OBSERVE_GROUP", "false").value)
+
+
+def render_config(*, advanced: bool = False) -> str:
+    """Render the effective configuration, with the source of every value."""
+    rows = effective_config(advanced=advanced)
+    width = max((len(row.name) for row in rows), default=0)
+    profile = runtime_scope.active_profile()
+
+    lines = [
+        f"Zulip effective configuration — profile: {profile or '<none>'}",
+        "",
+        "  source  env      = you set it explicitly",
+        "          profile  = supplied by ZULIP_PROFILE=recommended",
+        "          default  = the plugin's built-in; <unset> means exactly that",
+        "",
+    ]
+    for row in rows:
+        value = row.value if row.value not in (None, "") else "<unset>"
+        lines.append(f"  {row.name:<{width}}  {value:<30}  {row.source}")
+
+    if not advanced:
+        lines += [
+            "",
+            "  The remaining declared knobs are plumbing with a default of their",
+            "  own; add --advanced to list them.",
+        ]
+    if soft_gate_observe_conflict():
+        # Same string the adapter logs at startup, so the CLI and the log cannot
+        # describe the same misconfiguration differently.
+        lines += ["", f"  warning: {settings.SOFT_GATE_OBSERVE_CONFLICT}"]
+    return "\n".join(lines)
+
+
+# --- .env editing: deviations only ------------------------------------------
+
+_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+def env_file_path() -> Path:
+    """``<hermes home>/.env`` — the same file ``hermes gateway setup`` writes."""
+    return Path(runtime_scope.get_profile_data_dir()).expanduser() / ".env"
+
+
+def _read_env_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def _set_env_lines(lines: list[str], name: str, value: str) -> list[str]:
+    """Set ``name`` in place, collapsing duplicates, appending when absent."""
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        match = _ASSIGNMENT.match(line)
+        if match and match.group(1) == name:
+            if replaced:
+                continue  # a duplicate: keep only the first
+            out.append(f"{name}={value}")
+            replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(f"{name}={value}")
+    return out
+
+
+def _remove_env_lines(lines: list[str], name: str) -> tuple[list[str], bool]:
+    """Drop every assignment to ``name``, reporting whether anything was removed."""
+    out = [
+        line
+        for line in lines
+        if not ((match := _ASSIGNMENT.match(line)) and match.group(1) == name)
+    ]
+    return out, len(out) != len(lines)
+
+
+def _env_file_value(lines: list[str], name: str) -> str:
+    """The value ``name`` holds in the file being edited, or ``''``.
+
+    The wizard edits ``.env`` but a standalone ``config.sh`` run has not sourced
+    it, so the process environment is not the environment the *gateway* will see.
+    The file has to be consulted first, or the wizard would show a value the
+    gateway is not going to use and the operator would be editing blind.
+    """
+    for line in lines:
+        match = _ASSIGNMENT.match(line)
+        if match and match.group(1) == name:
+            return line.split("=", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def write_env_lines(path: Path, lines: list[str]) -> None:
+    """Write ``.env`` atomically, keeping it owner-only.
+
+    Mirrors the other stores (``policy``, ``dedupe_store``): a partial write must
+    never leave a credential file truncated.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=str(path.parent), suffix=".tmp", delete=False
+    ) as handle:
+        handle.write("\n".join(lines).rstrip("\n") + "\n")
+        temp_path = handle.name
+    os.replace(temp_path, path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _ask_curated(knob: CuratedKnob, current: str, source: str) -> Optional[str]:
+    """One wizard question. Enter keeps the value; ``-`` returns to the baseline."""
+    hint = f" [{'/'.join(knob.choices)}]" if knob.choices else ""
+    print()
+    print(f"{knob.name} — {knob.summary}")
+    print(f"  now: {current or '<unset>'}  ({source}){hint}")
+    try:
+        raw = input("  new value (Enter to keep, - to unset): ").strip()
+    except EOFError:
+        return None
+    if not raw:
+        return None
+    if raw == "-":
+        return baseline_value(knob)
+    return raw
+
+
+def run_config_wizard(
+    *, env_path: Optional[Path] = None, prompter: Any = None
+) -> list[str]:
+    """Ask the curated questions and write **only the deviations** (#216).
+
+    Returns the changes made, so the caller can report them and tests can assert
+    on them. A value equal to the profile-or-built-in baseline is written as an
+    *absence*: the profile stays the baseline and ``.env`` stays a short list of
+    the places this install differs from it, rather than a ballooning copy.
+    """
+    path = Path(env_path) if env_path is not None else env_file_path()
+    lines = _read_env_lines(path)
+    changes: list[str] = []
+
+    for knob in CURATED_KNOBS:
+        # The file wins: it is what the gateway will load, and it is what this
+        # wizard is about to edit.
+        from_file = _env_file_value(lines, knob.name)
+        if from_file:
+            current, source = from_file, runtime_scope.SOURCE_ENV
+        else:
+            resolved = runtime_scope.resolve_setting(knob.name, knob.default)
+            current, source = resolved.value or "", resolved.source
+        answer = (prompter or _ask_curated)(knob, current, source)
+        if answer is None:
+            continue
+        answer = answer.strip()
+        if answer == current:
+            continue
+        if answer == baseline_value(knob):
+            lines, removed = _remove_env_lines(lines, knob.name)
+            if removed:
+                changes.append(f"{knob.name} -> back to the baseline (removed)")
+            continue
+        lines = _set_env_lines(lines, knob.name, answer)
+        changes.append(f"{knob.name}={answer}")
+
+    if changes:
+        write_env_lines(path, lines)
+    return changes
+
+
+def run_config_command(
+    *,
+    advanced: bool = False,
+    wizard: bool = False,
+    env_path: Optional[Path] = None,
+    prompter: Any = None,
+    out: Any = print,
+) -> int:
+    """``zulip config``: show the effective configuration, optionally editing it."""
+    if wizard:
+        changes = run_config_wizard(env_path=env_path, prompter=prompter)
+        target = Path(env_path) if env_path is not None else env_file_path()
+        if changes:
+            out("Zulip configuration updated:")
+            for change in changes:
+                out(f"  {change}")
+        else:
+            out("Zulip configuration unchanged.")
+        out(f"  written to: {target}")
+        out("")
+    out(render_config(advanced=advanced))
+    return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Entry point for the ``config.sh`` shim (epic #211, child #216).
+
+    Hermes exposes no ``plugins config`` subcommand, so this is reached through
+    the shell shim that ships beside ``update.sh``.
+    """
+    parser = argparse.ArgumentParser(
+        prog="zulip config",
+        description="Show or change the Zulip plugin's effective configuration.",
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="config",
+        choices=("config",),
+        help="the only subcommand today",
+    )
+    parser.add_argument(
+        "--advanced",
+        action="store_true",
+        help="also list the plumbing knobs — everything the plugin reads",
+    )
+    parser.add_argument(
+        "--wizard",
+        action="store_true",
+        help="ask about the curated settings and write only deviations",
+    )
+    args = parser.parse_args(argv)
+    return run_config_command(advanced=args.advanced, wizard=args.wizard)
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via config.sh
+    raise SystemExit(main())

@@ -17,6 +17,7 @@ PLUGIN_FILES = [
     "audit_logger.py",
     "cli.py",
     "commands.py",
+    "config.sh",
     "connection.py",
     "conversations.py",
     "activity_trace.py",

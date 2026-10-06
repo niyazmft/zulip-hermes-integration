@@ -74,6 +74,21 @@ LONGPOLL_MAX_SECONDS = 90.0
 # pre-empt a healthy long-poll.
 LONGPOLL_GRACE_SECONDS = 10.0
 
+#: The soft-gate/observe conflict, stated once (epic #211).
+#:
+#: ``ZULIP_SOFT_GATE`` dispatches every monitored stream message, so nothing ever
+#: reaches the drop path where observation happens and ``ZULIP_OBSERVE_GROUP``
+#: silently does nothing. The adapter logs this at startup and ``zulip config``
+#: reports it, and both read the *same* string: prose duplicated between a log
+#: line and a CLI would drift, and the one that drifted would be the one nobody
+#: was reading.
+SOFT_GATE_OBSERVE_CONFLICT = (
+    "ZULIP_SOFT_GATE and ZULIP_OBSERVE_GROUP are both enabled -- the soft gate "
+    "dispatches every message, so nothing reaches the drop path where "
+    "observation happens and ZULIP_OBSERVE_GROUP is a no-op. Turn the soft gate "
+    "off to observe stream traffic without replying."
+)
+
 # Parsed ZULIP_STREAM_OVERRIDES, keyed on the raw environment string so the
 # value stays live-reloadable while a busy stream does not re-parse JSON on
 # every inbound message.

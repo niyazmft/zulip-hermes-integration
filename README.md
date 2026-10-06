@@ -111,6 +111,28 @@ Or by hand:
 cd ~/.hermes/plugins/zulip && git pull origin main && hermes gateway restart
 ```
 
+### Inspecting and changing settings
+
+With `ZULIP_PROFILE=recommended` you should rarely need to set anything, but
+`zulip config` answers "what did it decide for me?" by printing every knob with
+the **source** of its value — `env` (you set it), `profile` (supplied by the
+preset) or `default` (the built-in):
+
+```bash
+bash ~/.hermes/plugins/zulip/config.sh             # the settings that matter
+bash ~/.hermes/plugins/zulip/config.sh --advanced  # every knob the plugin reads
+bash ~/.hermes/plugins/zulip/config.sh --wizard    # change them, interactively
+```
+
+`config.sh` needs the same Python that runs the gateway, because importing the
+plugin imports the Hermes host. It finds that automatically from the `hermes`
+launcher; set `ZULIP_PYTHON=/path/to/that/python` if it cannot.
+
+The wizard writes **only deviations** to `.env`: answering with the value the
+profile (or the built-in default) already supplies removes the entry instead of
+restating it, so the file stays a short list of where this install differs
+rather than a copy of the profile.
+
 DM the bot, or @-mention it in a stream it is subscribed to.
 
 ## Verification
