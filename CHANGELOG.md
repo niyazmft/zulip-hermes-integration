@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0] - 2026-10-06
+
+### Added
+- **The recommended profile — `ZULIP_PROFILE=recommended`.** One preset that switches on the whole product: mention-gated streams, a DM allowlist seeded from the bot owner, sticky topic engagement, history context, the activity trace and reaction triggers — instead of a wall of prompts answered one at a time. Resolution is **env > preset > default**, so any `ZULIP_*` variable set explicitly still wins, and an install that has never heard of the key behaves exactly as it did before (migration-safe). `zulip config` prints the effective value *and* which of the three layers supplied it. ([#237](https://github.com/niyazmft/zulip-hermes-integration/pull/237), [#238](https://github.com/niyazmft/zulip-hermes-integration/pull/238), [#245](https://github.com/niyazmft/zulip-hermes-integration/pull/245))
+- **`zulip config`** — an effective-configuration view and a curated wizard, so "what is this bot actually set to?" is answered without reading the README and guessing. ([#245](https://github.com/niyazmft/zulip-hermes-integration/pull/245))
+- **One-question setup**: the installer asks a single recommended-setup question rather than presenting every knob. ([#240](https://github.com/niyazmft/zulip-hermes-integration/pull/240))
+- **DM allowlist seeded from the bot owner**: under the recommended profile the owner's Zulip ID is read at connect time, so an allowlisted DM policy does not lock the owner out of their own bot. `ZULIP_OWNER_EMAIL` is the escape hatch. ([#239](https://github.com/niyazmft/zulip-hermes-integration/pull/239))
+- **Conversation-scoped observation**: `ZULIP_OBSERVE_GROUP` buffers non-addressed stream messages as bounded per-topic context, so "what did I miss?" is answered from evidence rather than from a guess. Mutually exclusive with the soft gate, which dispatches everything. ([#246](https://github.com/niyazmft/zulip-hermes-integration/pull/246))
+- **`docs/RECOMMENDED-PROFILE.md`** — the spec, the acceptance criteria, and what "recommended" deliberately does *not* turn on. ([#247](https://github.com/niyazmft/zulip-hermes-integration/pull/247))
+
+### Fixed
+- **`update.sh` claimed a restart that never happened** ([#207](https://github.com/niyazmft/zulip-hermes-integration/pull/207)), and **was not shipped inside the package**, so the install path the README documents did not exist ([#208](https://github.com/niyazmft/zulip-hermes-integration/pull/208)).
+- **Topic sessions were keyed on a name that a topic rename changed**, so renaming a topic silently started a new conversation; conversation keys are now rename-proof. ([#187](https://github.com/niyazmft/zulip-hermes-integration/pull/187))
+- **The declared compatibility floor was right and the gate was wrong.** The real-host `compat` job was not actually running, and once it ran it reported a false failure because it treated the pre-0.21.3 typing helpers as *requirements* rather than *capabilities*. The floor stays **0.18.2**, and is now asserted against a real 0.18.1 host on every run. ([#231](https://github.com/niyazmft/zulip-hermes-integration/pull/231), [#233](https://github.com/niyazmft/zulip-hermes-integration/pull/233), fixes [#230](https://github.com/niyazmft/zulip-hermes-integration/issues/230))
+- **The README test count was hardcoded** and had already gone stale; it is published from CI now. ([#234](https://github.com/niyazmft/zulip-hermes-integration/pull/234))
+
+### Docs
+- **`CONTRIBUTING.md § Rules That Bite` is now a defect-class ledger** rather than a list of solved problems: 7 classes, each with its instances and the guard that stops it, 3 of them marked `open` because nothing catches them yet. Linked from `AGENTS.md`, and guarded by a test that fails if a `guarded` row names a guard that no longer exists. ([#249](https://github.com/niyazmft/zulip-hermes-integration/pull/249))
+- **Community file set** — `CONTRIBUTING.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, issue templates and `CODEOWNERS`. ([#236](https://github.com/niyazmft/zulip-hermes-integration/pull/236))
+
+### Internal
+- **The adapter god-object was decomposed** into focused modules, with the per-session queue, the `/events` poll loop and the docs hardened alongside it. ([#210](https://github.com/niyazmft/zulip-hermes-integration/pull/210))
+- CI: the `compat` gate reports on every PR so it can be made a required check ([#242](https://github.com/niyazmft/zulip-hermes-integration/pull/242)); workflow actions moved off the deprecated Node 20 runtime ([#232](https://github.com/niyazmft/zulip-hermes-integration/pull/232)); security gates added ([#235](https://github.com/niyazmft/zulip-hermes-integration/pull/235)); the badge branch and the parity workflow removed, as each cost more to maintain than the number it served ([#235](https://github.com/niyazmft/zulip-hermes-integration/pull/235), [#229](https://github.com/niyazmft/zulip-hermes-integration/pull/229)).
+- **The test suite no longer writes into the developer's real `~/.hermes`.** ([#244](https://github.com/niyazmft/zulip-hermes-integration/pull/244))
+
+### Contributors
+- [@niyazmft](https://github.com/niyazmft) — [#187](https://github.com/niyazmft/zulip-hermes-integration/pull/187), [#207](https://github.com/niyazmft/zulip-hermes-integration/pull/207), [#208](https://github.com/niyazmft/zulip-hermes-integration/pull/208), [#210](https://github.com/niyazmft/zulip-hermes-integration/pull/210), [#229](https://github.com/niyazmft/zulip-hermes-integration/pull/229), [#231](https://github.com/niyazmft/zulip-hermes-integration/pull/231), [#232](https://github.com/niyazmft/zulip-hermes-integration/pull/232), [#233](https://github.com/niyazmft/zulip-hermes-integration/pull/233), [#234](https://github.com/niyazmft/zulip-hermes-integration/pull/234), [#235](https://github.com/niyazmft/zulip-hermes-integration/pull/235), [#236](https://github.com/niyazmft/zulip-hermes-integration/pull/236), [#237](https://github.com/niyazmft/zulip-hermes-integration/pull/237), [#238](https://github.com/niyazmft/zulip-hermes-integration/pull/238), [#239](https://github.com/niyazmft/zulip-hermes-integration/pull/239), [#240](https://github.com/niyazmft/zulip-hermes-integration/pull/240), [#242](https://github.com/niyazmft/zulip-hermes-integration/pull/242), [#244](https://github.com/niyazmft/zulip-hermes-integration/pull/244), [#245](https://github.com/niyazmft/zulip-hermes-integration/pull/245), [#246](https://github.com/niyazmft/zulip-hermes-integration/pull/246), [#247](https://github.com/niyazmft/zulip-hermes-integration/pull/247), [#249](https://github.com/niyazmft/zulip-hermes-integration/pull/249)
+
 ## [1.10.1] - 2026-10-01
 
 ### Fixed

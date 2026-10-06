@@ -20,7 +20,7 @@ please report either as a security issue.
 
 | Component | Supported version |
 |-----------|-------------------|
-| Plugin | `1.10.1` — the current release; security fixes land on the latest release and `main` (`zulip/version.py::__version__`, `__repo__`) |
+| Plugin | `1.11.0` — the current release; security fixes land on the latest release and `main` (`zulip/version.py::__version__`, `__repo__`) |
 | Hermes gateway | `>= 0.18.2` (`zulip/version.py::__min_hermes__`) |
 
 Security patches are applied to the latest release only. Older plugin versions are
