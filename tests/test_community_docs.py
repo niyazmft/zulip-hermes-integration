@@ -54,6 +54,11 @@ GUARDED_RULES = [
         "tests/test_version.py",
         "test_plugin_yaml_version_matches_version_module",
     ),
+    (
+        "A failure path that reports success",
+        "tests/test_silent_run_notice.py",
+        None,
+    ),
 ]
 
 

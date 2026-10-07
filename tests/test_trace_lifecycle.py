@@ -208,8 +208,12 @@ class TestIsolation:
         await _settle()
         await adapter.on_processing_complete(event, SUCCESS)
 
-        assert adapter.client.sent == []
         assert adapter.client.edited == []
+        # The trace stays inert — nothing posted, nothing edited. The one message
+        # here is the silent-run notice (#219), which is independent of the trace
+        # and fires precisely because this run produced no reply.
+        assert len(adapter.client.sent) == 1
+        assert "without a reply" in adapter.client.sent[0]["content"]
 
     @pytest.mark.asyncio
     async def test_a_failed_post_never_reaches_the_run(self, adapter):

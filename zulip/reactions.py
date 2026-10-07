@@ -162,13 +162,27 @@ class ReactionLifecycle:
             timeout=self.timeout,
         )
 
-    async def error(self) -> None:
+    async def error(self, replacing_success: bool = False) -> None:
+        """Mark the message as failed.
+
+        ``replacing_success`` is for the case where ✅ was already placed as a
+        *dispatch* acknowledgement and the run is now reported as failed
+        (#219). With ``clear_on_finish`` the success marker has to come off too,
+        or the message shows ✅ and ⚠️ at once and still reads as finished. The
+        default keeps the synchronous-dispatch call site unchanged, where ✅ was
+        never placed.
+        """
         cfg = self.config
         if cfg.clear_on_finish:
             await remove_reaction(
                 self.client, self.message_id, cfg.on_start, cfg.enabled,
                 timeout=self.timeout,
             )
+            if replacing_success:
+                await remove_reaction(
+                    self.client, self.message_id, cfg.on_success, cfg.enabled,
+                    timeout=self.timeout,
+                )
         await add_reaction(
             self.client, self.message_id, cfg.on_error, cfg.enabled,
             timeout=self.timeout,

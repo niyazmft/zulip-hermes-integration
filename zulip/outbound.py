@@ -392,8 +392,17 @@ async def send(
     reply_to: Any = None,
     metadata: Any = None,
     media_files: Sequence[str] | None = None,
+    counts_as_reply: bool = True,
 ) -> SendResult:
-    """Send message to a Zulip stream or DM, with chunking, topic directives, and files."""
+    """Send message to a Zulip stream or DM, with chunking, topic directives, and files.
+
+    ``counts_as_reply=False`` is for a message posted on a run's behalf that is
+    not that run's answer — the silent-run notice (#219). It routes, chunks and
+    secret-checks like any other send, but must not record the work item as
+    having replied, or the silent run it is reporting on would stop looking
+    silent (the trace would say "replied", and ``deliver_empty`` would be
+    contradicted by a ``deliver_payload``).
+    """
     metadata = metadata or {}
     media_files = media_files or []
 
@@ -471,7 +480,10 @@ async def send(
     # When block streaming is enabled, send each chunk as a separate message
     # immediately. This requires gateway-level support (not yet implemented).
     for idx, chunk in enumerate(chunks):
-        result = await send_single(adapter, chat_id, chunk, metadata, topic_override)
+        result = await send_single(
+            adapter, chat_id, chunk, metadata, topic_override,
+            counts_as_reply=counts_as_reply,
+        )
         last_result = result
         if not result.success:
             logger.error(
@@ -490,6 +502,7 @@ async def send_single(
     content: str,
     metadata: dict,
     topic_override: str | None,
+    counts_as_reply: bool = True,
 ) -> SendResult:
     """Send a single (unchunked) message."""
     # Prepend response prefix if configured (Issue #65)
@@ -497,8 +510,11 @@ async def send_single(
         content = adapter._response_prefix + content
 
     # This work item produced something to deliver, so a run that does not
-    # send here must not also be reported as "produced nothing" (#145).
-    adapter._note_delivery_attempt(chat_id, metadata)
+    # send here must not also be reported as "produced nothing" (#145). A notice
+    # sent on behalf of a run that produced *nothing* is not a reply, so it does
+    # not mark one (#219).
+    if counts_as_reply:
+        adapter._note_delivery_attempt(chat_id, metadata)
     audit_topic = metadata_topic(metadata)
 
     try:
@@ -537,10 +553,11 @@ async def send_single(
             message_id = str(result.get("id", ""))
             # This work item produced a reply, so its trace can say so
             # instead of reporting a silent run (epic #139 / #158).
-            adapter._note_trace_reply(chat_id, metadata)
-            await adapter._audit_logger.log_deliver_payload(
-                chat_id=chat_id, topic=audit_topic, message_id=message_id
-            )
+            if counts_as_reply:
+                adapter._note_trace_reply(chat_id, metadata)
+                await adapter._audit_logger.log_deliver_payload(
+                    chat_id=chat_id, topic=audit_topic, message_id=message_id
+                )
             return SendResult(success=True, message_id=message_id)
         else:
             logger.error(

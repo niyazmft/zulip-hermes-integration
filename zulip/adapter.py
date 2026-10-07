@@ -845,26 +845,128 @@ class ZulipAdapter(BasePlatformAdapter):
         error and abort distinguishable at all — and therefore what lets a run
         that produced nothing say so instead of staying silent.
         """
-        await self._audit_run_end(event)
+        delivered = await self._audit_run_end(event)
+        await self._report_run_end(event, delivered, outcome)
         await self._finish_trace(event, outcome)
         # Last, so the finished run's status is closed out before the next
         # queued turn for the same session starts (issue #151).
         await self._drain_session_queue(event)
 
-    async def _audit_run_end(self, event: MessageEvent) -> None:
+    async def _audit_run_end(self, event: MessageEvent) -> Optional[bool]:
         """Record ``deliver_empty`` for a dispatched run that never sent.
 
-        Only reached when ``on_processing_start`` armed this work item: a run
-        the gateway never dispatched has no entry and writes nothing.
+        Returns whether the run delivered anything: ``True``/``False`` for a
+        dispatched work item, ``None`` when the gateway never dispatched it (a
+        native slash command the host answers itself). ``None`` is what tells
+        ``_report_run_end`` there is no ✅ to correct and no turn to account for.
+
+        Only reached when ``on_processing_start`` armed this work item, and the
+        arming entry is popped here — once per work item, which is what keeps a
+        notice from being repeated when a queued turn drains afterwards (#219).
         """
         chat_id, metadata = _event_route(event)
         if not chat_id:
-            return
+            return None
         key = tracing.trace_key(chat_id, metadata)
         attempted = self._audit_turns.pop(key, None)
         if attempted is False:
             await self._audit_logger.log_deliver_empty(
                 chat_id=chat_id, topic=_metadata_topic(metadata)
+            )
+        return attempted
+
+    async def _report_run_end(
+        self, event: Any, delivered: Optional[bool], outcome: Any
+    ) -> None:
+        """Correct the room's reaction, and say so when a run ended silently.
+
+        Two shapes leave a person looking at ✅ and then nothing, which is the
+        worst diagnostic outcome: an answered-looking message with no answer. A
+        run the gateway reports as FAILURE or CANCELLED never takes back the ✅
+        that ``inbound_queue._dispatch_turn`` placed on a clean *dispatch*
+        return, and a run that sent nothing at all is visible only in the host's
+        audit log (#219).
+        """
+        if delivered is None:
+            return
+        status = getattr(outcome, "value", outcome)
+        failed = status in ("failure", "cancelled")
+        if delivered and not failed:
+            return  # an answered run: today's ✅ stands, nothing to add
+        chat_id, metadata = _event_route(event)
+        if not chat_id:
+            return
+        await self._place_error_reaction(event)
+        if not delivered:
+            await self._post_silent_run_notice(chat_id, metadata, status, outcome)
+
+    async def _place_error_reaction(self, event: Any) -> None:
+        """Take back the dispatch ✅ and mark the run as failed.
+
+        The lifecycle is the same one ``_dispatch_turn`` uses, so
+        ``clear_on_finish`` and the configured ``on_error`` emoji keep their
+        meaning. A reaction that cannot be placed is logged and dropped: this
+        runs on a work item that is already failing, so it must not raise into
+        the gateway loop.
+        """
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        try:
+            # Imported here rather than at module scope: ``adapter`` deliberately
+            # does not re-export ReactionLifecycle (see
+            # tests/test_wave11_composition_root.py::DELETED_SHIMS), and this is
+            # the only path in the adapter that needs it.
+            from .reactions import ReactionLifecycle
+
+            reactions = ReactionLifecycle(
+                self.client,
+                str(message_id),
+                self._reaction_cfg,
+                timeout=self._send_timeout,
+            )
+            # ``replacing_success``: ✅ is on the message already, because
+            # ``_dispatch_turn`` places it on a clean dispatch return. Leaving it
+            # would show ✅ and ⚠️ together and still read as finished (#219).
+            await reactions.error(replacing_success=True)
+        except Exception as e:
+            logger.warning(
+                "zulip error reaction failed (dropped) [msg=%s]: %s",
+                mask_pii(str(message_id)),
+                mask_pii(str(e)),
+            )
+
+    # Says only what is known: that the run produced no reply, plus the reason
+    # where the outcome actually carries one. It must not invent a cause.
+    _SILENT_RUN_NOTICE = {
+        "failure": "run failed without a reply — see the audit log",
+        "cancelled": "run was cancelled without a reply — see the audit log",
+    }
+    _SILENT_RUN_NOTICE_DEFAULT = "run ended without a reply — see the audit log"
+
+    async def _post_silent_run_notice(
+        self, chat_id: str, metadata: Any, status: Any, outcome: Any
+    ) -> None:
+        """Post one short line so a silent run is visible where it happened.
+
+        Once per work item: the only caller is ``_report_run_end``, which is
+        reached only from the single pop in ``_audit_run_end``. If it cannot be
+        sent it is logged and dropped — no retry loop, and nothing raised into
+        the gateway loop on the way out of a failed run.
+        """
+        text = self._SILENT_RUN_NOTICE.get(status, self._SILENT_RUN_NOTICE_DEFAULT)
+        reason = getattr(outcome, "reason", None)
+        if reason:
+            text = f"{text} ({reason})"
+        try:
+            await self.send(
+                chat_id, text, metadata=metadata, counts_as_reply=False
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip silent-run notice failed (dropped) [chat=%s]: %s",
+                mask_pii(chat_id),
+                mask_pii(str(e)),
             )
 
     # --- per-session message queue (issue #151) ---
@@ -2090,14 +2192,23 @@ class ZulipAdapter(BasePlatformAdapter):
         reply_to=None,
         metadata=None,
         media_files=None,
+        counts_as_reply: bool = True,
     ) -> SendResult:
-        """Send message to a Zulip stream or DM, with chunking, topic directives, and files."""
+        """Send message to a Zulip stream or DM, with chunking, topic directives, and files.
+
+        ``counts_as_reply=False`` is for a message the bot posts on a run's
+        behalf that is not that run's answer — the silent-run notice (#219). It
+        routes, chunks and secret-checks like any other send, but must not mark
+        the work item as having replied, or the run it is reporting on would
+        stop being reported as silent.
+        """
         return await outbound.send(
             self,
             chat_id,
             content,
             reply_to=reply_to,
             metadata=metadata,
+            counts_as_reply=counts_as_reply,
             media_files=media_files,
         )
 

@@ -132,10 +132,12 @@ fixing the class. Rows are added as fixes land, not in a separate retrospective.
    *namespaces*, which is the variant that has bitten twice.
 6. **A failure path that reports success.** A turn that delivered nothing was
    indistinguishable from one that did (#145/#186), an incomplete install reported "Already
-   up to date" (#205), and `update.sh` claimed a restart that never happened (#207).
-   *Status:* **open** — the delivery audit and `tests/test_audit_delivery.py` cover the first
-   instance; the rest are tracked as issue #219, milestone v1.12.0. Report what happened, never
-   what was supposed to happen.
+   up to date" (#205), `update.sh` claimed a restart that never happened (#207), and a run the
+   gateway reported as FAILURE kept the ✅ its own dispatch had placed — leaving the room with
+   no answer and no hint that anything had gone wrong (#219).
+   *Status:* **guarded** — `tests/test_silent_run_notice.py` (a failed, cancelled or silent run
+   is marked and says so in the room), `tests/test_delivery_audit_wiring.py`,
+   `tests/test_audit_delivery.py`. Report what happened, never what was supposed to happen.
 7. **Documentation states behaviour the code does not implement.** See
    [Documentation Claims Are Tested](#documentation-claims-are-tested) — the fix is a test,
    not a rewrite.
