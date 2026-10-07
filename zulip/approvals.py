@@ -7,10 +7,13 @@ web/desktop each choice renders as a button, and a click makes the CLIENT send
 an ordinary message from the clicker whose content is the choice's ``reply``.
 Mapping each reply to the gateway's plain-text approval command reuses the
 existing resolution path unchanged: the press IS a typed ``/approve``-family
-message from the clicker, so authorization is identical, and slash forms bypass
-mention gating at the base-adapter guard. Clients without widget support
-(mobile, terminals) show only the message text — the same prompt the gateway's
-text fallback renders.
+message from the clicker, so authorization is identical. It reaches the
+gateway because a native slash command is never mention-gated in a stream
+(``inbound.handle_message``, issue #259) — without that rule, a prompt in a
+gated stream renders buttons whose clicks are dropped before the host sees
+them, and the approval lapses into a timeout refusal. Clients without widget
+support (mobile, terminals) show only the message text — the same prompt the
+gateway's text fallback renders.
 
 This module owns the whole concern: the widget payload
 (:func:`zform_widget_for_approval`), the plain-text reply instructions

@@ -255,6 +255,12 @@ A mention is detected from Zulip's own `mentioned` flag first; text matching is 
 that recognises `@Soju`, `@**Soju**`, `@_**Soju**`, `@**Soju|12**` and a hand-typed
 `@soju-bot`, for both the display name and the email local-part.
 
+**A native slash command is never mention-gated.** `/help`, `/model`, `/stop`, `/approve`,
+`/deny` and the plugin's own commands reach the gateway in any mode, including `oncall` in a
+quiet topic with no engagement. The trigger gate is about conversation, and a command is not
+conversation; the sender rate limit, the stream filter, group policy and stream policy still
+apply to it, and an admin-only command is still the gateway's decision.
+
 ## Slash Commands
 
 Messages starting with `/` are intercepted before they reach the agent. Plugin commands

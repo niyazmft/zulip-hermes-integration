@@ -98,6 +98,8 @@ Messages starting with `/` are intercepted **before** they reach you:
 
 **Do not silently drop `/` messages.** The plugin handles only the four admin commands (`/streams`, `/user`, `/pin`, `/unpin`) and the sticky-engagement stops; gateway-native commands fall through to Hermes, which owns them. If a message isn't one of the commands above, it's a user question for you. The admin commands delegate to you — if a user asks you to manage streams or pin a message, use the adapter's `star_message()`, `list_streams()`, `get_user_info()` methods.
 
+**A slash command is never mention-gated.** In any chatmode, including `oncall` in a quiet topic, a `/`-message reaches the gateway: a command is not conversation, and the gateway owns slash authorization. This is what makes the exec-approval buttons work — a click sends an ordinary `/approve` or `/deny` from the clicker. The sender rate limit, the stream filter and the policy gates still apply to it (issue #259).
+
 ---
 
 ## 🚫 What to Ignore

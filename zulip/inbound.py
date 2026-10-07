@@ -229,6 +229,27 @@ async def handle_message(adapter: Any, message: dict) -> None:
         ):
             should_process = False
 
+        # A native slash command belongs to the gateway, never to the trigger
+        # gate (issue #259). The plugin answers its own commands and forwards
+        # the rest, but both paths sit *after* this gate — so a mention-gated
+        # stream used to drop "/deny", "/approve", "/model", "/stop" and
+        # every other gateway-native command on the floor, with the message
+        # never reaching the host that owns it. That made the exec-approval
+        # buttons dead on the recommended posture (chatmode ``oncall``,
+        # mention-gated, sticky engagement off): a click sends an ordinary
+        # "/approve"/"/deny" message from the clicker, so the window silently
+        # lapsed into a refusal — see ``zulip.approvals``.
+        #
+        # Only the *trigger* gate is bypassed. The per-sender rate limit above
+        # and the stream filter, group policy and stream policy below keep
+        # their order and their effect, and slash-command authorization stays
+        # the host's (an admin-only command is still its decision).
+        # ``addressed`` is deliberately left alone: a command that passes only
+        # because it is a command was not addressed, so it opens no engagement
+        # and harvests no history.
+        if is_slash_command:
+            should_process = True
+
         # Sticky topic engagement (#165/#166): once a user (or the whole
         # topic, per scope) has engaged the bot with a real mention/onchar,
         # later messages in that same topic are accepted without a fresh
