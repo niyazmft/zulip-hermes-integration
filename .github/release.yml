@@ -1,15 +1,21 @@
 # Configuration for GitHub's automatically generated release notes.
 #
-# Every release body is two layers:
-#   1. the curated CHANGELOG section (scripts/release_notes.py), prepended
-#   2. these generated notes: "What's Changed" + "New Contributors"
+# The release body has a short, scannable top (summary, highlights, scale line)
+# and the exhaustive record behind <details> blocks:
+#   1. the on-page part and the collapsed curated notes  (scripts/release_notes.py)
+#   2. this generated layer, collapsed: "What's Changed" + "New Contributors"
 #      + the "Full Changelog" compare link
 #
-# Layer 2 is what credits contributors mechanically. "What's Changed" lists
+# `scripts/release_notes.py` fetches this layer with
+# `gh api repos/{repo}/releases/generate-notes` — not `gh release create
+# --generate-notes`, which would append it uncollapsed after the body — so this
+# file is still what shapes the categories and the exclusions below.
+#
+# This layer is what credits contributors mechanically. "What's Changed" lists
 # every merged PR author in the range — maintainer included — and
-# "New Contributors" highlights first-timers. That is why CHANGELOG.md does not
-# need a hand-maintained Contributors list in the release body (see
-# docs/RELEASING.md).
+# "New Contributors" highlights first-timers; the script renders those authors
+# as the on-page **Thanks** line. That is why CHANGELOG.md does not need a
+# hand-maintained Contributors list in the release body (see docs/RELEASING.md).
 #
 # Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 
@@ -26,8 +32,8 @@ changelog:
       - dependabot[bot]
   categories:
     # PRs are sparse with labels today, so most entries land in "Other Changes".
-    # The curated CHANGELOG section above carries the real Added/Fixed/Docs/
-    # Internal structure; these categories only shape the mechanical list.
+    # The collapsed curated notes carry the real Added/Fixed/Docs/Internal
+    # structure; these categories only shape the mechanical list.
     - title: Added
       labels:
         - enhancement
