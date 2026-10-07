@@ -13,6 +13,7 @@ PLUGIN_FILES = [
     "__init__.py",
     "adapter.py",
     "admin_actions.py",
+    "approval_outcomes.py",
     "approvals.py",
     "audit_logger.py",
     "cli.py",

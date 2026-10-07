@@ -625,6 +625,39 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `ZULIP_SESSION_QUEUE` | `false` | `1` | hold a mid-run message behind the running turn |
 | `ZULIP_QUEUE_CAP` | `20` | `5` | how many may wait before dispatching immediately |
 
+### Exec approvals
+
+| Variable | Default | Example | Notes |
+|----------|---------|---------|-------|
+| `ZULIP_APPROVAL_ON_TIMEOUT` | `allow` | `deny` | What an unanswered approval means: `allow` = today's behaviour (the gateway's refusal stands, the bot adds nothing); `deny` = also state the refusal in the topic and record `timeout` as the decider. The gateway owns the timeout and refuses either way — no setting makes silence run a command |
+
+### Exec approvals
+
+Hermes stops before a dangerous command and asks the room. On Hermes `>= 0.21.3` the
+Zulip adapter renders that prompt natively — one message of context and one zform
+message whose buttons are **Allow Once / Allow Session / Always Allow / Deny**; on older
+gateways the prompt is plain text with `/approve` and `/deny` instructions, and either
+way the click or the typed command reaches the gateway (a slash command is never
+mention-gated).
+
+**Nobody answering is a refusal, and the bot says so.** Once the gateway's
+`approvals.timeout` elapses the command does *not* run — on every host this plugin
+supports. `ZULIP_APPROVAL_ON_TIMEOUT` decides what the *install promises* about that
+silence, and therefore what the bot states and records:
+
+| Value | What happens when nobody answers |
+|-------|----------------------------------|
+| `allow` *(default)* | Today's behaviour exactly: the gateway's own outcome stands and the bot adds nothing to the topic. |
+| `deny` | The refusal is stated in the prompt's topic and recorded — one line saying the request was refused, plus an audit entry naming `timeout` as the decider. **The recommended profile sets this.** On hosts `>= 0.21.4` the gateway posts its own timeout notice, so the bot stays quiet instead of repeating it. |
+
+Whichever value is set, a person's `/deny` is confirmed in the topic by the gateway, and
+the bot does not duplicate it. Every resolved approval also lands in the audit log with
+its choice, its decider (the person who clicked, or `timeout` / `policy` / `cancelled` /
+`undelivered`) and the request id the plugin minted for the prompt, so "who let this run,
+and did anyone?" is a lookup rather than a guess. This key is a policy statement, not a
+second decision path: the buttons remain the only way to approve, and no setting can make
+silence run a command.
+
 ### Sticky engagement
 
 | Variable | Default | Example | Notes |

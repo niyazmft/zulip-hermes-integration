@@ -305,15 +305,29 @@ class TestHookRegistration:
         ctx.register_platform.return_value = None
         return ctx
 
+    # The approval observers (#222) are registered unconditionally — the audit
+    # entry is the feature, and the policy key only decides whether the refusal
+    # is also said in the room. So these tests name the *trace* hook rather than
+    # asserting an empty registration set.
+    _APPROVAL_HOOKS = ["pre_approval_request", "post_approval_response"]
+
+    def _trace_hooks(self, ctx):
+        return [
+            c.args[0]
+            for c in ctx.register_hook.call_args_list
+            if c.args[0] not in self._APPROVAL_HOOKS
+        ]
+
     def test_hook_registered_when_enabled(self, monkeypatch):
         import zulip.adapter as adapter_module
 
         monkeypatch.setenv("ZULIP_ACTIVITY_TRACE", "1")
         ctx = self._ctx()
         adapter_module.register(ctx)
-        ctx.register_hook.assert_called_once_with(
+        ctx.register_hook.assert_any_call(
             "post_tool_call", adapter_module._on_post_tool_call
         )
+        assert self._trace_hooks(ctx) == ["post_tool_call"]
 
     def test_hook_not_registered_when_disabled(self, monkeypatch):
         """Not registering is what keeps a disabled trace free: any
@@ -323,7 +337,10 @@ class TestHookRegistration:
         monkeypatch.delenv("ZULIP_ACTIVITY_TRACE", raising=False)
         ctx = self._ctx()
         adapter_module.register(ctx)
-        ctx.register_hook.assert_not_called()
+        assert self._trace_hooks(ctx) == []
+        # The approval observers are independent of the trace.
+        registered = [c.args[0] for c in ctx.register_hook.call_args_list]
+        assert registered == list(self._APPROVAL_HOOKS)
 
     def test_pre_tool_call_is_never_registered(self, monkeypatch):
         """pre_tool_call is fail-closed: an observer could block the tool call."""
@@ -335,7 +352,7 @@ class TestHookRegistration:
 
         registered = [c.args[0] for c in ctx.register_hook.call_args_list]
         assert "pre_tool_call" not in registered
-        assert registered == ["post_tool_call"]
+        assert self._trace_hooks(ctx) == ["post_tool_call"]
 
     def test_a_failing_registration_does_not_break_plugin_load(self, monkeypatch):
         import zulip.adapter as adapter_module

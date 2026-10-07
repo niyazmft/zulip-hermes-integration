@@ -62,7 +62,7 @@ from typing import Any
 from gateway.platforms.base import MessageEvent, MessageType
 
 from . import commands
-from .commands import CommandResult, is_command
+from .commands import CommandResult, is_approval_decision, is_command
 from .engagement import (
     MODE_OFF as ENGAGEMENT_MODE_OFF,
     is_bot_sender,
@@ -700,6 +700,24 @@ async def handle_message(adapter: Any, message: dict) -> None:
         message_id=str(message_id),
         metadata=extra_meta,
     )
+
+    # --- Approval decisions (issue #222) ---
+    #
+    # An exec-approval click is an ordinary ``/approve`` or ``/deny`` message
+    # from the decider, and the gateway's ``post_approval_response`` hook carries
+    # no human identity on the gateway surface — so the sender is recorded here,
+    # on the way to the host that will resolve the approval. Nothing is consumed,
+    # answered or authorised: the message still reaches the gateway, which owns
+    # slash authorization and the decision itself. Recorded after every policy
+    # gate (an unauthorized sender never gets this far) and before dispatch, so
+    # the record exists by the time the outcome fires.
+    if is_command(content) and is_approval_decision(content):
+        adapter.note_approval_decider(
+            session_key=adapter._session_key_for_event(event) or "",
+            chat_id=source.chat_id,
+            topic=message.get("subject", "") if msg_type == "stream" else None,
+            sender_email=message.get("sender_email", ""),
+        )
 
     # --- Per-session queue (issue #151) ---
     #

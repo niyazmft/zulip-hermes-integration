@@ -214,6 +214,20 @@ capabilities:
       hermes: "#131"
     notes: "The sibling has no zform / interactive-widget send path."
 
+  - id: approval-outcome-audit
+    title: Approval-outcome audit and a fail-closed refusal line (ZULIP_APPROVAL_ON_TIMEOUT)
+    status: hermes-only
+    refs:
+      hermes: "#222"
+    notes: >-
+      Every resolved exec approval is audited with its choice, decider and the
+      request id the plugin minted for the prompt; under
+      `ZULIP_APPROVAL_ON_TIMEOUT=deny` the bot also states the refusal in the
+      prompt's route where the host posts no timeout notice of its own (hosts
+      below 0.21.4). The gateway owns the approval timeout and refuses an
+      unanswered request on every supported host, so the key is a promise about
+      silence, not a second decision path. No sibling equivalent.
+
   - id: admin-actions
     title: Admin actions (/streams, /user, /pin, /unpin)
     status: hermes-only

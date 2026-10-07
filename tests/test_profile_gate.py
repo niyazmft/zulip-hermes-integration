@@ -54,6 +54,9 @@ EXPECTED_PRESET = {
     "ZULIP_TOPIC_SESSIONS": "true",
     "ZULIP_SOFT_GATE": "false",
     "ZULIP_REACTION_TRIGGERS": json.dumps(RECOMMENDED_REACTION_TRIGGERS),
+    # #222: silence is a refusal, and the install says so. The gateway owns the
+    # timeout and refuses either way; this row is the promise, not the decision.
+    "ZULIP_APPROVAL_ON_TIMEOUT": "deny",
 }
 
 #: The knobs the preset deliberately leaves alone.  Sticky engagement and
@@ -230,6 +233,7 @@ LEGACY_RESOLVERS = {
     "ZULIP_OBSERVE_GROUP": (settings.resolve_observe_group, False),
     "ZULIP_TOPIC_SESSIONS": (settings.topic_sessions_enabled, False),
     "ZULIP_SOFT_GATE": (settings.resolve_soft_gate, False),
+    "ZULIP_APPROVAL_ON_TIMEOUT": (settings.resolve_approval_on_timeout, "allow"),
     "ZULIP_REACTION_TRIGGERS": (
         lambda: reaction_triggers.ReactionTriggerConfig.from_env().enabled,
         False,

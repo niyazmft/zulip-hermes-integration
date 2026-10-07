@@ -136,6 +136,67 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             continue
 
 
+def _owns_approval_session(adapter: Any, session_key: str) -> bool:
+    """Whether ``adapter`` rendered the prompt for ``session_key`` (#222)."""
+    if not session_key:
+        return False
+    ledger = getattr(adapter, "_approval_ledger", None)
+    try:
+        return bool(ledger is not None and ledger.owns(session_key))
+    except Exception:
+        return False
+
+
+def _on_pre_approval_request(**kwargs: Any) -> None:
+    """Observer for an approval the gateway is about to deliver (issue #222).
+
+    Synchronous, because the host dispatches approval hooks on the caller's
+    thread. It only records — the request id the audit entry will carry — so a
+    bookkeeping failure can never sit between a person and their approval.
+    """
+    for adapter in list(_LIVE_ADAPTERS):
+        try:
+            adapter.note_approval_request(**kwargs)
+        except Exception:
+            continue
+
+
+def _on_post_approval_response(**kwargs: Any) -> None:
+    """Observer for a resolved approval (issue #222): audit it, and say so.
+
+    Synchronous by contract. The ledger claim happens here, and *that* is what
+    makes exactly one adapter report a process-wide event; the audit write and
+    the optional refusal line are then scheduled onto the adapter's own loop.
+
+    Two passes over the live adapters: the one that rendered the prompt owns the
+    outcome. Only when nobody rendered it — a plain-text prompt on a host below
+    0.21.3 — does a sole live adapter adopt it, because with several profiles
+    live there is no route that can be attributed to one realm without guessing.
+    """
+    session_key = str(kwargs.get("session_key") or "")
+    route = approval_outcomes.route_from_session_env()
+    adapters = list(_LIVE_ADAPTERS)
+    owners = [a for a in adapters if _owns_approval_session(a, session_key)]
+    candidates = owners or (adapters if len(adapters) == 1 else [])
+    for adapter in candidates:
+        try:
+            outcome = adapter.claim_approval_outcome(
+                route=route, multiplexed=len(adapters) > 1, **kwargs
+            )
+        except Exception:
+            continue
+        if outcome is None:
+            continue
+        adapter.schedule_approval_outcome(outcome)
+        return
+    if session_key:
+        logger.debug(
+            "zulip approval outcome unattributed [session=%s adapters=%d]",
+            mask_pii(session_key),
+            len(adapters),
+        )
+
+
 def _zulip_progress_handler(args: Any) -> str:
     """``zulip_progress`` tool handler — agent-authored trace steps (#160).
 
@@ -218,6 +279,11 @@ from .history import (
 # ``__dict__`` (the base class ships a no-op), and so the historical
 # ``adapter._<name>`` call sites keep working. Production code reads the
 # concern through the owning module at call time.
+#
+# ``zulip.approval_outcomes`` (issue #222) owns the other half of the same
+# concern — what silence means, who decided, and the audit — and is pure, so the
+# sync approval hooks hold no I/O.
+from . import approval_outcomes
 from . import approvals
 
 # Outbound content egress (send/chunk/media/refs/secret guard/typing) lives in
@@ -474,6 +540,15 @@ class ZulipAdapter(BasePlatformAdapter):
             data_dir=self._data_dir,
             account_id=self.email or "default",
         )
+
+        # Exec-approval outcomes (issue #222): the pending-approval ledger whose
+        # request ids, deciders and routes become the audit entry and — under
+        # the fail-closed policy — one refusal line in the prompt's own route.
+        # Per adapter, so an outcome can never be reported through another
+        # profile's client, and the loop is bound at connect (the hook fires on
+        # the agent thread).
+        self._approval_ledger = approval_outcomes.ApprovalLedger()
+        self._zulip_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Persistent queue and dedupe
         self._queue_mgr = ZulipQueueManager(
@@ -2156,6 +2231,171 @@ class ZulipAdapter(BasePlatformAdapter):
     def _approval_fallback_instructions(self, prompt: ExecApprovalPrompt) -> str:
         return approvals.approval_fallback_instructions(prompt)
 
+    # ── Exec-approval outcomes (issue #222) ─────────────────────────────────
+    # The ledger, the policy and the wording live in ``zulip.approval_outcomes``
+    # (L2, pure). These methods are the adapter's half: the sync hook entry
+    # points, the loop the audit/notice are scheduled onto, and the I/O.
+
+    def note_approval_request(self, **kwargs: Any) -> None:
+        """Record an approval the gateway is about to deliver (pre-hook)."""
+        try:
+            self._approval_ledger.note_request(
+                session_key=str(kwargs.get("session_key") or ""),
+                surface=str(kwargs.get("surface") or ""),
+                command=str(kwargs.get("command") or ""),
+                pattern_key=str(kwargs.get("pattern_key") or ""),
+            )
+        except Exception:
+            # Bookkeeping only: never let it stand between a person and an
+            # approval the gateway is already waiting on.
+            logger.debug("zulip approval request ledger failed", exc_info=True)
+
+    def remember_approval_prompt(
+        self, session_key: str, chat_id: str, topic: Optional[str]
+    ) -> None:
+        """Remember the route this adapter rendered a prompt into (owns it)."""
+        try:
+            self._approval_ledger.note_route(
+                session_key=session_key or "",
+                chat_id=str(chat_id or ""),
+                topic=topic or "",
+            )
+        except Exception:
+            logger.debug("zulip approval route ledger failed", exc_info=True)
+
+    def note_approval_decider(
+        self,
+        *,
+        session_key: str = "",
+        chat_id: str = "",
+        topic: Optional[str] = None,
+        sender_email: str = "",
+    ) -> None:
+        """Record who produced a decision for a pending approval (#222).
+
+        Called from inbound handling: the click arrives as an ordinary
+        ``/approve`` / ``/deny`` message from the decider *before* the gateway
+        resolves it, so the sender is the only place a human's identity exists —
+        the host's post-hook does not carry one on the gateway surface.
+        """
+        try:
+            recorded = self._approval_ledger.note_decider(
+                session_key=session_key or "",
+                chat_id=str(chat_id or ""),
+                topic=topic or "",
+                email=sender_email or "",
+            )
+        except Exception:
+            logger.debug("zulip approval decider ledger failed", exc_info=True)
+            return
+        if recorded:
+            logger.debug(
+                "zulip approval decider recorded [session=%s sender=%s]",
+                mask_pii(session_key),
+                mask_pii(sender_email),
+            )
+
+    def claim_approval_outcome(
+        self, *, route: Any = None, multiplexed: bool = False, **kwargs: Any
+    ) -> Optional[approval_outcomes.ApprovalOutcome]:
+        """Claim the resolved approval this adapter holds, if any.
+
+        Returns None when this adapter has no pending request for the session
+        key — the hook fires process-wide, and the claim (an atomic pop) is what
+        makes exactly one adapter report one outcome.
+        """
+        try:
+            outcome = self._approval_ledger.resolve(
+                session_key=str(kwargs.get("session_key") or ""),
+                choice=str(kwargs.get("choice") or ""),
+                decided_by=str(kwargs.get("decided_by") or ""),
+                cancelled=str(kwargs.get("cancelled") or ""),
+                route=route,
+            )
+        except Exception:
+            logger.debug("zulip approval ledger resolve failed", exc_info=True)
+            return None
+        if outcome is None:
+            return None
+        outcome.notice = approval_outcomes.notice_for(
+            outcome,
+            policy=approval_outcomes.current_policy(),
+            host_notices=approval_outcomes.host_notices_timeouts(),
+            multiplexed=multiplexed,
+        )
+        return outcome
+
+    def schedule_approval_outcome(
+        self, outcome: approval_outcomes.ApprovalOutcome
+    ) -> Optional[asyncio.Future]:
+        """Run the audit and the notice on the adapter's own loop.
+
+        The hook is synchronous and runs on the agent thread, so work that
+        awaits has to cross to the loop the SDK calls live on. Already on that
+        loop (a test, or a host that dispatches approval hooks there), it is
+        scheduled directly.
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        loop = self._zulip_loop
+        if running is not None and (loop is None or loop is running):
+            return asyncio.ensure_future(self.report_approval_outcome(outcome))
+        if loop is None or loop.is_closed():
+            logger.debug(
+                "zulip approval outcome dropped: no adapter loop [request=%s]",
+                outcome.request_id,
+            )
+            return None
+        try:
+            return asyncio.run_coroutine_threadsafe(
+                self.report_approval_outcome(outcome), loop
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip approval outcome scheduling failed: %s", mask_pii(str(e))
+            )
+            return None
+
+    async def report_approval_outcome(
+        self, outcome: approval_outcomes.ApprovalOutcome
+    ) -> None:
+        """Audit one resolved approval and, when the policy says so, say so.
+
+        Best-effort in both directions: the approval has already resolved, and
+        neither a failed audit write nor a failed notice may raise into the
+        thread that is waiting on the run.
+        """
+        decider = approval_outcomes.audit_decider(outcome.decider)
+        logger.info(
+            "zulip approval outcome [choice=%s decider=%s request=%s]",
+            outcome.choice,
+            decider,
+            outcome.request_id,
+        )
+        try:
+            await self._audit_logger.log_approval_outcome(
+                choice=outcome.choice,
+                decider=decider,
+                request_id=outcome.request_id,
+                session_key=outcome.session_key,
+                pattern_key=outcome.pattern_key,
+                cancelled=outcome.cancelled or None,
+                chat_id=outcome.chat_id,
+                topic=outcome.topic,
+            )
+        except Exception as e:
+            logger.warning("zulip approval audit failed: %s", mask_pii(str(e)))
+        if not outcome.notice or not outcome.chat_id:
+            return
+        try:
+            await approvals.send_plain_to_route(
+                self, outcome.chat_id, outcome.topic, outcome.notice
+            )
+        except Exception as e:
+            logger.warning("zulip approval notice failed: %s", mask_pii(str(e)))
+
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         return await approvals.send_exec_approval_prompt(self, prompt)
 
@@ -2241,6 +2481,22 @@ def register(ctx):
             ctx.register_hook("post_tool_call", _on_post_tool_call)
         except Exception as e:
             logger.warning("zulip: could not register post_tool_call hook: %s", e)
+
+    # Exec-approval outcomes (issue #222): the audit entry, and the refusal line
+    # the fail-closed policy promises. Registered unconditionally — the audit is
+    # the point of the feature, and the policy key only decides whether the
+    # refusal is also said in the room. Both hooks are observers (their return
+    # values are ignored: a plugin cannot veto or pre-answer an approval, and
+    # ``pre_tool_call`` is deliberately never registered for that reason), and
+    # both callbacks are synchronous by host contract.
+    for hook_name, callback in (
+        ("pre_approval_request", _on_pre_approval_request),
+        ("post_approval_response", _on_post_approval_response),
+    ):
+        try:
+            ctx.register_hook(hook_name, callback)
+        except Exception as e:
+            logger.warning("zulip: could not register %s hook: %s", hook_name, e)
 
     # Mode B (epic #139 / #160): let the agent narrate intent that hooks cannot
     # infer. Registered only when the trace is enabled — registration is what

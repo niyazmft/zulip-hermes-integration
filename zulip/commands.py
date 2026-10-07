@@ -12,12 +12,36 @@ are registered below; everything else falls through to the gateway.
 
 from __future__ import annotations
 
+import re
 from typing import Callable
 from dataclasses import dataclass
 
 from .logger import mask_pii
 
 logger = __import__("logging").getLogger(__name__)
+
+
+# The host's own exec-approval decision commands. Recognised (not consumed) so
+# the plugin can record *who* decided an approval (issue #222): the gateway
+# resolves the approval from this message and its ``post_approval_response``
+# hook carries no human identity on the gateway surface. ``/approvals`` — the
+# command that shows or sets the approval *mode* — must not match, so the
+# pattern requires a word boundary after the verb.
+_APPROVAL_DECISION_RE = re.compile(r"^/(?:approve|deny)\b", re.IGNORECASE)
+
+
+def is_approval_decision(content: str) -> bool:
+    """Whether ``content`` is the host's ``/approve`` / ``/deny`` command.
+
+    Covers the modifiers the host accepts (``/approve session``, ``/approve
+    always``, ``/approve all``, ``/deny all``). The message is never consumed or
+    answered here: it still reaches the gateway, which owns slash authorization
+    and the decision itself.
+    """
+    text = (content or "").strip()
+    if not text:
+        return False
+    return bool(_APPROVAL_DECISION_RE.match(text))
 
 CommandHandler = Callable[[str, str, str, str], str]
 

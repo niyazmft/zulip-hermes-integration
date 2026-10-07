@@ -123,6 +123,51 @@ def approval_fallback_instructions(prompt: ExecApprovalPrompt) -> str:
     return "Reply " + ", ".join(instructions[:-1]) + f", or {instructions[-1]}."
 
 
+async def send_plain_to_route(
+    adapter: Any, chat_id: str, topic: Optional[str], content: str
+) -> bool:
+    """Send one plain message to an already-resolved approval route.
+
+    The outcome-notice path (#222, reused by the owner-only rejection in #228):
+    the route was resolved when the prompt was sent or when the outcome fired,
+    so nothing here re-derives a topic. Best-effort — the approval already
+    resolved and nothing may raise into the thread waiting on it — and the
+    caller decides what a failure means.
+    """
+    try:
+        target = parse_target(chat_id)
+    except Exception as e:
+        logger.error(
+            format_zulip_log(
+                "zulip approval notice send error",
+                chat_id=mask_pii(chat_id),
+                error=mask_pii(str(e)),
+            )
+        )
+        return False
+
+    if target["type"] == "dm":
+        request: dict[str, Any] = {"type": "private", "to": target["user_ids"]}
+    else:
+        request = {
+            "type": "stream",
+            "to": target["stream_id"],
+            "topic": topic or "general",
+        }
+    request["content"] = content
+    try:
+        result = await adapter._sdk_call(
+            adapter.client.send_message, request, timeout=adapter._send_timeout
+        )
+    except Exception as e:
+        logger.warning("zulip approval notice send failed: %s", mask_pii(str(e)))
+        return False
+    if isinstance(result, dict) and result.get("result") == "success":
+        return True
+    logger.warning("zulip approval notice rejected: %s", mask_pii(str(result)))
+    return False
+
+
 async def send_exec_approval_prompt(
     adapter: Any, prompt: ExecApprovalPrompt
 ) -> SendResult:
@@ -159,6 +204,7 @@ async def send_exec_approval_prompt(
     if target["type"] == "dm":
         base: dict[str, Any] = {"type": "private", "to": target["user_ids"]}
         audit_topic: str | None = None
+        topic: str | None = None
     else:
         # prompt.metadata carries the turn's routing metadata (thread_id =
         # a conversation id with stable topic sessions, else the topic
@@ -168,6 +214,17 @@ async def send_exec_approval_prompt(
         )
         base = {"type": "stream", "to": target["stream_id"], "topic": topic}
         audit_topic = topic
+
+    # Remember where this adapter rendered the prompt (#222): the outcome hook
+    # fires for the whole process and carries only the session key, so the
+    # adapter that owns the prompt is the one that may speak for it — and the
+    # recorded route is the topic the prompt actually landed in, not one
+    # re-derived later. ``prompt.session_key`` is the host's own key, the same
+    # one both approval hooks fire with.
+    try:
+        adapter.remember_approval_prompt(prompt.session_key, prompt.chat_id, topic)
+    except Exception:  # bookkeeping must never stop a prompt being delivered
+        logger.debug("zulip approval route bookkeeping failed", exc_info=True)
 
     async def _send(request: dict[str, Any]) -> SendResult | None:
         try:

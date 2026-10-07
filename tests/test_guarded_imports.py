@@ -32,6 +32,12 @@ _VERSION_GATED_GATEWAY_SYMBOLS = {
     "supports_exec_approval_buttons",
     "register_hook",
     "register_tool",
+    # Arrived with host 0.21.4 (gateway/run_turn_runner_approval_settle.py): the
+    # gateway's own notice for an approval window that elapsed. Its absence is a
+    # *capability* boundary (hosts below 0.21.4 refuse an unanswered approval
+    # silently, so the plugin posts its own line under the fail-closed policy),
+    # and an unguarded import would take the plugin down on those hosts.
+    "register_timeout_notice",
 }
 
 # The optional imports that actually exist today. Asserted present so the guard
@@ -40,6 +46,7 @@ _MUST_BE_GUARDED_IMPORTS = {
     "ExecApprovalPrompt",
     "ProcessingOutcome",
     "get_session_env",
+    "register_timeout_notice",
 }
 
 # Version-gated plugin-side APIs called on the registration context (#139/#160).

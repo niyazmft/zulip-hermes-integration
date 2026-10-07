@@ -185,6 +185,12 @@ class ZulipConnection:
         # Start presence heartbeat so bot appears online
         adapter._presence_task = asyncio.create_task(self.presence_heartbeat())
 
+        # Bind the loop the approval hooks must cross back to (issue #222): they
+        # fire on the agent thread, and the audit write and refusal line both
+        # await SDK calls that belong on this loop. Captured here because this
+        # is the adapter's own async entry point; reconnect runs on the same one.
+        adapter._zulip_loop = asyncio.get_running_loop()
+
         # Sticky engagement expiry scanner (#166). Started only when engagement
         # is enabled, so mode=off runs no background task at all.
         if adapter._engagement_cfg.mode != ENGAGEMENT_MODE_OFF:

@@ -46,7 +46,7 @@ LAYERS: dict[int, tuple[str, ...]] = {
         "commands", "history", "policy", "probe", "reactions", "secret_guard",
         "settings",
     ),
-    2: ("connection", "inbound", "media", "pairing", "platform_api"),
+    2: ("approval_outcomes", "connection", "inbound", "media", "pairing", "platform_api"),
     3: ("cli", "outbound"),
     4: ("inbound_queue", "routing"),
     5: ("tracing",),

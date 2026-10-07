@@ -234,6 +234,47 @@ class AuditLogger:
         details["error"] = error
         await self._log_delivery_event("deliver_failed", details)
 
+    async def log_approval_outcome(
+        self,
+        *,
+        choice: str,
+        decider: str,
+        request_id: str = "",
+        session_key: str = "",
+        pattern_key: str = "",
+        cancelled: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> None:
+        """Record how an exec approval resolved (issue #222).
+
+        One event per resolved approval, so "who allowed this, and did anyone?"
+        is a lookup rather than a guess: ``choice`` is the host's own token
+        (``once`` / ``session`` / ``always`` / ``deny`` / ``timeout`` /
+        ``cancelled`` / …), ``decider`` is the human address (masked by the
+        caller) or a machine token (``timeout`` / ``policy`` / ``cancelled`` /
+        ``undelivered`` / ``unknown``), and ``request_id`` ties the entry to the
+        prompt the plugin minted an id for.
+
+        A failed write is logged and dropped, never raised: the approval has
+        already resolved by the time this runs, and an audit must not change
+        what happened.
+        """
+        details: dict[str, Any] = {"choice": choice, "decider": decider}
+        if request_id:
+            details["request_id"] = request_id
+        if session_key:
+            details["session_key"] = session_key
+        if pattern_key:
+            details["pattern_key"] = pattern_key
+        if cancelled:
+            details["cancelled"] = cancelled
+        if chat_id:
+            details["chat_id"] = chat_id
+        if topic is not None:
+            details["topic"] = topic
+        await self._log_delivery_event("approval_outcome", details)
+
     async def _log_delivery_event(
         self, event_type: str, details: dict[str, Any]
     ) -> None:

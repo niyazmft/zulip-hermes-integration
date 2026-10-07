@@ -190,6 +190,17 @@ class TestToolRegistration:
         ctx = MagicMock()
         return ctx
 
+    # Approval observers (#222) register unconditionally; these tests are about
+    # the trace tool and hook, so they name them explicitly.
+    _APPROVAL_HOOKS = ("pre_approval_request", "post_approval_response")
+
+    def _trace_hooks(self, ctx):
+        return [
+            c.args[0]
+            for c in ctx.register_hook.call_args_list
+            if c.args[0] not in self._APPROVAL_HOOKS
+        ]
+
     def test_tool_and_hook_registered_together_when_enabled(self, monkeypatch):
         import zulip.adapter as adapter_module
 
@@ -199,7 +210,7 @@ class TestToolRegistration:
 
         names = [c.kwargs.get("name") for c in ctx.register_tool.call_args_list]
         assert names == ["zulip_progress"]
-        ctx.register_hook.assert_called_once()
+        assert self._trace_hooks(ctx) == ["post_tool_call"]
 
     def test_nothing_registered_when_disabled(self, monkeypatch):
         """A disabled trace must not expose the tool to the model."""
@@ -210,7 +221,7 @@ class TestToolRegistration:
         adapter_module.register(ctx)
 
         ctx.register_tool.assert_not_called()
-        ctx.register_hook.assert_not_called()
+        assert self._trace_hooks(ctx) == []
 
     def test_schema_is_json_schema_shaped(self, monkeypatch):
         """The host builds tools from a plain dict; no dependency is needed."""

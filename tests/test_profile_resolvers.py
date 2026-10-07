@@ -154,6 +154,12 @@ def test_an_explicit_value_wins_for_every_knob(monkeypatch):
         "ZULIP_OBSERVE_GROUP": ("false", settings.resolve_observe_group, False, True),
         "ZULIP_TOPIC_SESSIONS": ("false", settings.topic_sessions_enabled, False, True),
         "ZULIP_SOFT_GATE": ("true", settings.resolve_soft_gate, True, False),
+        "ZULIP_APPROVAL_ON_TIMEOUT": (
+            "allow",
+            settings.resolve_approval_on_timeout,
+            "allow",
+            "deny",
+        ),
         # The trigger set is applied in the adapter (L6), so it is resolved
         # through the adapter's own helper rather than a settings resolver.
         "ZULIP_REACTION_TRIGGERS": (

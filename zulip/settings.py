@@ -370,6 +370,52 @@ def resolve_history_mode() -> str:
     return "off"
 
 
+#: What an install promises when an exec approval is never answered (#222).
+#: ``allow`` is the pre-existing behaviour (the gateway's own outcome stands and
+#: the bot adds nothing); ``deny`` is the fail-closed statement — the bot says in
+#: the room that the request was refused and records ``timeout`` as the decider.
+APPROVAL_ON_TIMEOUT_ALLOW = "allow"
+APPROVAL_ON_TIMEOUT_DENY = "deny"
+_APPROVAL_ON_TIMEOUT_VALUES = frozenset(
+    {APPROVAL_ON_TIMEOUT_ALLOW, APPROVAL_ON_TIMEOUT_DENY}
+)
+
+
+def resolve_approval_on_timeout() -> str:
+    """What silence means for an unanswered exec approval (#222).
+
+    The **gateway owns the timeout**: it refuses an unanswered approval on every
+    host this plugin supports (0.18.2 through the current release), and a plugin
+    cannot pre-answer, veto or extend that wait. So this key does not decide
+    whether silence runs a command — nothing can. It decides what the install
+    *promises* about silence, and therefore what the bot says and records:
+
+    * ``allow`` *(default)* — today's behaviour exactly. Nothing is added to the
+      room; the gateway's own outcome stands. This is the migration contract:
+      an install that never heard of the key behaves as it always did.
+    * ``deny`` — the refusal is stated and audited: one line in the prompt's
+      route where the host posts none, and an audit entry naming ``timeout`` as
+      the decider. The recommended profile selects this.
+
+    Read at call time through the preset gate, so an explicit ``ZULIP_*`` value
+    wins, ``ZULIP_PROFILE=recommended`` can supply ``deny``, and a patch of this
+    resolver still takes effect. Anything unrecognised falls back to ``allow``
+    with a warning — never to the strict value, because a typo must not change
+    what the install promises.
+    """
+    raw = _preset_value("ZULIP_APPROVAL_ON_TIMEOUT", APPROVAL_ON_TIMEOUT_ALLOW)
+    mode = raw.strip().lower()
+    if mode in _APPROVAL_ON_TIMEOUT_VALUES:
+        return mode
+    logger.warning(
+        "ZULIP_APPROVAL_ON_TIMEOUT=%r is not one of %s; using %s",
+        raw,
+        sorted(_APPROVAL_ON_TIMEOUT_VALUES),
+        APPROVAL_ON_TIMEOUT_ALLOW,
+    )
+    return APPROVAL_ON_TIMEOUT_ALLOW
+
+
 def resolve_int_setting(name: str, default: int, minimum: int = 1) -> int:
     """Read a positive integer setting, warning and falling back when invalid."""
     raw = (runtime_scope.get_setting(name, "") or "").strip()

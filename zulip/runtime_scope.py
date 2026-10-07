@@ -116,6 +116,12 @@ RECOMMENDED_PRESET: dict[str, str] = {
     "ZULIP_TOPIC_SESSIONS": "true",
     "ZULIP_SOFT_GATE": "false",
     "ZULIP_REACTION_TRIGGERS": json.dumps(RECOMMENDED_REACTION_TRIGGERS),
+    # What silence means for an unanswered exec approval (#222). The gateway
+    # refuses it on every supported host; this makes the install say so and
+    # record it, which is the fail-closed statement the epic asks for. `allow`
+    # (the built-in default) stays what it always was, so an install that never
+    # sets the marker is unaffected.
+    "ZULIP_APPROVAL_ON_TIMEOUT": "deny",
 }
 
 #: Presets by profile name, so a second profile is a table entry rather than a
