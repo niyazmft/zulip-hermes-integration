@@ -1,7 +1,7 @@
 """Regression tests for the per-session queue wedge and its watchdog (issue #151).
 
-Found live on lab-hermes: a single ``/status`` message wedged a whole topic. The
-mechanism is that the queue's drain is driven **only** by the host's
+Found live on a local test deployment: a single ``/status`` message wedged a whole
+topic. The mechanism is that the queue's drain is driven **only** by the host's
 ``on_processing_complete`` hook. A turn the gateway answers itself — a native
 slash command — never starts an agent run, so that hook never fires. The session
 stayed marked in-flight forever and every later message queued behind a run that

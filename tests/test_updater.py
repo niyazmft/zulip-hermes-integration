@@ -163,7 +163,7 @@ class TestPerformUpdateUsesTargetManifest:
         assert (plugin_dir / "__init__.py").read_text(encoding="utf-8") == "new"
 
     def test_a_broken_install_is_repairable(self, monkeypatch, tmp_path):
-        """The state device 8x was left in: manifest present, modules absent."""
+        """The broken state an incomplete install leaves behind: manifest present, modules absent."""
         installed = {"version.py": "old"}
         target = {
             "__init__.py": "new",
@@ -196,7 +196,7 @@ class TestUpdateShellScriptShips:
     The README documents ``bash ~/.hermes/plugins/zulip/update.sh``, but the
     script lived at the repo root and was absent from PLUGIN_FILES -- so the
     updater never deployed it and that documented path did not exist on a fresh
-    install. Device 8x had a hand-written replacement, which is how it drifted
+    install. A hand-written replacement on one deployment is how it drifted
     into a variant that claimed restarts it never performed.
     """
 
