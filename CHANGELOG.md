@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.0] - 2026-10-07
+
+Approvals became the milestone's subject because they are where a chat surface
+touches the operator's host: a prompt is posted into a shared topic, runs a
+command with the operator's credentials, and until now anyone who could read that
+topic could answer it. This release closes that, records every decision, and
+makes what silence means an explicit promise — while a stream bot's own traffic
+can no longer keep a conversation alive, and a slash command can no longer be
+swallowed before the gateway that owns it sees it.
+
+### Added
+- **Owner-only exec approvals.** `ZULIP_APPROVAL_AUTHORITY=owner` — the recommended profile's value — refuses a decision from anyone but the bot owner: it is stated in the topic, audited with the decider, and **not counted**, so the prompt stays open for the owner and the unanswered-approval default still applies. A refusal is enforced on the inbound path a decision already takes, so the button path and the plain-text fallback cannot differ, and it holds on gateways that never render a widget. The owner identity is the one the DM allowlist is seeded from (`bot_owner_id` fetched from Zulip, or the explicit `ZULIP_OWNER_EMAIL`); with none resolvable the feature fails closed — nobody may decide — and both the startup log and the room name the setting that fixes it. ([#228](https://github.com/niyazmft/zulip-hermes-integration/issues/228), [#262](https://github.com/niyazmft/zulip-hermes-integration/pull/262))
+- **Approval outcomes are recorded, and a refusal can be stated.** Every resolved exec approval now lands in the audit log with its choice, its decider (the person who clicked, or `timeout` / `policy` / `cancelled` / `undelivered`) and the request id minted for the prompt, so "who let this run, and did anyone?" is a lookup rather than a guess. `ZULIP_APPROVAL_ON_TIMEOUT=deny` — also the recommended profile's value — additionally posts one refusal line in the prompt's own topic where the host posts no timeout notice of its own (hosts below 0.21.4), and stays quiet where it does. ([#222](https://github.com/niyazmft/zulip-hermes-integration/issues/222), [#261](https://github.com/niyazmft/zulip-hermes-integration/pull/261))
+
+### Fixed
+- **A turn that failed, or that produced nothing, no longer ends in silence.** A run the gateway reports as FAILURE or CANCELLED corrects the ✅ it was given and marks ⚠️, and a run that delivered nothing posts one short line in its own route instead of leaving the room with a tick and no answer. ([#219](https://github.com/niyazmft/zulip-hermes-integration/issues/219), [#257](https://github.com/niyazmft/zulip-hermes-integration/pull/257))
+- **Another bot's traffic can no longer keep a topic engaged.** Sticky engagement accepted any message in an engaged topic and refreshed its idle TTL, so a second bot answering there kept the window open with traffic that was never addressed to us — outliving the human who opened it. A bot sender is now skipped by a pure sender check (our own identity, or the realm's `<name>-bot@…` address convention): not accepted *because* the topic is engaged, and never allowed to refresh the TTL. A loop-prevention invariant, deliberately not configurable. ([#221](https://github.com/niyazmft/zulip-hermes-integration/issues/221), [#258](https://github.com/niyazmft/zulip-hermes-integration/pull/258))
+- **A slash command in a mention-gated stream never reached the gateway.** The trigger gate sits before the command interception, so `/approve`, `/deny`, `/model`, `/help` and every other gateway-native command sent in a mention-gated stream was dropped before the host that owns it saw it. Under the recommended profile that made the exec-approval buttons dead: a click sends an ordinary `/approve` or `/deny` from the clicker, so the window lapsed into a refusal as if nobody had answered. A command is not conversation — it now bypasses the *trigger* gate only, while the sender rate limit, the stream filter, group policy and stream policy keep their order and their effect, and slash-command authorization stays the host's. ([#259](https://github.com/niyazmft/zulip-hermes-integration/issues/259), [#260](https://github.com/niyazmft/zulip-hermes-integration/pull/260))
+
+### Docs
+- The two new approval keys are documented where an operator will look for them: a `## Exec Approvals` section and both rows of the environment reference in `README.md`, the opt-in behaviour table in `AGENTS.md`, the parity matrix, `.env.example`, and the recommended-profile spec — which also states plainly that the gateway owns the approval timeout and refuses an unanswered request either way, so no setting can make silence run a command.
+- Local deployment-target names were removed from the changelog and from test comments, so the repository describes the environment rather than somebody's box. ([#254](https://github.com/niyazmft/zulip-hermes-integration/pull/254))
+
+### Internal
+- `CONTRIBUTING.md § Rules That Bite` gained class 9 — *state kept alive by traffic that was never addressed to us* — with the engagement loop as its first instance and the new tests named as partial coverage; the recommended-profile preset tables gained both approval knobs. ([#258](https://github.com/niyazmft/zulip-hermes-integration/pull/258))
+- The suite now fails when `zulip/plugin.yaml` or `CHANGELOG.md` states a version other than `zulip/version.py::__version__`, which is the source of truth. ([#256](https://github.com/niyazmft/zulip-hermes-integration/pull/256))
+
+### Contributors
+- [@niyazmft](https://github.com/niyazmft) — [#254](https://github.com/niyazmft/zulip-hermes-integration/pull/254), [#256](https://github.com/niyazmft/zulip-hermes-integration/pull/256), [#257](https://github.com/niyazmft/zulip-hermes-integration/pull/257), [#258](https://github.com/niyazmft/zulip-hermes-integration/pull/258), [#260](https://github.com/niyazmft/zulip-hermes-integration/pull/260), [#261](https://github.com/niyazmft/zulip-hermes-integration/pull/261), [#262](https://github.com/niyazmft/zulip-hermes-integration/pull/262)
+
 ## [1.11.0] - 2026-10-06
 
 ### Added

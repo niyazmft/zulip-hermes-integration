@@ -20,7 +20,7 @@ please report either as a security issue.
 
 | Component | Supported version |
 |-----------|-------------------|
-| Plugin | `1.11.0` — the current release; security fixes land on the latest release and `main` (`zulip/version.py::__version__`, `__repo__`) |
+| Plugin | `1.12.0` — the current release; security fixes land on the latest release and `main` (`zulip/version.py::__version__`, `__repo__`) |
 | Hermes gateway | `>= 0.18.2` (`zulip/version.py::__min_hermes__`) |
 
 Security patches are applied to the latest release only. Older plugin versions are
@@ -320,6 +320,9 @@ Events are written as JSON lines by `zulip/audit_logger.py`.
 | `secret_leak_blocked` | Outbound message refused for containing a host credential | `zulip/adapter.py::ZulipAdapter._refuse_secret_leak`, `_standalone_send` |
 | `media_upload_blocked` | An upload was refused by the name-based denylist | `zulip/media.py::_audit_refused_upload` |
 | `activity_trace_recovered` | An interrupted trace message was finalized after restart | `zulip/adapter.py` (trace recovery path) |
+| `dispatch_turn`, `deliver_payload`, `deliver_skipped`, `deliver_empty`, `deliver_failed` | Whether a reply was dispatched and what became of it (Issue #145) | `zulip/inbound_queue.py::SessionQueueController._dispatch_turn`, `zulip/outbound.py` |
+| `approval_outcome` | An exec approval resolved: the choice, the decider (`timeout` / `policy` / a masked address) and the request id minted for the prompt | `zulip/adapter.py::ZulipAdapter.report_approval_outcome` |
+| `approval_rejected` | A decision was refused because the sender is not the bot owner, and was therefore not counted | `zulip/adapter.py::ZulipAdapter.reject_approval_decision` |
 
 **Defined but never emitted** (helpers exist, no call site — do not treat these
 as coverage): `monitor_start`, `monitor_stop`, `auth_failure`
@@ -328,10 +331,10 @@ as coverage): `monitor_start`, `monitor_stop`, `auth_failure`
 
 ### Gaps — what is *not* audited
 
-- **Delivery outcomes.** Whether a reply/upload actually reached Zulip is not
-  audited today; send failures surface on the process log only (tracked in
-  Issue #145). "No `secret_leak_blocked` line" therefore does **not** imply a
-  message was delivered.
+- **Delivery outcomes.** ``dispatch_turn`` and the ``deliver_*`` events pair up
+  (Issue #145), so "ran and had nothing to send" and "never ran" are
+  distinguishable — but they record only that a message was handed to Zulip,
+  not that a human saw it, and an upload's own success is not a separate event.
 - **Non-policy message drops.** Stream drops for "no trigger" (chatmode/mention
   gating), stream-filter misses, and self-message filtering are process-log
   `debug` lines, not audit events (`zulip/adapter.py::_handle_message`).
@@ -472,6 +475,21 @@ sets it should know what they did not type:
   (`zulip/history.py::AddressedTopicTracker`).
 * `ZULIP_ACTIVITY_TRACE` becomes on: one bot-owned status message per run, edited
   in place.
+* `ZULIP_APPROVAL_AUTHORITY` becomes `owner`: only the **bot owner** may decide
+  an exec approval. A decision from anyone else is refused, stated in the topic
+  and audited (`approval_rejected`) — and **not counted**, so the prompt stays
+  open for the owner and the gateway's timeout still refuses an unanswered
+  request. The owner is the same identity the DM allowlist is seeded from, so
+  under this profile an unresolvable owner blocks **both** DMs and every
+  approval decision until `ZULIP_OWNER_EMAIL` is set
+  (`zulip/approval_outcomes.py::rejection_reason`,
+  `zulip/adapter.py::ZulipAdapter.gate_approval_decision`).
+* `ZULIP_APPROVAL_ON_TIMEOUT` becomes `deny`: an approval nobody answers is
+  stated in the prompt's topic and audited with `timeout` as the decider. The
+  **gateway** owns the approval timeout and refuses an unanswered request on
+  every supported host, so this key changes what the install says and records,
+  not what happens — no setting can make silence run a command
+  (`zulip/settings.py::resolve_approval_on_timeout`).
 
 **The stream posture does not move.** `ZULIP_GROUP_POLICY` stays `open`, so any
 realm member who can mention the bot can also trigger it in a stream — exactly as
