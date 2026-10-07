@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Internal
+- **Release pages are short and reader-first, and their highlights are written rather than derived.** The body leads with the version, a one-paragraph summary, themed `**Highlights**` and a scale line; the curated prose and GitHub's generated PR list sit in collapsed `<details>` sections, closing with links to the rendered changelog, the raw Markdown and the compare range. A missing `### Highlights` block is an error, and the suite enforces a floor on highlight length and a ceiling on the visible page. v1.10.0, v1.10.1, v1.11.0 and v1.12.0 were regenerated. ([#265](https://github.com/niyazmft/zulip-hermes-integration/issues/265), [#266](https://github.com/niyazmft/zulip-hermes-integration/pull/266), [#267](https://github.com/niyazmft/zulip-hermes-integration/issues/267), [#268](https://github.com/niyazmft/zulip-hermes-integration/pull/268))
+- **Every release now credits every contributor.** v1.5.0, v1.6.0, v1.7.0 and v1.8.0 mentioned no contributor at all, so @jamie-dit's v1.8.0 contribution was credited nowhere on its page; all four gained a `### Contributors` section and a compare link, and a re-audit of all 13 releases against GitHub's own `by @user` record reports no missing author. ([#267](https://github.com/niyazmft/zulip-hermes-integration/issues/267), [#268](https://github.com/niyazmft/zulip-hermes-integration/pull/268))
+
 ## [1.12.0] - 2026-10-07
 
 Approvals became the milestone's subject because they are where a chat surface
