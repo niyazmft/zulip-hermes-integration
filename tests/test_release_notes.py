@@ -28,6 +28,10 @@ CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 # Keep it short enough to be scanned in one screen; the detail is one click away.
 MAX_VISIBLE_LINES = 30
 
+# A highlight is a themed line that says what changed, not a bare label. This is
+# the floor that stops one-word-per-change summaries coming back.
+MIN_HIGHLIGHT_CHARS = 80
+
 FIXTURE = """\
 # Changelog
 
@@ -123,13 +127,21 @@ class TestParsing:
             "Contributors",
         ]
 
-    def test_highlight_line_is_the_bolded_lead_plus_refs(self):
-        bullet = "- **Thing.** Because of reasons. ([#7](u), [#8](v))"
-        assert release_notes.highlight_line(bullet) == "- **Thing.** ([#7](u), [#8](v))"
+    def test_highlight_lines_come_from_the_highlights_block(self):
+        assert release_notes.highlight_lines("- **A.** b.", "1.0.0") == ["- **A.** b."]
 
-    def test_highlight_line_deduplicates_refs(self):
-        bullet = "- **Thing.** ([#7](u)) and again ([#7](u))"
-        assert release_notes.highlight_line(bullet).count("[#7](u)") == 1
+    def test_missing_highlights_block_is_an_error_not_a_terse_page(self, capsys):
+        """Highlights are written; a release with none must not publish labels instead."""
+        with pytest.raises(SystemExit) as exc:
+            release_notes.highlight_lines(None, "1.0.0")
+        assert exc.value.code == 1
+        assert "no '### Highlights' block" in capsys.readouterr().err
+
+    def test_empty_highlights_block_is_an_error(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            release_notes.highlight_lines("\n", "1.0.0")
+        assert exc.value.code == 1
+        assert "has no '- ' bullets" in capsys.readouterr().err
 
     def test_github_slug_matches_the_published_anchor(self):
         """The compare-page anchor is computed, so pin the algorithm on a real heading."""
@@ -153,13 +165,8 @@ class TestScaleAndCredit:
         one = "* feat: x by @a in https://example.com/pull/1\n"
         assert release_notes.scale_line(one) == "**1 pull request · 1 contributor**"
 
-    def test_thanks_line_links_every_unique_author(self):
-        thanks = release_notes.thanks_line(GENERATED)
-        assert thanks == "**Thanks** [@someone](https://github.com/someone), [@other](https://github.com/other)"
-
-    def test_empty_generated_has_no_scale_or_thanks(self):
+    def test_empty_generated_has_no_scale(self):
         assert release_notes.scale_line("") == ""
-        assert release_notes.thanks_line("") == ""
 
 
 class TestBodyShape:
@@ -172,20 +179,12 @@ class TestBodyShape:
         # Highlights come before any collapsed detail.
         assert body.index("**Highlights**") < body.index("<details>")
 
-    def test_explicit_highlights_block_wins(self, fixture_changelog):
+    def test_highlights_are_used_verbatim(self, fixture_changelog):
         body = build()
-        assert "- **Explicit highlight wins.** ([#1](https://example.com/pull/1))" in body
+        assert "- **Explicit highlight wins.** ([#1](https://example.com/pull/1))" in visible_text(body)
+        # Derived labels from the detailed sections must not leak onto the page.
         assert "- **A bolded lead is a highlight.**" not in visible_text(body)
-
-    def test_derived_highlights_cover_added_and_fixed_only(self, fixture_changelog):
-        text = FIXTURE.replace("### Highlights\n\n- **Explicit highlight wins.** ([#1](https://example.com/pull/1))\n\n", "")
-        path = fixture_changelog
-        path.write_text(text, encoding="utf-8")
-        body = build()
-        visible = visible_text(body)
-        assert "- **A bolded lead is a highlight.**" in visible
-        assert "- **A fix is also a highlight.**" in visible
-        assert "Not a highlight" not in visible
+        assert "- **A fix is also a highlight.**" not in visible_text(body)
 
     def test_detail_is_collapsed_in_expandable_sections(self, fixture_changelog):
         body = build()
@@ -217,11 +216,20 @@ class TestBodyShape:
         body = build(with_contributors=True)
         assert "### Contributors" in body
 
+    def test_no_standalone_thanks_line(self, fixture_changelog):
+        """The collapsed list already credits every author as `by @user`.
+
+        A second name list on the page is duplication, and the collapsed
+        @mentions still feed GitHub's avatar strip.
+        """
+        body = build()
+        assert "**Thanks**" not in body
+        assert "by @someone" in body
+
     def test_missing_generated_notes_are_stated_not_hidden(self, fixture_changelog):
         """A page that quietly dropped its credit record would still look complete."""
         body = build(generated="", generated_missing=True)
         assert "credit is missing" in body
-        assert "**Thanks**" not in body
 
     def test_unknown_version_exits_non_zero(self, fixture_changelog, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -231,7 +239,7 @@ class TestBodyShape:
 
 
 class TestChangelogConvention:
-    """Highlights are derived from the bolded lead, so the convention is load-bearing."""
+    """Highlights are written, so the newest entry must carry them."""
 
     def _newest_entry(self) -> tuple[str, list[tuple[str, str]]]:
         text = CHANGELOG.read_text(encoding="utf-8")
@@ -243,26 +251,42 @@ class TestChangelogConvention:
         version, sections = self._newest_entry()
         headings = [heading for heading, _ in sections]
         assert headings, f"the {version} entry has no sections"
-        bullets: list[str] = []
-        for heading, section_body in sections:
-            if heading in release_notes.HIGHLIGHT_SECTIONS:
-                bullets.extend(release_notes.bullets(section_body))
-        assert bullets, (
-            f"the {version} entry has no Added or Fixed bullets, so the release page "
-            "would publish no highlights"
+        explicit = next((b for h, b in sections if h == "Highlights"), None)
+        assert explicit is not None, (
+            f"the {version} entry has no '### Highlights' block, so the release "
+            "page builder would refuse to run"
+        )
+        assert release_notes.bullets(explicit), (
+            f"the {version} '### Highlights' block has no '- ' bullets, so the release "
+            "page would publish no highlights"
         )
 
-    def test_every_highlight_source_bullet_starts_with_a_bolded_lead(self):
-        """`- **Claim.** explanation` is what makes a one-line highlight possible."""
+    def test_every_highlight_says_what_changed(self):
+        """A highlight is a description, not a one-word label.
+
+        The failure this guards is the page that listed ``**Rate Limiting**`` and
+        nothing else: a reader learns a topic, not a change.
+        """
         version, sections = self._newest_entry()
-        for heading, section_body in sections:
-            if heading not in release_notes.HIGHLIGHT_SECTIONS:
-                continue
-            for bullet in release_notes.bullets(section_body):
-                assert release_notes.BOLD_LEAD_RE.match(bullet), (
-                    f"{version} {heading} bullet has no bolded lead, so the release "
-                    f"page highlight degrades to raw prose: {bullet[:80]!r}"
-                )
+        explicit = next(b for h, b in sections if h == "Highlights")
+        for line in release_notes.bullets(explicit):
+            assert len(line) >= MIN_HIGHLIGHT_CHARS, (
+                f"{version} highlight is too short to say what changed "
+                f"({len(line)} chars, want >= {MIN_HIGHLIGHT_CHARS}): {line!r}"
+            )
+
+    def test_backfilled_entries_carry_highlights_too(self):
+        """The four releases whose pages are regenerated from the CHANGELOG."""
+        text = CHANGELOG.read_text(encoding="utf-8")
+        for version in ("1.12.0", "1.11.0", "1.10.1", "1.10.0"):
+            match = release_notes.find_entry(text, version)
+            assert match is not None, f"CHANGELOG.md is missing [{version}]"
+            sections = release_notes.split_entry(match[1])[1]
+            explicit = next((b for h, b in sections if h == "Highlights"), None)
+            assert explicit and release_notes.bullets(explicit), (
+                f"[{version}] has no '### Highlights' block, so its release page "
+                "cannot be rebuilt"
+            )
 
     def test_current_version_builds_a_real_body_from_the_real_changelog(self):
         from zulip.version import __version__
