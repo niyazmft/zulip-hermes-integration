@@ -128,6 +128,9 @@ optional_env:
   - name: ZULIP_APPROVAL_ON_TIMEOUT
     description: 'What an unanswered exec approval means: "allow" (default, today''s behaviour) or "deny" (fail closed — the bot says in the topic that the request was refused and records the timeout). The gateway owns the approval timeout and refuses an unanswered request either way; this key decides what the install promises about silence. The recommended profile sets "deny".'
     prompt: "Unanswered exec approvals"
+  - name: ZULIP_APPROVAL_AUTHORITY
+    description: 'Who may decide an exec approval: "anyone" (default, today''s behaviour — anyone who can see the prompt) or "owner" (only the bot owner, resolved from Zulip or ZULIP_OWNER_EMAIL; a decision from anyone else is refused and the prompt stays open for the owner). When "owner" is set and no owner can be resolved, nobody may decide. The recommended profile sets "owner".'
+    prompt: "Who may approve exec requests"
   - name: ZULIP_STREAM_OVERRIDES
     description: 'Per-stream chatmode overrides as a JSON object, e.g. {"bot lab": {"chatmode": "onmessage"}}'
     prompt: "Per-stream chatmode overrides (JSON)"

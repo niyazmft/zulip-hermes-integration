@@ -122,6 +122,11 @@ RECOMMENDED_PRESET: dict[str, str] = {
     # (the built-in default) stays what it always was, so an install that never
     # sets the marker is unaffected.
     "ZULIP_APPROVAL_ON_TIMEOUT": "deny",
+    # Who may decide an exec approval (#228). The prompt is posted into a shared
+    # topic, so "anyone who can read it" is a privilege escalation through a
+    # side channel: the preset restricts the decision to the bot owner #214
+    # resolves, and refuses (rather than falls back to open) when none can be.
+    "ZULIP_APPROVAL_AUTHORITY": "owner",
 }
 
 #: Presets by profile name, so a second profile is a table entry rather than a

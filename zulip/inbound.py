@@ -701,23 +701,23 @@ async def handle_message(adapter: Any, message: dict) -> None:
         metadata=extra_meta,
     )
 
-    # --- Approval decisions (issue #222) ---
+    # --- Approval decisions (issue #222, authority #228) ---
     #
     # An exec-approval click is an ordinary ``/approve`` or ``/deny`` message
     # from the decider, and the gateway's ``post_approval_response`` hook carries
     # no human identity on the gateway surface — so the sender is recorded here,
-    # on the way to the host that will resolve the approval. Nothing is consumed,
-    # answered or authorised: the message still reaches the gateway, which owns
-    # slash authorization and the decision itself. Recorded after every policy
-    # gate (an unauthorized sender never gets this far) and before dispatch, so
-    # the record exists by the time the outcome fires.
+    # on the way to the host that will resolve the approval. Under
+    # ``ZULIP_APPROVAL_AUTHORITY=owner`` (#228) the message is instead consumed
+    # when the sender is not the bot owner: the gateway never resolves it, the
+    # prompt stays open for the owner, and the refusal is stated and audited.
+    # Recorded after every policy gate (an unauthorized sender never gets this
+    # far) and before dispatch, so the record exists by the time the outcome
+    # fires.
     if is_command(content) and is_approval_decision(content):
-        adapter.note_approval_decider(
-            session_key=adapter._session_key_for_event(event) or "",
-            chat_id=source.chat_id,
-            topic=message.get("subject", "") if msg_type == "stream" else None,
-            sender_email=message.get("sender_email", ""),
-        )
+        if not await adapter.gate_approval_decision(
+            message=message, event=event, msg_type=msg_type, message_id=message_id
+        ):
+            return
 
     # --- Per-session queue (issue #151) ---
     #

@@ -549,6 +549,11 @@ class ZulipAdapter(BasePlatformAdapter):
         # the agent thread).
         self._approval_ledger = approval_outcomes.ApprovalLedger()
         self._zulip_loop: Optional[asyncio.AbstractEventLoop] = None
+        # The owner address #214 resolved, remembered so the approval authority
+        # (#228) and the DM allowlist cannot disagree about who the owner is.
+        # Empty until a lookup (or the explicit override, read through the policy
+        # engine) supplies one.
+        self._resolved_bot_owner_email = ""
 
         # Persistent queue and dedupe
         self._queue_mgr = ZulipQueueManager(
@@ -713,6 +718,11 @@ class ZulipAdapter(BasePlatformAdapter):
         bot. Every failure path ends in the loud, actionable warning that names
         the setting which fixes it, so an operator is never left guessing why
         nobody can DM the bot.
+
+        The resolved address is also remembered as *the* owner identity
+        (``_resolved_bot_owner_email``), because the approval authority (#228)
+        must ask the same question of the same resolver -- a second owner concept
+        is the drift the epic forbids.
         """
         if not self._policy.needs_bot_owner_lookup():
             return
@@ -751,6 +761,7 @@ class ZulipAdapter(BasePlatformAdapter):
                 "zulip DM allowlist seeded with the bot owner [owner=%s]",
                 mask_pii(email),
             )
+        self._resolved_bot_owner_email = email
 
     @staticmethod
     def _validate_message_id(message_id: Any) -> int:
@@ -2262,6 +2273,137 @@ class ZulipAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.debug("zulip approval route ledger failed", exc_info=True)
+
+    def bot_owner_address(self) -> str:
+        """The bot owner's address as #214 resolved it, or "" when unresolved.
+
+        One source for both consumers: the DM allowlist seeding writes it, the
+        approval authority (#228) reads it, and ``ZULIP_OWNER_EMAIL`` is the
+        explicit override in both cases. Never a second lookup, never a second
+        notion of who the owner is.
+        """
+        return self._resolved_bot_owner_email or self._policy.owner_email
+
+    def report_approval_authority(self) -> None:
+        """Say at startup what the approval authority resolved to (#228).
+
+        Failing closed is correct and silent, which is the problem: an install
+        under ``ZULIP_APPROVAL_AUTHORITY=owner`` with no owner address would
+        discover it only when the first prompt refused every decision. Called
+        after the connect-time owner lookup, and mirrors #214's DM warning by
+        naming the one setting that fixes it.
+        """
+        if approval_outcomes.current_authority() != approval_outcomes.APPROVAL_AUTHORITY_OWNER:
+            return
+        owner = self.bot_owner_address()
+        if owner:
+            logger.info(
+                "zulip exec approvals are owner-only [owner=%s]", mask_pii(owner)
+            )
+        else:
+            logger.warning(approval_outcomes.unresolved_authority_warning())
+
+    async def gate_approval_decision(
+        self, *, message: dict, event: Any, msg_type: str, message_id: Any
+    ) -> bool:
+        """Record an exec-approval decision, or refuse one that is not authorized.
+
+        Returns True when the decision may proceed to the gateway. Under
+        ``ZULIP_APPROVAL_AUTHORITY=owner`` (#228) a decision from anyone but the
+        bot owner is refused: the message is consumed here, so the gateway never
+        resolves the approval, the prompt stays open for the owner, and #222's
+        unanswered default still applies. A refused decision is not a decision.
+
+        Both delivery paths meet here, because both *are* a message from the
+        decider: the zform button replies with ``/approve``-family text on hosts
+        >= 0.21.3, and a client that renders no widget types the same command —
+        and on hosts below 0.21.3 the gateway's own plain-text prompt is answered
+        the same way. The rule therefore cannot differ between them, and it does
+        not depend on ``ExecApprovalPrompt`` existing at all.
+        """
+        sender_email = str(message.get("sender_email") or "")
+        chat_id = str(event.source.chat_id or "")
+        topic = message.get("subject", "") if msg_type == "stream" else None
+        session_key = self._session_key_for_event(event) or ""
+
+        reason = approval_outcomes.rejection_reason(
+            sender_email, self.bot_owner_address()
+        )
+        if reason is not None:
+            await self.reject_approval_decision(
+                reason=reason,
+                sender_email=sender_email,
+                session_key=session_key,
+                chat_id=chat_id,
+                topic=topic,
+                message_id=message_id,
+            )
+            return False
+
+        self.note_approval_decider(
+            session_key=session_key,
+            chat_id=chat_id,
+            topic=topic,
+            sender_email=sender_email,
+        )
+        return True
+
+    async def reject_approval_decision(
+        self,
+        *,
+        reason: str,
+        sender_email: str,
+        session_key: str = "",
+        chat_id: str = "",
+        topic: Optional[str] = None,
+        message_id: Any = None,
+    ) -> None:
+        """Refuse a decision, say so in the prompt's route, and audit it (#228).
+
+        Best-effort in every direction: the point is that the *decision* was not
+        counted, which the caller has already ensured by consuming the message.
+        A noisy log, one short line and an audit entry make the refusal findable.
+        """
+        decider = approval_outcomes.audit_decider(sender_email)
+        request_id = self._approval_ledger.pending_request_id(
+            session_key, chat_id=chat_id, topic=topic or ""
+        )
+        if reason == approval_outcomes.REJECT_NO_OWNER:
+            # The operator's setting is the cause, so this is a warning rather
+            # than an ordinary refusal, and it names the setting that fixes it.
+            logger.warning(approval_outcomes.unresolved_authority_warning())
+        else:
+            logger.info(
+                "zulip approval decision refused [reason=%s decider=%s request=%s]",
+                reason,
+                decider,
+                request_id,
+            )
+        try:
+            await self._audit_logger.log_approval_rejected(
+                reason=reason,
+                decider=decider,
+                request_id=request_id,
+                session_key=session_key,
+                chat_id=chat_id or None,
+                topic=topic,
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip approval rejection audit failed: %s", mask_pii(str(e))
+            )
+        try:
+            await approvals.send_plain_to_route(
+                self,
+                chat_id,
+                topic,
+                approval_outcomes.authority_rejection_notice(reason),
+            )
+        except Exception as e:
+            logger.warning(
+                "zulip approval rejection notice failed: %s", mask_pii(str(e))
+            )
+        await self._mark_read(message_id)
 
     def note_approval_decider(
         self,

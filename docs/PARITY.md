@@ -73,6 +73,7 @@ and the note says so. Verify on the sibling side before claiming `both`.
 | Session archive repair for hosts without hard links | `sister-only` | — | `session-archive-repair.ts` |
 | Native exec-approval buttons via the `zform` widget | `hermes-only` | `#131` | — |
 | Approval-outcome audit + fail-closed refusal line (`ZULIP_APPROVAL_ON_TIMEOUT`) | `hermes-only` | `#222` | — |
+| Owner-only exec approvals (`ZULIP_APPROVAL_AUTHORITY`) | `hermes-only` | `#228` | — |
 | Admin actions (`/streams`, `/user`, `/pin`, `/unpin`) | `hermes-only` | `admin_actions.py` | *different action set* |
 | Per-topic conversation sessions | `hermes-only` | `_topic_sessions_enabled` | — |
 | Per-stream chatmode overrides (`ZULIP_STREAM_OVERRIDES`) | `hermes-only` | `_resolve_stream_overrides` | — |

@@ -275,6 +275,35 @@ class AuditLogger:
             details["topic"] = topic
         await self._log_delivery_event("approval_outcome", details)
 
+    async def log_approval_rejected(
+        self,
+        *,
+        reason: str,
+        decider: str,
+        request_id: str = "",
+        session_key: str = "",
+        chat_id: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> None:
+        """Record a decision that was refused (#228).
+
+        A refused decision is not a decision: the gateway never sees it, the
+        prompt stays open, and #222's unanswered default still applies. The entry
+        exists so the attempt is a lookup rather than a guess — ``decider`` is the
+        person who clicked (masked by the caller), and ``reason`` says which rule
+        fired (``not_owner`` / ``no_owner``).
+        """
+        details: dict[str, Any] = {"reason": reason, "decider": decider}
+        if request_id:
+            details["request_id"] = request_id
+        if session_key:
+            details["session_key"] = session_key
+        if chat_id:
+            details["chat_id"] = chat_id
+        if topic is not None:
+            details["topic"] = topic
+        await self._log_delivery_event("approval_rejected", details)
+
     async def _log_delivery_event(
         self, event_type: str, details: dict[str, Any]
     ) -> None:

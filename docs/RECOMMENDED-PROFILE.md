@@ -48,6 +48,12 @@ about silence, not a second decision path: the gateway owns the approval
 `timeout` and refuses an unanswered request on every host this plugin supports,
 so no configuration can make silence run a command (#222).
 
+**Owner-only approvals:** a prompt is posted into a topic, so "anyone who can
+read it" is a privilege escalation through a side channel — a coworker approving
+the owner's bot running a command on the owner's host. The preset restricts the
+decision to the bot owner #214 resolves, and refuses rather than falling back to
+open when no owner can be resolved (#228).
+
 ---
 
 ## What the preset actually sets
@@ -65,6 +71,7 @@ so no configuration can make silence run a command (#222).
 | `ZULIP_TOPIC_SESSIONS` | `true` | `false` | |
 | `ZULIP_SOFT_GATE` | `false` | `false` | |
 | `ZULIP_APPROVAL_ON_TIMEOUT` | `deny` | `allow` | Silence is a refusal, and the bot says so and records it. The gateway owns the timeout and refuses either way (#222) |
+| `ZULIP_APPROVAL_AUTHORITY` | `owner` | `anyone` | Only the bot owner may decide an exec approval — the same identity #214 resolves for the DM allowlist (#228) |
 | `ZULIP_REACTION_TRIGGERS` | the five above | none | Off by default for legacy installs |
 
 ### Why the preset moves `ZULIP_CHATMODE` when the epic's table named `ZULIP_REQUIRE_MENTION`

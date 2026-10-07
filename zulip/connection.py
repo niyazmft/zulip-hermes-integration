@@ -137,6 +137,10 @@ class ZulipConnection:
             # rather than raising, because streams work regardless and a DM-only
             # misconfiguration must not take the bot offline.
             await adapter.seed_bot_owner_dm_allowlist(result)
+            # 2c. The same owner identity decides exec approvals (#228) under
+            # ``ZULIP_APPROVAL_AUTHORITY=owner``, and failing closed is right but
+            # silent — so say now whether there is an owner to accept one.
+            adapter.report_approval_authority()
         except Exception as e:
             logger.error(
                 format_zulip_log(

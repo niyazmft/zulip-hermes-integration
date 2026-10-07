@@ -160,6 +160,12 @@ def test_an_explicit_value_wins_for_every_knob(monkeypatch):
             "allow",
             "deny",
         ),
+        "ZULIP_APPROVAL_AUTHORITY": (
+            "anyone",
+            settings.resolve_approval_authority,
+            "anyone",
+            "owner",
+        ),
         # The trigger set is applied in the adapter (L6), so it is resolved
         # through the adapter's own helper rather than a settings resolver.
         "ZULIP_REACTION_TRIGGERS": (

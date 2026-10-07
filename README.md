@@ -27,6 +27,7 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 - [Progressive Activity Trace](#progressive-activity-trace)
 - [History-aware Context](#history-aware-context)
 - [In-Channel Action Triggers](#in-channel-action-triggers)
+- [Exec Approvals](#exec-approvals)
 - [Sticky Engagement](#sticky-engagement)
 - [Per-Session Queue](#per-session-queue)
 - [Stream Watching](#stream-watching)
@@ -412,6 +413,46 @@ Deliberately **not** supported: launching arbitrary named workflows or scripts. 
 is an instruction to the agent already in this conversation, so its blast radius equals
 someone typing that sentence.
 
+## Exec Approvals
+
+Hermes stops before a dangerous command and asks the room. On Hermes `>= 0.21.3` the
+Zulip adapter renders that prompt natively — one message of context and one zform
+message whose buttons are **Allow Once / Allow Session / Always Allow / Deny**; on older
+gateways the prompt is plain text with `/approve` and `/deny` instructions, and either
+way the click or the typed command reaches the gateway (a slash command is never
+mention-gated).
+
+**Nobody answering is a refusal, and the bot says so.** Once the gateway's
+`approvals.timeout` elapses the command does *not* run — on every host this plugin
+supports. `ZULIP_APPROVAL_ON_TIMEOUT` decides what the *install promises* about that
+silence, and therefore what the bot states and records:
+
+| Value | What happens when nobody answers |
+|-------|----------------------------------|
+| `allow` *(default)* | Today's behaviour exactly: the gateway's own outcome stands and the bot adds nothing to the topic. |
+| `deny` | The refusal is stated in the prompt's topic and recorded — one line saying the request was refused, plus an audit entry naming `timeout` as the decider. **The recommended profile sets this.** On hosts `>= 0.21.4` the gateway posts its own timeout notice, so the bot stays quiet instead of repeating it. |
+
+Whichever value is set, a person's `/deny` is confirmed in the topic by the gateway, and
+the bot does not duplicate it. Every resolved approval also lands in the audit log with
+its choice, its decider (the person who clicked, or `timeout` / `policy` / `cancelled` /
+`undelivered`) and the request id the plugin minted for the prompt, so "who let this run,
+and did anyone?" is a lookup rather than a guess. This key is a policy statement, not a
+second decision path: the buttons remain the only way to approve, and no setting can make
+silence run a command.
+
+**Who may decide.** The prompt lands in a *topic*, so on a shared work Zulip "anyone who
+can read it" is a privilege escalation through a side channel: a coworker approves your bot
+running a command on your host, with your credentials, and the audit names the coworker as
+the decider of your bot.
+
+| `ZULIP_APPROVAL_AUTHORITY` | What happens when someone decides |
+|-------|-----------------------------------|
+| `anyone` *(default)* | Today's behaviour exactly: anyone who can see the prompt may answer it. |
+| `owner` | Only the bot owner may decide — the identity Zulip reports as the bot's `bot_owner_id`, or `ZULIP_OWNER_EMAIL` when you name it explicitly. Anyone else's `/approve` or `/deny` is refused: it is stated in the topic, audited with their identity, and **not counted**, so the prompt stays open for you and the timeout default still applies. **The recommended profile sets this.** If no owner can be resolved, nobody can decide — including you — and the bot says so in the topic and in the startup log, naming `ZULIP_OWNER_EMAIL` as the fix. |
+
+A refusal is a rule, not a second UI: there is no approver list to configure, because a
+set of approvers would recreate the problem it is meant to close.
+
 ## Sticky Engagement
 
 > `@**hermes-bot** fix the typo in the README` → then, **without
@@ -630,33 +671,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | Variable | Default | Example | Notes |
 |----------|---------|---------|-------|
 | `ZULIP_APPROVAL_ON_TIMEOUT` | `allow` | `deny` | What an unanswered approval means: `allow` = today's behaviour (the gateway's refusal stands, the bot adds nothing); `deny` = also state the refusal in the topic and record `timeout` as the decider. The gateway owns the timeout and refuses either way — no setting makes silence run a command |
-
-### Exec approvals
-
-Hermes stops before a dangerous command and asks the room. On Hermes `>= 0.21.3` the
-Zulip adapter renders that prompt natively — one message of context and one zform
-message whose buttons are **Allow Once / Allow Session / Always Allow / Deny**; on older
-gateways the prompt is plain text with `/approve` and `/deny` instructions, and either
-way the click or the typed command reaches the gateway (a slash command is never
-mention-gated).
-
-**Nobody answering is a refusal, and the bot says so.** Once the gateway's
-`approvals.timeout` elapses the command does *not* run — on every host this plugin
-supports. `ZULIP_APPROVAL_ON_TIMEOUT` decides what the *install promises* about that
-silence, and therefore what the bot states and records:
-
-| Value | What happens when nobody answers |
-|-------|----------------------------------|
-| `allow` *(default)* | Today's behaviour exactly: the gateway's own outcome stands and the bot adds nothing to the topic. |
-| `deny` | The refusal is stated in the prompt's topic and recorded — one line saying the request was refused, plus an audit entry naming `timeout` as the decider. **The recommended profile sets this.** On hosts `>= 0.21.4` the gateway posts its own timeout notice, so the bot stays quiet instead of repeating it. |
-
-Whichever value is set, a person's `/deny` is confirmed in the topic by the gateway, and
-the bot does not duplicate it. Every resolved approval also lands in the audit log with
-its choice, its decider (the person who clicked, or `timeout` / `policy` / `cancelled` /
-`undelivered`) and the request id the plugin minted for the prompt, so "who let this run,
-and did anyone?" is a lookup rather than a guess. This key is a policy statement, not a
-second decision path: the buttons remain the only way to approve, and no setting can make
-silence run a command.
+| `ZULIP_APPROVAL_AUTHORITY` | `anyone` | `owner` | Who may decide an exec approval: `anyone` = today's behaviour; `owner` = only the bot owner (`bot_owner_id`, or `ZULIP_OWNER_EMAIL`), with anyone else's decision refused, stated in the topic and audited, and the prompt left open for the owner. With no owner resolvable, nobody can decide |
 
 ### Sticky engagement
 

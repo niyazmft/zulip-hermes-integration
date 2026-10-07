@@ -57,6 +57,9 @@ EXPECTED_PRESET = {
     # #222: silence is a refusal, and the install says so. The gateway owns the
     # timeout and refuses either way; this row is the promise, not the decision.
     "ZULIP_APPROVAL_ON_TIMEOUT": "deny",
+    # #228: only the owner may decide an approval. The same owner identity #214
+    # resolves for the DM allowlist, so the two cannot disagree.
+    "ZULIP_APPROVAL_AUTHORITY": "owner",
 }
 
 #: The knobs the preset deliberately leaves alone.  Sticky engagement and
@@ -234,6 +237,7 @@ LEGACY_RESOLVERS = {
     "ZULIP_TOPIC_SESSIONS": (settings.topic_sessions_enabled, False),
     "ZULIP_SOFT_GATE": (settings.resolve_soft_gate, False),
     "ZULIP_APPROVAL_ON_TIMEOUT": (settings.resolve_approval_on_timeout, "allow"),
+    "ZULIP_APPROVAL_AUTHORITY": (settings.resolve_approval_authority, "anyone"),
     "ZULIP_REACTION_TRIGGERS": (
         lambda: reaction_triggers.ReactionTriggerConfig.from_env().enabled,
         False,

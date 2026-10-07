@@ -416,6 +416,55 @@ def resolve_approval_on_timeout() -> str:
     return APPROVAL_ON_TIMEOUT_ALLOW
 
 
+#: Who may decide an exec approval (#228). ``anyone`` is the pre-existing
+#: behaviour (anyone who can see the prompt may answer it); ``owner`` restricts
+#: the decision to the bot owner that #214 resolves, and is what the recommended
+#: profile selects.
+APPROVAL_AUTHORITY_ANYONE = "anyone"
+APPROVAL_AUTHORITY_OWNER = "owner"
+_APPROVAL_AUTHORITY_VALUES = frozenset(
+    {APPROVAL_AUTHORITY_ANYONE, APPROVAL_AUTHORITY_OWNER}
+)
+
+
+def resolve_approval_authority() -> str:
+    """Who may decide an exec approval (#228).
+
+    An exec approval runs a command on the **operator's** host with the
+    operator's credentials, and the prompt is posted into a shared topic, so on
+    a work Zulip "anyone who can read the topic" is a privilege escalation
+    through a side channel: a coworker approves the owner's bot running a
+    state-mutating command, and the audit names the coworker as the decider.
+
+    * ``anyone`` *(default)* — today's behaviour exactly, and the migration
+      contract: an install that never sets the key or the profile marker is
+      unchanged.
+    * ``owner`` — only the address #214 resolves (``bot_owner_id`` fetched from
+      Zulip, or the explicit ``ZULIP_OWNER_EMAIL``) may decide. A decision from
+      anyone else is refused, audited and left out of the gateway's decision, so
+      the prompt stays open for the owner. When no owner can be resolved the
+      feature fails **closed** — nobody may decide, the owner included — with a
+      warning naming the setting that fixes it. The recommended profile selects
+      this.
+
+    Read at call time through the preset gate, so an explicit ``ZULIP_*`` value
+    wins and a patch of this resolver still takes effect. Anything unrecognised
+    falls back to ``anyone`` with a warning: a typo must not lock an install out
+    of its own approvals.
+    """
+    raw = _preset_value("ZULIP_APPROVAL_AUTHORITY", APPROVAL_AUTHORITY_ANYONE)
+    mode = raw.strip().lower()
+    if mode in _APPROVAL_AUTHORITY_VALUES:
+        return mode
+    logger.warning(
+        "ZULIP_APPROVAL_AUTHORITY=%r is not one of %s; using %s",
+        raw,
+        sorted(_APPROVAL_AUTHORITY_VALUES),
+        APPROVAL_AUTHORITY_ANYONE,
+    )
+    return APPROVAL_AUTHORITY_ANYONE
+
+
 def resolve_int_setting(name: str, default: int, minimum: int = 1) -> int:
     """Read a positive integer setting, warning and falling back when invalid."""
     raw = (runtime_scope.get_setting(name, "") or "").strip()

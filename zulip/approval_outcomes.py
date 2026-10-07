@@ -60,8 +60,11 @@ from typing import Optional
 
 from .logger import mask_pii
 from .settings import (
+    APPROVAL_AUTHORITY_ANYONE,
+    APPROVAL_AUTHORITY_OWNER,
     APPROVAL_ON_TIMEOUT_ALLOW,
     APPROVAL_ON_TIMEOUT_DENY,
+    resolve_approval_authority,
     resolve_approval_on_timeout,
 )
 
@@ -106,6 +109,29 @@ TIMEOUT_REFUSAL_TEXT = (
     "⌛ Refused by timeout — nobody approved, so the command did not run. "
     "Ask me to try again if you still want it."
 )
+
+#: Why a decision was refused (issue #228). Machine-readable so the audit entry
+#: says which rule fired, and so the wording has one source.
+REJECT_NOT_OWNER = "not_owner"
+REJECT_NO_OWNER = "no_owner"
+
+#: One short line for each refusal. Posted in the prompt's own route, so the
+#: person who clicked learns why nothing happened and, for the second case, what
+#: the operator must set. Deliberately states that the request is still open —
+#: the owner can still answer it, and the window has not changed.
+_REJECTION_TEXT: dict[str, str] = {
+    REJECT_NOT_OWNER: (
+        "🚫 Only the bot owner may decide this exec approval, so that decision "
+        "was not counted — the request is still waiting for them."
+    ),
+    REJECT_NO_OWNER: (
+        "🚫 This install limits exec approvals to the bot owner, but no owner "
+        "could be resolved, so no decision can be accepted. Set "
+        "`ZULIP_OWNER_EMAIL` to the owner's Zulip address (or "
+        "`ZULIP_APPROVAL_AUTHORITY=anyone`) and ask again."
+    ),
+}
+
 
 # Host capability: does the gateway post its own timed-out notice? It arrived
 # with host 0.21.4 (``gateway/run_turn_runner_approval_settle.py``) and is
@@ -399,6 +425,30 @@ class ApprovalLedger:
                 return len(self._pending.get(session_key, []))
             return sum(len(items) for items in self._pending.values())
 
+    def pending_request_id(
+        self, session_key: str = "", *, chat_id: str = "", topic: str = ""
+    ) -> str:
+        """The oldest pending request id for a prompt, without consuming it.
+
+        Read-only on purpose: a refused decision (#228) must not consume the
+        request, because a refused decision is not a decision — the prompt stays
+        open and a later answer (or the timeout) still has to be audited against
+        the same request.
+
+        Joined by session key, then by route: a host that exposes no session key
+        for an event (``zulip.routing.session_key_for_event`` returns None) still
+        lets the refusal name the prompt it refused to decide.
+        """
+        with self._lock:
+            if session_key and self._pending.get(session_key):
+                return self._pending[session_key][0].request_id
+            if chat_id:
+                wanted = (str(chat_id), topic or "")
+                for key, route in self._routes.items():
+                    if route == wanted and self._pending.get(key):
+                        return self._pending[key][0].request_id
+        return ""
+
 
 def _decider_for(choice: str, decided_by: str, recorded: Optional[str]) -> str:
     """Label who decided, preferring the host's own answer over the plugin's.
@@ -455,16 +505,71 @@ def current_policy() -> str:
     return resolve_approval_on_timeout()
 
 
+def current_authority() -> str:
+    """Who may decide an exec approval, read at call time (#228)."""
+    return resolve_approval_authority()
+
+
+def is_owner_decision(sender_email: str, owner_address: str) -> bool:
+    """Whether this decision came from the bot owner.
+
+    Address comparison, case-insensitive, against the one owner identity #214
+    resolves — the same value the DM allowlist is seeded from, so an install
+    cannot end up with two different notions of "the owner". A missing owner on
+    either side answers False, which is what makes an unresolvable owner fail
+    closed rather than open.
+    """
+    sender = (sender_email or "").strip().lower()
+    owner = (owner_address or "").strip().lower()
+    return bool(sender) and bool(owner) and sender == owner
+
+
+def rejection_reason(sender_email: str, owner_address: str) -> Optional[str]:
+    """Why this decision must be refused, or None when it may proceed (#228)."""
+    if current_authority() != APPROVAL_AUTHORITY_OWNER:
+        return None
+    if is_owner_decision(sender_email, owner_address):
+        return None
+    return REJECT_NOT_OWNER if (owner_address or "").strip() else REJECT_NO_OWNER
+
+
+def authority_rejection_notice(reason: str) -> str:
+    """The one line posted for a refused decision (#228)."""
+    return _REJECTION_TEXT.get(reason, _REJECTION_TEXT[REJECT_NOT_OWNER])
+
+
+def unresolved_authority_warning() -> str:
+    """The actionable startup warning for an owner-restricted install with no owner.
+
+    Mirrors #214's DM warning: name the cause and the single setting that fixes
+    it, and point at nothing else — a fix that does not exist is not a fix.
+    """
+    return (
+        "zulip: ZULIP_APPROVAL_AUTHORITY=owner but the bot owner could not be "
+        "resolved -- no exec approval can be decided until ZULIP_OWNER_EMAIL is "
+        "set to the owner's Zulip email (or the authority is set back to 'anyone')"
+    )
+
+
 __all__ = [
+    "APPROVAL_AUTHORITY_ANYONE",
+    "APPROVAL_AUTHORITY_OWNER",
     "APPROVAL_ON_TIMEOUT_ALLOW",
     "ApprovalLedger",
     "ApprovalOutcome",
     "ApprovalRequest",
+    "REJECT_NOT_OWNER",
+    "REJECT_NO_OWNER",
     "audit_decider",
+    "authority_rejection_notice",
+    "current_authority",
     "current_policy",
     "host_notices_timeouts",
+    "is_owner_decision",
     "notice_for",
+    "rejection_reason",
     "route_from_session_env",
     "route_key",
     "session_key_alias",
+    "unresolved_authority_warning",
 ]

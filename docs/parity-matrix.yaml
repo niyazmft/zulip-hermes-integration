@@ -214,6 +214,20 @@ capabilities:
       hermes: "#131"
     notes: "The sibling has no zform / interactive-widget send path."
 
+  - id: owner-only-exec-approvals
+    title: Owner-only exec approvals (ZULIP_APPROVAL_AUTHORITY)
+    status: hermes-only
+    refs:
+      hermes: "#228"
+    notes: >-
+      A decision from anyone but the bot owner is refused, stated in the topic
+      and audited, and never reaches the gateway — so the prompt stays open for
+      the owner and the unanswered-approval default still applies. Enforced on
+      the inbound path a decision already takes, so the widget path and the
+      plain-text fallback cannot differ. The owner identity is #214's single
+      resolver; with none resolvable the feature fails closed. No sibling
+      equivalent.
+
   - id: approval-outcome-audit
     title: Approval-outcome audit and a fail-closed refusal line (ZULIP_APPROVAL_ON_TIMEOUT)
     status: hermes-only
