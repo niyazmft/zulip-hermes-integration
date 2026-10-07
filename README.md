@@ -432,6 +432,15 @@ ZULIP_ENGAGEMENT_TTL_MINUTES=45      # idle window; 45 is the default
 
 End it early with `stop listening`, `/unlisten` or `/stop-listening` in the topic.
 
+**Bot traffic never keeps a window open.** A message whose sender is a bot — our own
+send echoed back, or any address following Zulip's `<name>-bot@…` convention — is neither
+answered *because* the topic is engaged nor allowed to refresh the idle TTL. Otherwise two
+bots in one topic would keep each other's window open forever, outliving the human who
+started the conversation. This is a loop-prevention invariant rather than a setting: no key
+turns it off, so it cannot be re-enabled by accident. A bot that @mentions the bot
+explicitly is a separate, deliberate act — mention gating is unchanged, it just does not
+open a window of its own.
+
 An invalid value here is logged and falls back safely (`off` / `user`) rather than
 half-enabling the feature.
 

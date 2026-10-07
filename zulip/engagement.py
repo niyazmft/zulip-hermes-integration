@@ -59,6 +59,61 @@ _STOP_COMMANDS = frozenset(
 # session reset; the bare words are accepted the same way the gateway does).
 _END_SESSION_COMMANDS = frozenset({"/new", "/reset", "new", "reset"})
 
+# Zulip names every bot's address ``<short_name>-bot@<bot domain>``: the
+# server's ``validate_short_name_and_construct_bot_email`` appends ``-bot`` to
+# the short name and uses ``realm.get_bot_domain()``, on Zulip Cloud and
+# self-hosted realms alike. That local-part suffix is therefore the one bot
+# signal available on a *message* payload without a lookup. The realm's own
+# ``is_bot`` flag exists only on ``realm_user``/``realm_bot`` events, so
+# consulting it would mean keeping a bot registry — new state this gate
+# deliberately does not introduce.
+BOT_EMAIL_SUFFIX = "-bot"
+
+
+def is_bot_address(email: str) -> bool:
+    """Whether ``email`` uses Zulip's bot-address convention (``…-bot@…``)."""
+    text = (email or "").strip().lower()
+    local, sep, _domain = text.partition("@")
+    if not sep or not local:
+        return False
+    return local.endswith(BOT_EMAIL_SUFFIX)
+
+
+def is_bot_sender(
+    sender_email: str,
+    *,
+    sender_id: object = None,
+    bot_email: str = "",
+    bot_user_id: object = "",
+) -> bool:
+    """Whether an inbound sender is a bot — a pure sender check (issue #221).
+
+    The sticky-engagement gate asks one question of this: may the message keep
+    a topic engaged? Bot traffic may not. Two bots answering each other in an
+    engaged topic would refresh the idle TTL with traffic that was never
+    addressed to us, so the window would outlive the human who opened it.
+
+    Three signals, all read from the sender and never from the message text:
+    this bot's own address or id (the event queue echoing our own sends back)
+    and the realm's bot-address convention (:func:`is_bot_address`).
+
+    This is a loop-prevention invariant rather than a policy knob: no setting
+    turns it off, so an admin cannot re-enable the loop by accident.
+    """
+    email = (sender_email or "").strip().lower()
+    own_email = (bot_email or "").strip().lower()
+    if email and own_email and email == own_email:
+        return True
+    if (
+        sender_id is not None
+        and sender_id != ""
+        and bot_user_id is not None
+        and bot_user_id != ""
+        and str(sender_id) == str(bot_user_id)
+    ):
+        return True
+    return is_bot_address(email)
+
 
 def _env_truthy(name: str, default: str = "true") -> bool:
     raw = os.getenv(name, default).strip().lower()

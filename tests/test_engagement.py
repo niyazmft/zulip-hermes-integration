@@ -17,6 +17,8 @@ from zulip.engagement import (
     SCOPE_USER,
     EngagementConfig,
     TopicEngagementStore,
+    is_bot_address,
+    is_bot_sender,
     is_end_session_message,
     is_stop_listening_message,
 )
@@ -191,7 +193,9 @@ def _build(mock_platform_config, monkeypatch, **env):
     return a
 
 
-def _stream_msg(content, *, stream_id=1, topic="general", sender="user@zulip.com"):
+def _stream_msg(
+    content, *, stream_id=1, topic="general", sender="user@zulip.com", sender_id=42
+):
     return {
         "id": 1,
         "type": "stream",
@@ -201,7 +205,7 @@ def _stream_msg(content, *, stream_id=1, topic="general", sender="user@zulip.com
         "content": content,
         "sender_email": sender,
         "sender_full_name": sender.split("@")[0],
-        "sender_id": 42,
+        "sender_id": sender_id,
     }
 
 
@@ -443,4 +447,176 @@ class TestExpiryNotice:
 
         sent = [c.args[0] for c in a.client.send_message.call_args_list]
         assert not [s for s in sent if "Engagement expired" in s.get("content", "")]
+        assert a._engagement_store.active_count() == 0
+
+
+# --------------------------------------------------------------------------
+# Bot senders never engage (#221)
+# --------------------------------------------------------------------------
+
+
+class TestBotSenderClassifier:
+    """The pure sender check that keeps bot traffic out of engagement (#221)."""
+
+    @pytest.mark.parametrize(
+        "email",
+        [
+            "helper-bot@org.zulipchat.com",
+            "notification-bot@zulip.com",  # cross-realm system bot
+            "Helper-BOT@Org.Zulipchat.com",  # case-insensitive
+            "review-bot@self-hosted.example.org",  # not a zulipchat.com realm
+        ],
+    )
+    def test_bot_address_convention(self, email):
+        assert is_bot_address(email) is True
+
+    @pytest.mark.parametrize(
+        "email",
+        [
+            "dana@org.zulipchat.com",  # a human on a *zulipchat.com* realm
+            "bot@example.com",  # the convention is `-bot`, not `bot`
+            "bottom@example.com",  # bare substring must not match
+            "",
+            "no-at-sign",
+            "-bot",
+        ],
+    )
+    def test_human_addresses_are_not_bots(self, email):
+        assert is_bot_address(email) is False
+
+    def test_own_identity_is_a_bot_by_email_or_id(self):
+        assert is_bot_sender("bot@zulip.com", bot_email="bot@zulip.com") is True
+        assert is_bot_sender("BOT@Zulip.com", bot_email="bot@zulip.com") is True
+        assert is_bot_sender("someone@example.com", sender_id=7, bot_user_id="7") is True
+
+    def test_human_sender_is_not_a_bot(self):
+        assert (
+            is_bot_sender(
+                "user@zulip.com",
+                sender_id=42,
+                bot_email="bot@zulip.com",
+                bot_user_id="7",
+            )
+            is False
+        )
+
+    def test_classifier_works_without_a_configured_identity(self):
+        # The address convention is self-contained: no bot registry, no
+        # lookup, no config, so the guard cannot be silently un-armed.
+        assert is_bot_sender("helper-bot@org.zulipchat.com") is True
+        assert is_bot_sender("user@zulip.com") is False
+
+
+class TestBotSendersNeverEngage:
+    """A bot message may not satisfy an engagement nor refresh its TTL (#221)."""
+
+    @pytest.mark.asyncio
+    async def test_bot_message_is_not_accepted_and_does_not_extend_ttl(
+        self, mock_platform_config, monkeypatch, caplog
+    ):
+        a = _build(
+            mock_platform_config,
+            monkeypatch,
+            ZULIP_CHATMODE="oncall",
+            ZULIP_REQUIRE_MENTION="true",
+            ZULIP_ENGAGEMENT_MODE="sticky_topic",
+            ZULIP_ENGAGEMENT_SCOPE="topic",
+        )
+        await a._handle_message(_stream_msg("@bot start"))
+        assert a.handle_message.call_count == 1
+
+        entry = next(iter(a._engagement_store._entries.values()))
+        last_active_before = entry.last_active
+
+        with caplog.at_level("DEBUG"):
+            await a._handle_message(
+                _stream_msg(
+                    "status report",
+                    sender="helper-bot@org.zulipchat.com",
+                    sender_id=99,
+                )
+            )
+
+        # Not answered, and the TTL was not refreshed by the bot's traffic.
+        assert a.handle_message.call_count == 1
+        assert entry.last_active == last_active_before
+        # The skip is diagnosable, with the sender masked.
+        assert "engagement skip" in caplog.text
+        assert "helper-bot@org.zulipchat.com" not in caplog.text
+        assert "h***@org.zulipchat.com" in caplog.text
+
+        # The human's window is exactly as it was: a follow-up still engages.
+        await a._handle_message(_stream_msg("and another thing"))
+        assert a.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bot_mention_does_not_open_an_engagement(
+        self, mock_platform_config, monkeypatch
+    ):
+        a = _build(
+            mock_platform_config,
+            monkeypatch,
+            ZULIP_CHATMODE="oncall",
+            ZULIP_REQUIRE_MENTION="true",
+            ZULIP_ENGAGEMENT_MODE="sticky_topic",
+            ZULIP_ENGAGEMENT_SCOPE="user",
+        )
+        bot = "helper-bot@org.zulipchat.com"
+
+        # A bot that *names* the bot still dispatches: mention-gating is a
+        # separate, pre-existing gate this issue does not change.
+        await a._handle_message(_stream_msg("@bot hello", sender=bot, sender_id=99))
+        assert a.handle_message.call_count == 1
+
+        # But it opens no window: otherwise the next unmentioned message
+        # from that bot would be admitted, which is the loop.
+        assert a._engagement_store.active_count() == 0
+        await a._handle_message(_stream_msg("still here", sender=bot, sender_id=99))
+        assert a.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_own_message_is_never_accepted_or_refreshed(
+        self, mock_platform_config, monkeypatch
+    ):
+        a = _build(
+            mock_platform_config,
+            monkeypatch,
+            ZULIP_CHATMODE="oncall",
+            ZULIP_REQUIRE_MENTION="true",
+            ZULIP_ENGAGEMENT_MODE="sticky_topic",
+            ZULIP_ENGAGEMENT_SCOPE="topic",
+        )
+        a._bot_user_id = "4242"
+        await a._handle_message(_stream_msg("@bot start"))
+        assert a.handle_message.call_count == 1
+
+        entry = next(iter(a._engagement_store._entries.values()))
+        last_active_before = entry.last_active
+
+        # Our own send echoed back by the event queue.
+        await a._handle_message(
+            _stream_msg("my own reply", sender="bot@zulip.com", sender_id=4242)
+        )
+        assert a.handle_message.call_count == 1
+        assert entry.last_active == last_active_before
+        assert a._engagement_store.active_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_bot_message_in_a_non_engaged_topic_changes_nothing(
+        self, mock_platform_config, monkeypatch
+    ):
+        a = _build(
+            mock_platform_config,
+            monkeypatch,
+            ZULIP_CHATMODE="oncall",
+            ZULIP_REQUIRE_MENTION="true",
+            ZULIP_ENGAGEMENT_MODE="sticky_topic",
+            ZULIP_ENGAGEMENT_SCOPE="topic",
+        )
+        await a._handle_message(
+            _stream_msg(
+                "fyi", sender="helper-bot@org.zulipchat.com", sender_id=99
+            )
+        )
+        assert a.handle_message.call_count == 0
         assert a._engagement_store.active_count() == 0

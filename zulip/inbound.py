@@ -65,6 +65,7 @@ from . import commands
 from .commands import CommandResult, is_command
 from .engagement import (
     MODE_OFF as ENGAGEMENT_MODE_OFF,
+    is_bot_sender,
     is_end_session_message,
     is_stop_listening_message,
 )
@@ -236,6 +237,19 @@ async def handle_message(adapter: Any, message: dict) -> None:
         # only consulted for mention-gated modes. An engaged follow-up
         # still passes stream filtering, group policy and the per-sender
         # rate limit below exactly like any other message.
+        #
+        # Loop prevention (#221): a bot-authored message may never be
+        # accepted *because* a topic is engaged, nor refresh that
+        # engagement — otherwise two bots in one topic keep each other's
+        # window open forever. Decided from the sender alone (our own
+        # identity, or the realm's `<name>-bot@…` convention), which is why
+        # it needs no bot registry and introduces no state.
+        sender_is_bot = is_bot_sender(
+            sender_email,
+            sender_id=message.get("sender_id"),
+            bot_email=adapter.email,
+            bot_user_id=getattr(adapter, "_bot_user_id", ""),
+        )
         engaged_followup = False
         if (
             adapter._engagement_cfg.mode != ENGAGEMENT_MODE_OFF
@@ -245,8 +259,16 @@ async def handle_message(adapter: Any, message: dict) -> None:
                 gate_stream_id, gate_topic, sender_email
             )
         ):
-            engaged_followup = True
-            should_process = True
+            if sender_is_bot:
+                logger.debug(
+                    "zulip engagement skip [bot sender=%s stream=%s topic=%s]",
+                    mask_pii(sender_email),
+                    mask_pii(str(message.get("display_recipient", ""))),
+                    mask_pii(str(gate_topic)),
+                )
+            else:
+                engaged_followup = True
+                should_process = True
 
         if not should_process:
             # Not addressed and not dispatched: keep it as topic context
@@ -353,11 +375,15 @@ async def handle_message(adapter: Any, message: dict) -> None:
         # Only a message that actually reaches the agent — a real
         # mention/onchar, or a follow-up on an already-engaged topic —
         # (re)starts the idle TTL. Keeping onmessage streams out avoids
-        # expiry notices for topics that never needed a mention.
+        # expiry notices for topics that never needed a mention. A bot
+        # sender is excluded (#221) even when it names the bot explicitly:
+        # a mention by a bot must not open a window that later admits the
+        # bot's unmentioned traffic.
         if (
             adapter._engagement_cfg.mode != ENGAGEMENT_MODE_OFF
             and chatmode != "onmessage"
             and not engagement_blocked
+            and not sender_is_bot
             and (was_mentioned or onchar_triggered or engaged_followup)
         ):
             adapter._engagement_store.mark_engaged(

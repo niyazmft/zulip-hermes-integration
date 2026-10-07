@@ -155,6 +155,15 @@ fixing the class. Rows are added as fixes land, not in a separate retrospective.
    *Status:* **guarded** — `tests/test_version.py::test_plugin_yaml_version_matches_version_module`
    and `test_changelog_records_this_version`, with `SECURITY.md` covered by
    `tests/test_security_docs.py::test_documented_versions_match_version_module`.
+9. **State kept alive by traffic that was never addressed to us.** A liveness window whose
+   refresh condition is "any message in this topic" is refreshed by traffic that did not ask
+   for the bot at all: another bot answering in an engaged topic held the idle TTL open
+   indefinitely, so the window outlived the human who opened it (#221).
+   *Instances:* #221.
+   *Status:* **open** — `tests/test_engagement.py::TestBotSendersNeverEngage` pins the
+   engagement case (a bot message is neither accepted nor allowed to refresh the TTL, and a
+   bot's own mention opens no window), but nothing generalises the rule to the next liveness
+   window someone adds.
 
 ---
 
