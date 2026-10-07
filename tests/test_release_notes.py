@@ -239,16 +239,39 @@ class TestBodyShape:
 
 
 class TestChangelogConvention:
-    """Highlights are written, so the newest entry must carry them."""
+    """Highlights are written, so the newest released entry must carry them."""
 
-    def _newest_entry(self) -> tuple[str, list[tuple[str, str]]]:
+    def _newest_released(self) -> tuple[str, list[tuple[str, str]]]:
+        """The newest entry that is an actual release, skipping `## [Unreleased]`.
+
+        Unreleased work has not been published, so it has no summary or highlights
+        yet — the release PR writes those when it renames the section.
+        """
         text = CHANGELOG.read_text(encoding="utf-8")
-        match = next(release_notes.ENTRY_RE.finditer(text))
-        version = match.group("version").strip()
-        return version, release_notes.split_entry(match.group("body"))[1]
+        for match in release_notes.ENTRY_RE.finditer(text):
+            version = match.group("version").strip()
+            if version.lower() != "unreleased":
+                return version, release_notes.split_entry(match.group("body"))[1]
+        raise AssertionError("CHANGELOG.md has no released entry")
+
+    def test_unreleased_section_holds_merged_changes(self):
+        """Merged-but-unreleased work is written down under `## [Unreleased]`.
+
+        Without a holding section, a change that merges between releases has
+        nowhere to be recorded until release time — which is how two release-page
+        changes nearly shipped unrecorded. The section was dropped once before:
+        the v1.10.1 entry records a release entry landing where it used to sit.
+        """
+        text = CHANGELOG.read_text(encoding="utf-8")
+        headings = [m.group("version").strip() for m in release_notes.ENTRY_RE.finditer(text)]
+        assert headings, "CHANGELOG.md has no entries"
+        assert headings[0].lower() == "unreleased", (
+            f"the newest CHANGELOG section is {headings[0]!r}; changes that have merged "
+            "but are not released go under '## [Unreleased]' at the top"
+        )
 
     def test_newest_entry_has_a_usable_summary_and_highlights(self):
-        version, sections = self._newest_entry()
+        version, sections = self._newest_released()
         headings = [heading for heading, _ in sections]
         assert headings, f"the {version} entry has no sections"
         explicit = next((b for h, b in sections if h == "Highlights"), None)
@@ -267,7 +290,7 @@ class TestChangelogConvention:
         The failure this guards is the page that listed ``**Rate Limiting**`` and
         nothing else: a reader learns a topic, not a change.
         """
-        version, sections = self._newest_entry()
+        version, sections = self._newest_released()
         explicit = next(b for h, b in sections if h == "Highlights")
         for line in release_notes.bullets(explicit):
             assert len(line) >= MIN_HIGHLIGHT_CHARS, (
@@ -302,3 +325,16 @@ class TestChangelogConvention:
         assert body.startswith(f"## v{__version__}")
         assert "**Highlights**" in body
         assert "<details>" in body
+
+    def test_unreleased_is_not_a_release_the_builder_will_publish(self, capsys):
+        """The holding section has no highlights, so building it must fail loudly."""
+        with pytest.raises(SystemExit):
+            release_notes.build_body(
+                "Unreleased",
+                repo="owner/name",
+                prev=None,
+                generated=GENERATED,
+                generated_missing=False,
+                with_contributors=False,
+            )
+        assert "no '### Highlights' block" in capsys.readouterr().err

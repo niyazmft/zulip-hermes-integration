@@ -78,20 +78,44 @@ The four entries whose pages are regenerated from `CHANGELOG.md`
 (`1.10.0`, `1.10.1`, `1.11.0`, `1.12.0`) carry a `### Highlights` block, and a
 test keeps them that way.
 
+### Where a change is recorded before it is released
+
+`CHANGELOG.md` keeps a `## [Unreleased]` section at the top, and **every merged
+change is written into it as it merges**. That section is the only record of what
+the next release contains: the release page is built from the entry, so a change
+that is not written down there is not on the release page either, and nothing
+fails — the page simply comes out short.
+
+It has to exist even when it is empty. This repo dropped the section once before
+(the v1.10.1 entry records a release entry landing where `## [Unreleased]` used
+to sit), and two release-page changes then merged with nowhere to be recorded.
+`tests/test_release_notes.py` fails if the newest section is not `Unreleased`,
+so it cannot disappear quietly again.
+
+`### Highlights` is *not* required under `[Unreleased]` — the release PR writes it
+when it names the version, because only then is the set of changes final.
+
 ## Procedure
 
-1. **Land the changes on `main`.** All PRs merged; `main` is green.
+1. **Land the changes on `main`.** All PRs merged; `main` is green. Each one is
+   recorded under `## [Unreleased]` as it merges (see
+   [Where a change is recorded](#where-a-change-is-recorded-before-it-is-released))
+   — that section is the next release's contents, so keep it current.
 
 2. **Bump the version** in `zulip/plugin.yaml` (`version: X.Y.Z`).
 
-3. **Add the CHANGELOG entry** — newest first, Keep a Changelog headings:
-   `Added`, `Fixed`, `Docs`, `Internal`, a required `Highlights`, optional
-   `Contributors`. Open the entry with a short paragraph saying why this release
-   exists, then write the highlights in the themed shape above — that paragraph
-   and those lines are the release page. (`scripts/release_notes.py` fails
-   without the `Highlights` block.)
+3. **Turn `## [Unreleased]` into the release entry.** Keep a Changelog headings
+   are `Added`, `Fixed`, `Docs`, `Internal`; the entry adds a required
+   `Highlights` and an optional `Contributors`. Rename the heading to
+   `## [X.Y.Z] - <date>`, put the one-paragraph summary and the themed
+   `### Highlights` block at the top of it — that paragraph and those lines *are*
+   the release page — and **leave a fresh, empty `## [Unreleased]` above it**, or
+   the next change to merge has nowhere to go. (`scripts/release_notes.py`
+   refuses to build the page without the `Highlights` block.)
 
    ```markdown
+   ## [Unreleased]
+
    ## [1.9.3] - 2026-10-01
 
    One paragraph on why this release exists.
