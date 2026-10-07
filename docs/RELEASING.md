@@ -7,10 +7,10 @@ exhaustive record behind expandable sections
 
 | On the page | Source | Credits contributors? |
 |-------------|--------|----------------------|
-| Title, one-paragraph summary, `**Highlights**` (one line per user-facing change), scale line | `CHANGELOG.md` via `scripts/release_notes.py` | No — describes changes |
+| Title, one-paragraph summary, `**Highlights**` (themed lines written in the entry), scale line | `CHANGELOG.md` via `scripts/release_notes.py` | No — describes changes; the scale line counts contributors |
 | `<details>` **Curated release notes** (`Added`, `Fixed`, `Docs`, `Internal`) | `CHANGELOG.md` via `scripts/release_notes.py` | No — describes changes |
 | `<details>` **What's Changed** (`* <title> by @user in <pr>`) | GitHub's generate-release-notes API, configured by `.github/release.yml` | **Yes** |
-| `**Thanks**` line and the `Full changelog` links (rendered · raw · compare) | derived by `scripts/release_notes.py` | Yes — from the generated list |
+| `Full changelog` links (rendered · raw · compare) | derived by `scripts/release_notes.py` | No |
 
 Nothing is dropped: the full prose and the full PR list are both on the page,
 just collapsed. The point of the layout is that a reader learns what changed
@@ -25,41 +25,58 @@ v1.9.2 both omitted the maintainer's own PRs).
   every merged PR author in `vPREV...vX.Y.Z`, maintainer included
   (`* <title> by @user in <pr url>`), and `## New Contributors` lists everyone
   making their first contribution. Nothing to maintain.
-- **`scripts/release_notes.py` fetches that layer with `gh api`** and renders
-  its authors as the on-page `**Thanks**` line. If the fetch fails the script
-  exits non-zero rather than publishing a page that looks complete but has lost
-  the credit record. Use `--no-generated` only for a dry run; it prints an
-  explicit "credit is missing" line in the body.
-- **GitHub's avatar strip** above Assets is built from `@mentions` in the body,
-  so the collapsed list still feeds it.
+- **`scripts/release_notes.py` fetches that layer with `gh api`**. If the fetch
+  fails the script exits non-zero rather than publishing a page that looks
+  complete but has lost the credit record. Use `--no-generated` only for a dry
+  run; it prints an explicit "credit is missing" line in the body.
+- **There is no separate `Thanks` line.** The collapsed list already names every
+  author as `by @user`, so a second name list would be duplication — and the
+  collapsed `@mentions` are what GitHub's avatar strip above Assets is built
+  from.
 - **The release PR excludes itself** via the `release` label
   (`.github/release.yml`); otherwise `chore: release vX.Y.Z` shows up in its own
   notes.
 - **`CHANGELOG.md` keeps a `### Contributors` section as the in-repo record.**
   When you write one, it must list *every* PR author in the range — the
   maintainer included — because the script strips this subsection before it
-  reaches the release body (the collapsed generated list and the `Thanks` line
-  already credit those people).
+  reaches the release body (the collapsed generated list already credits those
+  people).
 
 ## Authoring the entry so the page reads well
 
-The highlights are **derived from the bolded lead of each `Added` and `Fixed`
-bullet**, so that convention is load-bearing:
+A release page is read by somebody deciding whether to care, so its highlights
+are **written, not derived**: they group related work into themed lines and say
+what each one does, in the shape
+[openclaw uses](https://github.com/openclaw/openclaw/releases):
 
 ```markdown
-- **Only the bot owner may decide an exec approval.** Explanation, evidence and
-  the trailing refs stay in the collapsed section. ([#228](…), [#262](…))
+### Highlights
+- **Approvals are owned, and every decision is on the record:** `ZULIP_APPROVAL_AUTHORITY=owner`
+  refuses a decision from anyone but the bot owner and does not count it, so the prompt stays
+  open; every resolved approval is audited with its choice, decider and request id; and
+  `ZULIP_APPROVAL_ON_TIMEOUT=deny` posts one refusal line where the host posts no timeout
+  notice of its own. ([#228](…), [#262](…), [#222](…), [#261](…))
 ```
 
-The bolded part must stand alone as the sentence a user wants to read — it
-becomes the one-line highlight, with the refs appended. Write it as a claim
-("A failed turn no longer ends in silence"), not a label ("Delivery audit").
-`tests/test_release_notes.py` fails if the newest entry has no `Added`/`Fixed`
-bullets or a bullet has no bolded lead, so a release cannot silently publish a
-page with no usable summary.
+- **Theme first, then clauses.** A bolded theme, a colon, then what changed —
+  comma-separated verb phrases joined with "and", the way a person would
+  describe the release to a colleague. Several `Added`/`Fixed` bullets can fold
+  into one highlight, and one can cover several PRs; the refs go at the end.
+- **Group, don't enumerate.** Aim for a handful of lines, not one per changed
+  bullet. `v1.10.0` has 21 detail bullets and 4 highlights.
+- **Say what changed, not what the area is.** ``**Rate Limiting**`` is a label;
+  "a per-sender sliding window caps a sender at 60 messages a minute" is a
+  highlight. `tests/test_release_notes.py` enforces a floor of
+  `MIN_HIGHLIGHT_CHARS = 80` on the newest entry's highlights for exactly this.
+- **A missing `### Highlights` block is an error, not a quiet downgrade.**
+  `scripts/release_notes.py` refuses to build the page, because the alternative
+  is publishing a page that looks finished while saying nothing. The detail
+  bullets keep their `- **Claim.** explanation` lead so the collapsed section
+  stays scannable, but nothing is derived from them any more.
 
-A release that wants a different, shorter set can add a `### Highlights`
-subsection; those bullets are used verbatim instead of the derived ones.
+The four entries whose pages are regenerated from `CHANGELOG.md`
+(`1.10.0`, `1.10.1`, `1.11.0`, `1.12.0`) carry a `### Highlights` block, and a
+test keeps them that way.
 
 ## Procedure
 
@@ -68,14 +85,19 @@ subsection; those bullets are used verbatim instead of the derived ones.
 2. **Bump the version** in `zulip/plugin.yaml` (`version: X.Y.Z`).
 
 3. **Add the CHANGELOG entry** — newest first, Keep a Changelog headings:
-   `Added`, `Fixed`, `Docs`, `Internal`, optional `Highlights`, optional
+   `Added`, `Fixed`, `Docs`, `Internal`, a required `Highlights`, optional
    `Contributors`. Open the entry with a short paragraph saying why this release
-   exists; that paragraph leads the release page.
+   exists, then write the highlights in the themed shape above — that paragraph
+   and those lines are the release page. (`scripts/release_notes.py` fails
+   without the `Highlights` block.)
 
    ```markdown
    ## [1.9.3] - 2026-10-01
 
    One paragraph on why this release exists.
+
+   ### Highlights
+   - **A theme, then what changed:** clause, clause, and clause. ([#135](…))
 
    ### Added
    - **A standalone claim.** What changed and why; the detail lives here, off the
@@ -129,8 +151,8 @@ subsection; those bullets are used verbatim instead of the derived ones.
 8. **Verify the published release page** shows, in order:
    `## vX.Y.Z`, the summary paragraph, `**Highlights**`,
    `**N pull requests · M contributors**`, the collapsed **Curated release
-   notes** and **What's Changed** sections, the `**Thanks**` line (with your
-   handle on your own PRs), and the three `Full changelog` links.
+   notes** and **What's Changed** sections (your handle on your own PRs, which is
+   the whole credit record), and the three `Full changelog` links.
 
 ## Notes
 

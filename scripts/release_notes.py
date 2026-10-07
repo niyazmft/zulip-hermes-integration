@@ -7,7 +7,8 @@ shape openclaw/openclaw uses:
 
     ## v1.12.0                                  <- version, top level
     <one-paragraph summary from the entry>      <- why this release exists
-    **Highlights**                              <- one line per user-facing change
+    **Highlights**                              <- themed, written lines that group
+                                                   related changes, like openclaw's
     **7 pull requests · 1 contributor**         <- scale
     <details> Curated notes  (Added/Fixed/…)    <- full prose, collapsed
     <details> What's Changed (every PR)         <- mechanical credit, collapsed
@@ -54,14 +55,8 @@ ENTRY_RE = re.compile(
     re.S | re.M,
 )
 SECTION_SPLIT_RE = re.compile(r"^### (.+?)\s*$", re.M)
-BOLD_LEAD_RE = re.compile(r"^- \*\*(?P<lead>.+?)\*\*", re.S)
-REF_RE = re.compile(r"\[#\d+\]\([^)]+\)")
 AUTHOR_RE = re.compile(r"\bby @([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)")
 PR_LINE_RE = re.compile(r"^\* .+/pull/\d+\s*$", re.M)
-
-# Sections whose bolded leads become the on-page highlights, in order. Docs and
-# Internal are real work but not what a user scans for.
-HIGHLIGHT_SECTIONS = ("Added", "Fixed")
 
 REPO_URL = "https://github.com/{repo}"
 
@@ -89,30 +84,30 @@ def bullets(section_body: str) -> list[str]:
     return [line.rstrip() for line in section_body.splitlines() if line.startswith("- ")]
 
 
-def highlight_line(bullet: str) -> str:
-    """One-line highlight from a CHANGELOG bullet.
+def highlight_lines(explicit: str | None, version: str) -> list[str]:
+    """The `### Highlights` bullets, which are written rather than derived.
 
-    The house style opens every bullet with a bolded, standalone claim
-    (`- **Thing.** explanation…`), which is already the sentence a reader wants;
-    the explanation and the trailing refs stay in the collapsed section.
+    A page whose highlights are one short label per changed bullet reads as a
+    bare list; a release page is read by someone deciding whether to care, so
+    the highlights group related work into a themed line and say what it does.
+    Deriving that from the detailed bullets is not possible, so the entry has to
+    carry it — and a missing block is an error, not a page with terse
+    highlights that still looks finished.
     """
-    match = BOLD_LEAD_RE.match(bullet)
-    lead = f"**{match.group('lead').strip()}**" if match else bullet[2:].strip()
-    refs: list[str] = []
-    for ref in REF_RE.findall(bullet):
-        if ref not in refs:
-            refs.append(ref)
-    return f"- {lead} ({', '.join(refs)})" if refs else f"- {lead}"
-
-
-def derive_highlights(sections: list[tuple[str, str]], explicit: str | None) -> list[str]:
-    """An explicit `### Highlights` block wins; otherwise derive from Added/Fixed."""
-    if explicit is not None:
-        return bullets(explicit)
-    lines: list[str] = []
-    for heading, section_body in sections:
-        if heading in HIGHLIGHT_SECTIONS:
-            lines.extend(highlight_line(b) for b in bullets(section_body))
+    if explicit is None:
+        print(
+            f"error: the [{version}] entry has no '### Highlights' block",
+            file=sys.stderr,
+        )
+        print("highlights are written, not derived — see docs/RELEASING.md", file=sys.stderr)
+        raise SystemExit(1)
+    lines = bullets(explicit)
+    if not lines:
+        print(
+            f"error: the [{version}] '### Highlights' block has no '- ' bullets",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     return lines
 
 
@@ -131,18 +126,6 @@ def scale_line(generated: str) -> str:
     if authors:
         bits.append(f"{len(authors)} contributor{'s' if len(authors) != 1 else ''}")
     return "**" + " · ".join(bits) + "**"
-
-
-def thanks_line(generated: str) -> str:
-    """`**Thanks** @a, @b` from the generated notes, or "" when there are none."""
-    authors: list[str] = []
-    for handle in AUTHOR_RE.findall(generated):
-        if handle not in authors:
-            authors.append(handle)
-    if not authors:
-        return ""
-    links = ", ".join(f"[@{h}](https://github.com/{h})" for h in authors)
-    return f"**Thanks** {links}"
 
 
 def github_slug(text: str) -> str:
@@ -238,7 +221,7 @@ def build_body(
     heading_rest, body = entry
     intro, sections = split_entry(body)
     explicit = next((b for h, b in sections if h == "Highlights"), None)
-    highlights = derive_highlights(sections, explicit)
+    highlights = highlight_lines(explicit, version)
 
     lines: list[str] = [f"## v{version}", ""]
     if intro:
@@ -284,10 +267,6 @@ def build_body(
             "from this page._",
             "",
         ]
-
-    thanks = thanks_line(generated) if not with_contributors else ""
-    if thanks:
-        lines += [thanks, ""]
 
     if repo:
         rendered = f"{REPO_URL.format(repo=repo)}/blob/main/CHANGELOG.md"
