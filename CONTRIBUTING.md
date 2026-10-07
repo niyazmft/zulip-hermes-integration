@@ -87,8 +87,9 @@ docs/             RELEASING.md, PARITY.md, parity-matrix.yaml
 
 ## Rules That Bite
 
-Every entry below is a defect **class**, not a one-off: each has bitten this repo at least
-once, and the instances are listed so that a repeat is visible as a repeat. Two statuses:
+Every entry below is a defect **class**, not a one-off. Most have bitten this repo at least
+once and list their instances, so a repeat is visible as a repeat; an entry with none was
+found by inspection — an unguarded hand-maintained value — before it bit. Two statuses:
 
 - **guarded** — a test or CI check fails if you get it wrong. CI will tell you; knowing the
   rule just saves you a round trip.
@@ -141,6 +142,17 @@ fixing the class. Rows are added as fixes land, not in a separate retrospective.
    *Instances:* #199, #202, #207, #234.
    *Status:* **guarded** — `tests/test_readme_docs.py`, `tests/test_security_docs.py`,
    `tests/test_community_docs.py`, `tests/test_compat_floor.py`, `tests/test_ci_workflow.py`.
+8. **The version must agree everywhere it is stated.** `zulip/version.py::__version__` is the
+   source of truth; `zulip/plugin.yaml` repeats it for the gateway, and `SECURITY.md` and
+   `CHANGELOG.md` repeat it for readers. Nothing reads one from another, so any of them can
+   drift silently — and `checksums.txt` keeps covering the mismatch, because it hashes a
+   file's bytes and not what they mean.
+   *Instances:* none yet. Found by inspection while cutting v1.11.0, when `SECURITY.md` — the
+   one of the four that *was* guarded — failed the release PR, and the other two would have
+   shipped stale with CI green.
+   *Status:* **guarded** — `tests/test_version.py::test_plugin_yaml_version_matches_version_module`
+   and `test_changelog_records_this_version`, with `SECURITY.md` covered by
+   `tests/test_security_docs.py::test_documented_versions_match_version_module`.
 
 ---
 

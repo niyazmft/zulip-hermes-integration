@@ -1,11 +1,15 @@
 """Tests for zulip.version and zulip.updater."""
 
+import re
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from zulip.version import __version__, __repo__, PLUGIN_FILES
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestVersionInfo:
@@ -35,6 +39,48 @@ class TestVersionInfo:
         modules = {p.name for p in package_dir.glob("*.py")} | {"plugin.yaml"}
         missing = modules - set(PLUGIN_FILES)
         assert not missing, f"not shipped by the updater: {sorted(missing)}"
+
+    def test_plugin_yaml_version_matches_version_module(self):
+        """The manifest is where the gateway reads the version, and nothing reads it back.
+
+        ``zulip/version.py`` declares itself the single source of truth, but the
+        plugin never reads this field -- it imports ``__version__`` -- so a
+        mismatch breaks nothing at import and no runtime path notices. What the
+        gateway reports for the installed plugin comes from here, which is why
+        the two have to agree.
+
+        ``checksums.txt`` cannot catch this: it hashes the file's bytes, so a
+        manifest whose ``version:`` disagrees has a *correct* checksum. It stays
+        internally consistent while being wrong about what it means.
+        """
+        manifest = REPO_ROOT / "zulip" / "plugin.yaml"
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        assert data["version"] == __version__, (
+            f"zulip/plugin.yaml says {data['version']!r} but version.py says "
+            f"{__version__!r}; a release bumps both (docs/RELEASING.md steps 2-3)"
+        )
+
+    def test_changelog_records_this_version(self):
+        """A release moves the version and its CHANGELOG entry in the same PR.
+
+        ``scripts/release_notes.py <version>`` reads the section named for the
+        version to build the release body, so a missing entry is discovered at
+        release time -- with the tag already pushed -- instead of here, where it
+        costs nothing.
+
+        Matches a heading, not prose: the version also appears inside older
+        entries, so a substring check would pass for the wrong reason.
+        """
+        changelog = REPO_ROOT / "CHANGELOG.md"
+        headings = re.findall(
+            r"^## \[([^\]]+)\]",
+            changelog.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert __version__ in headings, (
+            f"CHANGELOG.md has no '## [{__version__}]' section (found {headings[:3]}); "
+            "scripts/release_notes.py would fail to build the release body"
+        )
 
 
 class TestUpdaterCheck:

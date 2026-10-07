@@ -49,6 +49,11 @@ GUARDED_RULES = [
     ("PLUGIN_FILES", "tests/test_version.py", "test_every_package_module_is_shipped"),
     ("plugin.yaml", "tests/test_manifest_parity.py", None),
     ("checksums.txt", ".githooks/pre-push", None),
+    (
+        "must agree everywhere it is stated",
+        "tests/test_version.py",
+        "test_plugin_yaml_version_matches_version_module",
+    ),
 ]
 
 
