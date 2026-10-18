@@ -122,6 +122,13 @@ fixing the class. Rows are added as fixes land, not in a separate retrospective.
    *Status:* **open** — #242 makes the gate report on every PR so it can be a required check
    (issue #241) and `tests/test_ci_workflow.py` pins the workflow *shape*, but nothing asserts
    that a deliberately broken host is caught. Read the gate's own output before believing it.
+   *Status:* **guarded** — `tests/test_compat_floor.py::TestTheFatalPathsFire` drives every fatal
+   path against a deliberately broken host (a missing declared symbol, an unimportable declared
+   module, a missing thread-metadata helper, a wrong `thread_id`, a source that acquires one, a
+   registration missing required keys, and both no-host exits), and asserts the declarations
+   themselves are non-empty so an emptied `REQUIRED_MODULE_SYMBOLS` cannot silently disable the
+   check. The version floor is additionally enforced by a real-host CI leg (#233).
+
 5. **Do not assume a host surface; check the installed artifact.** The plugin collided with
    Hermes slash commands twice — `/version` → `!version` (#43), then `/help`, `/status` and
    `/model` shadowing the gateway that owns them (#190/#191) — and called `client.get_user`,
