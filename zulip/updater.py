@@ -407,15 +407,22 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
     )
 
 
+from typing import Optional
+
 def startup_version_check(current_version: str, repo: str) -> None:
     """Log a warning if a newer version is available on startup."""
-    newer = check_for_update(repo, current_version)
-    if newer:
+    check = check_for_update(repo, current_version)
+    if check.status == "update":
         logger.warning(
             "Plugin update available: v%s \u2192 v%s. "
             "Run `python -m zulip.updater` to download, then restart Hermes.",
             current_version,
-            newer,
+            check.latest,
+        )
+    elif check.status == "failed":
+        logger.warning(
+            "Plugin update check failed: %s. This is not 'up to date' \u2014 nothing was compared; an update may exist.",
+            check.error,
         )
 
 
