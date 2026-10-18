@@ -234,6 +234,12 @@ Evaluation order matters: **denylist first**, then allowlist roots.
   re-normalization, so a realm that validated at setup failed at runtime.
 - **Inbound media URLs are different:** their host can be influenced by an
   inbound message, so media-URL validation stays strict regardless of the opt-in.
+- **Inbound uploads are fetched by us, not by the SDK** (#271): the plugin
+  extracts the upload paths from the *live* message only (never from the quoted
+  history block), refuses any scheme/host other than the configured site,
+  refuses redirects, enforces `ZULIP_MEDIA_MAX_MB` before and after reading, and
+  hands the bytes to the host's own media cache so an image lands where the
+  gateway's vision path looks for it. A refusal becomes one line in the turn.
 
 ## 6. Config key naming derivation
 

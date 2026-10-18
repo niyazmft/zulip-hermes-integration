@@ -107,6 +107,14 @@ GATED_EXEC_APPROVAL_SYMBOLS = (
     "supports_exec_approval_buttons",
 )
 
+# Inbound attachment support (#271). ``zulip/media.py`` imports
+# ``cache_media_bytes`` inside a try/except and falls back to a temp file, and
+# the ``MessageEvent`` media fields are populated by attribute assignment, so a
+# host that lost either degrades instead of breaking — capability, never fatal,
+# for the same reason as the exec-approval symbols (#230).
+MEDIA_CACHE_SYMBOL = "cache_media_bytes"
+MEDIA_EVENT_FIELDS = ("media_urls", "media_types", "media_text_inlined")
+
 # The registration kwargs the plugin passes; a typo or a dropped kwarg here is
 # as fatal as a missing symbol.
 EXPECTED_REGISTER_KWARGS = {
@@ -300,6 +308,34 @@ def _report_gated_base_methods() -> None:
             )
 
 
+def _report_media_capabilities() -> None:
+    """Print whether inbound uploads can be handed to this host (#271).
+
+    Reported, never fatal: ``zulip/media.py`` guards the import and caches to a
+    temp file when the host offers no cache, so an absent symbol costs the
+    agent's vision path and the host's own cache location — not the turn.
+    """
+    try:
+        base = importlib.import_module("gateway.platforms.base")
+    except Exception:  # noqa: BLE001
+        return
+
+    if hasattr(base, MEDIA_CACHE_SYMBOL):
+        print(f"  media cache gateway.platforms.base.{MEDIA_CACHE_SYMBOL}: present")
+    else:
+        print(
+            f"  media cache gateway.platforms.base.{MEDIA_CACHE_SYMBOL}: absent "
+            "(inbound uploads fall back to a temp file)"
+        )
+
+    event_cls = getattr(base, "MessageEvent", None)
+    fields = set(getattr(event_cls, "__dataclass_fields__", {}) or {})
+    fields |= set(getattr(event_cls, "__annotations__", {}) or {})
+    for name in MEDIA_EVENT_FIELDS:
+        state = "present" if name in fields else "absent (agent cannot open the file)"
+        print(f"  media field MessageEvent.{name}: {state}")
+
+
 def _parse_version(raw: str) -> tuple[int, ...] | None:
     """Numeric parts of a version string, or None when unparseable.
 
@@ -465,6 +501,7 @@ def main() -> int:
     print("check_compat: plugin registration surface verified")
     _report_gated_base_methods()
     _report_gated_symbols()
+    _report_media_capabilities()
     print("check_compat: OK")
     return 0
 

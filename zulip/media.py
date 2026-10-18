@@ -375,7 +375,10 @@ def _host_cache_media_bytes(
     """
     try:
         from gateway.platforms.base import cache_media_bytes
-    except Exception:
+    except ImportError:
+        # The symbol is absent on this host: fall back to a temp file. Guarding
+        # on ImportError specifically (not Exception) is what the static guard in
+        # tests/test_guarded_imports.py can verify (#132/#271).
         return None
 
     try:
@@ -426,6 +429,56 @@ def resolve_media_max_mb() -> int:
     """Read max upload size from environment."""
     raw = runtime_scope.get_setting("ZULIP_MEDIA_MAX_MB", "").strip()
     return int(raw) if raw.isdigit() else DEFAULT_MAX_MB
+
+
+async def collect_inbound_media(adapter: Any, content: str) -> InboundMedia:
+    """Turn the upload links in ONE message into host-ready media.
+
+    Called on the live message only -- never on the quoted-history block, which
+    is also part of the agent-facing body. Extracting after that prepend would
+    fetch every attachment ever mentioned in the topic, an unbounded set a user
+    can grow at will (issue #271).
+
+    One refusal never costs the turn: the agent is told, in the text, that it has
+    no file and why -- a dead Markdown link is what this function exists to
+    replace.
+    """
+    result = InboundMedia()
+    urls = extract_upload_urls(content, getattr(adapter, "site", "") or "")
+    if not urls:
+        return result
+
+    max_bytes = resolve_media_max_mb() * 1024 * 1024
+    auth = _basic_auth(
+        getattr(adapter, "email", "") or "", getattr(adapter, "api_key", "") or ""
+    )
+
+    for url in urls:
+        try:
+            fetched = await fetch_upload(url, auth, max_bytes, adapter.site)
+            cached = await asyncio.to_thread(
+                cache_inbound_upload,
+                fetched["data"],
+                fetched["filename"],
+                fetched["content_type"],
+            )
+        except MediaRefused as exc:
+            result.refusals.append(f"[an upload could not be read: {exc}]")
+            continue
+        except Exception as exc:
+            logger.warning(
+                "inbound upload failed [url=%s]: %s", mask_pii(url), mask_pii(str(exc))
+            )
+            result.refusals.append("[an upload could not be read: the download failed]")
+            continue
+
+        result.paths.append(cached["path"])
+        result.media_types.append(cached["media_type"])
+        # We never inline a file's content into the turn's text, so the host is
+        # told so explicitly rather than left to hermes' legacy default.
+        result.text_inlined.append(False)
+
+    return result
 
 
 async def upload_file_to_zulip(

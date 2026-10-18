@@ -203,7 +203,7 @@ filtered — see [Troubleshooting](#troubleshooting).
 | **Slash Commands** | `/streams`, `/user`, `/pin`, `/unpin` are answered directly; `/help`, `/status`, `/model` pass through to Hermes | you want a quick answer without spending a model call |
 | **Status Reactions** | 👀 while working → ✅ when done (⚠️ on error) | you want to know the turn is alive without reading it |
 | **Typing Indicator** | Zulip shows the bot as typing while it works | you want to see it is alive without reading a reply |
-| **File Attachments** | inbound CSVs, PDFs and JSON are downloaded and readable; outbound files are sent as uploads | you're handing the bot a file, or want one back |
+| **File Attachments** | inbound uploads are downloaded, cached where the host caches media, and attached to the turn — an image is handed to the model for vision, any other file's path is named to the agent; outbound files are sent as uploads | you're handing the bot a file, or want one back |
 | **Persistent Event Queue** | resumes from where it left off across restarts | you restart the gateway |
 | **Durable Deduplication** | an on-disk store stops a replayed event being processed twice | a restart or reconnect might replay a message |
 | **Bot Workspace** | sandboxed file storage under `{data_dir}/workspace/`, path traversal and symlinks refused | the bot generates a report you want back |
@@ -729,7 +729,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `ZULIP_RESPONSE_PREFIX` | *(empty)* | `🤖 ` | prepended to every reply |
 | `ZULIP_BLOCK_SECRET_LEAKS` | `true` | `false` | refuse to send a message containing a host credential |
 | `ZULIP_ALLOW_INSECURE_HTTP` | `false` | `true` | allow an `http://` or private `ZULIP_SITE` — the API key then travels unencrypted |
-| `ZULIP_MEDIA_MAX_MB` | `5` | `20` | max inbound attachment size |
+| `ZULIP_MEDIA_MAX_MB` | `5` | `20` | max inbound attachment size (enforced before and after the download) |
 | `ZULIP_BLOCK_STREAMING` | `false` | `true` | experimental block streaming |
 
 ### Timeouts and legacy

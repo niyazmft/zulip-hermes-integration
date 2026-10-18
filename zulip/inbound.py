@@ -70,6 +70,7 @@ from .engagement import (
     is_stop_listening_message,
 )
 from .logger import mask_pii
+from .media import collect_inbound_media
 from .reactions import ReactionLifecycle
 from .settings import resolve_chatmode as _resolve_chatmode
 from .text_utils import (
@@ -136,6 +137,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
 
     # Strip Zulip @-mention syntax and HTML
     content = strip_html_to_text(content)
+    # Captured BEFORE the quoted-history block is prepended below: that block
+    # also names uploads, and fetching them would download every attachment the
+    # topic ever mentioned -- an unbounded set a user can grow at will (#271).
+    media_source = content
     # Captured before any gating or prompt-prefixing, so it still identifies a
     # native slash command once a history block has been prepended below. The
     # per-session queue must never serialize these: the gateway answers them
@@ -700,6 +705,29 @@ async def handle_message(adapter: Any, message: dict) -> None:
         message_id=str(message_id),
         metadata=extra_meta,
     )
+
+    # --- Inbound uploads (issue #271) ---
+    #
+    # Before this, a file a user uploaded reached the agent as nothing but a
+    # Markdown link holding the SERVER path, so the host resolved that path under
+    # the profile folder and the agent had no file to open. The host's own cache
+    # is used where it exists (it attaches an image to the model turn and names
+    # any other file's path to the agent); the plugin only has to supply
+    # ``media_urls`` / ``media_types`` / ``media_text_inlined`` and the type.
+    #
+    # Deliberately here, after every gate and every early return: a dropped
+    # message must not cost a download. A refusal is one line in the turn, never
+    # a lost reply.
+    inbound_media = await collect_inbound_media(adapter, media_source)
+    if inbound_media.paths:
+        event.media_urls = inbound_media.paths
+        event.media_types = inbound_media.media_types
+        event.media_text_inlined = inbound_media.text_inlined
+        event.message_type = (
+            MessageType.PHOTO if inbound_media.has_images else MessageType.DOCUMENT
+        )
+    if inbound_media.refusals:
+        event.text = event.text + "\n\n" + "\n".join(inbound_media.refusals)
 
     # --- Approval decisions (issue #222, authority #228) ---
     #
