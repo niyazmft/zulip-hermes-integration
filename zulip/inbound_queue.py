@@ -44,6 +44,32 @@ def event_route(event: Any) -> tuple[str, Any]:
     return chat_id, getattr(event, "metadata", None)
 
 
+def work_item_key(event: Any) -> str:
+    """The one key a work item's dispatch, delivery and end-of-run check share.
+
+    The delivery audit arms this key on dispatch (``deliver_empty`` is written
+    only if the run never sends) and checks it on the way out. Two derivations
+    drifted: dispatch keyed on the *event* metadata, which carries the topic
+    NAME, while delivery keyed on the gateway's *send* metadata, whose
+    ``thread_id`` is the stable topic-session CONVERSATION ID. With
+    ``ZULIP_TOPIC_SESSIONS`` on those are different strings, so the armed entry
+    was never marked and every answered run ALSO recorded ``deliver_empty`` --
+    with a "run ended without a reply" notice and a ✅ turned into ⚠️, on a turn
+    that answered fine (issue #272).
+
+    The conversation id wins whenever the host set one, because that is what the
+    gateway puts in the send metadata; the topic name is the fallback for a host
+    without stable topic sessions, which is what the event metadata carries. The
+    format matches :func:`zulip.tracing.trace_key` exactly, so the two sides can
+    be compared as strings.
+    """
+    chat_id, metadata = event_route(event)
+    source = getattr(event, "source", None)
+    thread_id = str(getattr(source, "thread_id", "") or "").strip()
+    topic = thread_id or (outbound.metadata_topic(metadata) or "")
+    return f"{chat_id}\x00{topic}"
+
+
 class SessionQueueController:
     """Owns the per-session queue orchestration for one adapter."""
 

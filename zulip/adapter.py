@@ -313,7 +313,11 @@ from .outbound import (
 # ``self._connection`` / ``self._queue_controller`` at call time.
 from . import inbound
 from .connection import ZulipConnection, message_with_flags as _message_with_flags
-from .inbound_queue import SessionQueueController, event_route as _event_route
+from .inbound_queue import (
+    SessionQueueController,
+    event_route as _event_route,
+    work_item_key as _work_item_key,
+)
 
 # Stable conversation identity — the session/topic state, the session-key
 # derivation and the rename/delete maintenance — lives in ``zulip.routing``.
@@ -909,7 +913,9 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return
-        self._audit_turns[tracing.trace_key(chat_id, metadata)] = False
+        # One key, shared with the delivery path and the end-of-run check: the
+        # conversation id when the host set one, the topic name otherwise (#272).
+        self._audit_turns[_work_item_key(event)] = False
         await self._audit_logger.log_dispatch_turn(
             chat_id=chat_id,
             topic=_metadata_topic(metadata),
@@ -953,8 +959,7 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return None
-        key = tracing.trace_key(chat_id, metadata)
-        attempted = self._audit_turns.pop(key, None)
+        attempted = self._audit_turns.pop(_work_item_key(event), None)
         if attempted is False:
             await self._audit_logger.log_deliver_empty(
                 chat_id=chat_id, topic=_metadata_topic(metadata)
