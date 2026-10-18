@@ -454,3 +454,72 @@ class TestStartupVersionCheckReportsAFailedLookup:
 
         text = self._text(caplog)
         assert "2.0.0" in text
+
+
+class TestHttpGetJsonSignalsFailure:
+    """The HTTP layer must fail *loudly and specifically*, on every path.
+
+    Observed live while delegating this fix: a generated ``_http_get_json``
+    caught ``HTTPError`` and ``socket.timeout``, neither of which the module
+    imports, so the failure path raised ``NameError`` while handling the very
+    network failure #264 is about. The ``py_compile`` gate passed it -- these
+    tests are what actually catch it.
+    """
+
+    def _fake_response(self, body: bytes):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self):
+                return body
+
+        return _Resp()
+
+    def test_transport_failure_raises_lookup_failed(self, monkeypatch):
+        import urllib.error
+
+        from zulip.updater import LookupFailed, _http_get_json
+
+        def boom(*a, **k):
+            raise urllib.error.URLError("Name or service not known")
+
+        monkeypatch.setattr("zulip.updater.urllib.request.urlopen", boom)
+
+        with pytest.raises(LookupFailed, match="Name or service not known"):
+            _http_get_json("https://api.github.com/repos/owner/repo/releases/latest")
+
+    def test_any_exception_type_is_wrapped(self, monkeypatch):
+        from zulip.updater import LookupFailed, _http_get_json
+
+        def boom(*a, **k):
+            raise RuntimeError("proxy said no")
+
+        monkeypatch.setattr("zulip.updater.urllib.request.urlopen", boom)
+
+        with pytest.raises(LookupFailed, match="proxy said no"):
+            _http_get_json("https://api.github.com/x")
+
+    def test_non_object_payload_is_a_failure(self, monkeypatch):
+        from zulip.updater import LookupFailed, _http_get_json
+
+        monkeypatch.setattr(
+            "zulip.updater.urllib.request.urlopen",
+            lambda *a, **k: self._fake_response(b'["not", "an", "object"]'),
+        )
+
+        with pytest.raises(LookupFailed, match="not a JSON object"):
+            _http_get_json("https://api.github.com/x")
+
+    def test_success_returns_the_object(self, monkeypatch):
+        from zulip.updater import _http_get_json
+
+        monkeypatch.setattr(
+            "zulip.updater.urllib.request.urlopen",
+            lambda *a, **k: self._fake_response(b'{"tag_name": "v9.9.9"}'),
+        )
+
+        assert _http_get_json("https://api.github.com/x") == {"tag_name": "v9.9.9"}

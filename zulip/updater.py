@@ -216,7 +216,14 @@ def _verify_checksums(extract_dir: Path, source_root: Path, files: list[str]) ->
 
 
 def _http_get_json(url: str, timeout: int = 10) -> dict:
-    """Fetch JSON from URL with short timeout."""
+    """Fetch a JSON object from URL with a short timeout.
+
+    A failure is signalled by raising :class:`LookupFailed`, never by returning
+    a falsy value: a ``None`` return used to be indistinguishable from "there is
+    no newer release", which is exactly how a failed check became "Already up to
+    date" with exit 0 (issue #264). The message is short and sanitized -- it is
+    printed to an operator's terminal.
+    """
     try:
         req = urllib.request.Request(
             url,
@@ -226,10 +233,17 @@ def _http_get_json(url: str, timeout: int = 10) -> dict:
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, HTTPError, socket.timeout, json.JSONDecodeError) as e:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        # Deliberately Exception, not a tuple of guessed transports: this module
+        # must not fail with a NameError *while handling* a network failure.
         logger.warning("update check failed: %s", e)
-        raise LookupFailed(str(e).strip()[:200]) from e
+        reason = " ".join(str(e).split())[:200] or e.__class__.__name__
+        raise LookupFailed(reason) from e
+
+    if not isinstance(payload, dict):
+        raise LookupFailed("release metadata was not a JSON object")
+    return payload
 
 
 def _http_get_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
@@ -274,26 +288,34 @@ def check_for_update(repo: str, current_version: str) -> UpdateCheck:
     """
     try:
         data = _http_get_json(RELEASE_API_URL.format(repo=repo))
-        if not data:
-            return UpdateCheck(status='failed', error='no newer release exists')
-        latest = data.get('tag_name', '').lstrip('v')
-        if not latest:
-            return UpdateCheck(status='failed', error='the release metadata carried no version tag')
-        try:
-
-            def _to_tuple(v: str):
-                return tuple((int(x) for x in v.split('.') if x.isdigit()))
-            latest_tuple = _to_tuple(latest)
-            current_tuple = _to_tuple(current_version)
-            if not latest_tuple or not current_tuple:
-                return UpdateCheck(status='failed', error=f'could not compare versions: {latest!r}')
-            if latest_tuple > current_tuple:
-                return UpdateCheck(status='update', latest=latest)
-        except Exception as exc:
-            return UpdateCheck(status='failed', error=str(exc))
     except LookupFailed as exc:
-        return UpdateCheck(status='failed', error=str(exc))
-    return UpdateCheck(status='current', latest=latest)
+        # The lookup did not answer. Not the same fact as "nothing newer".
+        return UpdateCheck(status="failed", error=str(exc))
+
+    latest = str(data.get("tag_name") or "").lstrip("v").strip()
+    if not latest:
+        return UpdateCheck(
+            status="failed", error="the release metadata carried no version tag"
+        )
+
+    try:
+        # Simple tuple comparison for semver-like versions.
+        def _to_tuple(v: str):
+            return tuple(int(x) for x in v.split(".") if x.isdigit())
+
+        latest_tuple = _to_tuple(latest)
+        current_tuple = _to_tuple(current_version)
+        # An unparseable tag (e.g. "nightly") is not a comparison that answered
+        # "nothing newer" -- it is a check that could not be performed.
+        if not latest_tuple or not current_tuple:
+            return UpdateCheck(
+                status="failed", error=f"could not compare versions: {latest!r}"
+            )
+        if latest_tuple > current_tuple:
+            return UpdateCheck(status="update", latest=latest)
+    except Exception as exc:
+        return UpdateCheck(status="failed", error=str(exc))
+    return UpdateCheck(status="current", latest=latest)
 
 
 def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, str]:
@@ -434,8 +456,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         python -m zulip.updater --check-only  # just check, don't update
         python -m zulip.updater --help        # show help
 
-    Returns a process exit code: 0 when up to date or updated, 1 on a manifest
-    or update failure, 2 when --check-only finds an incomplete install (#204).
+    Returns a process exit code: 0 when up to date, when an update was
+    installed, or when --check-only found one; 1 on a manifest or update
+    failure; 2 when --check-only finds an incomplete install (#204); 3 when
+    the version lookup could not answer (#264) -- so a cron job or update.sh
+    can tell "checked, nothing newer" from "could not check".
     """
     import argparse
 
@@ -479,14 +504,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Plugin dir: {plugin_dir}")
     print()
 
-    newer = check_for_update(repo, current)
+    check = check_for_update(repo, current)
 
-    if not newer and not missing:
-        print("\u2705 Already up to date.")
-        return 0
-
-    if newer:
-        print(f"\u2191 Update available: v{current} \u2192 v{newer}")
+    if check.status == "update":
+        print(f"\u2191 Update available: v{current} \u2192 v{check.latest}")
+    elif check.status == "failed":
+        # A print, not only a logger.warning: on a host that never configured
+        # logging the warning is invisible, and this line used to say the
+        # opposite of the truth (issue #264).
+        print(f"\u26a0\ufe0f  Could not check for updates: {check.error}")
     if missing:
         shown = ", ".join(missing[:5]) + ("\u2026" if len(missing) > 5 else "")
         print(
@@ -497,20 +523,37 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.check_only:
         if missing:
+            # Integrity first: this answer must not depend on the network.
             print("This install is incomplete. Run without --check-only to repair it.")
             return 2
-        print("Run without --check-only to download and install.")
+        if check.status == "failed":
+            print(
+                "Could not check for updates, so nothing was compared. "
+                "Try again when the lookup succeeds."
+            )
+            return 3
+        if check.status == "update":
+            print("Run without --check-only to download and install.")
+            return 0
+        print("\u2705 Already up to date.")
         return 0
 
-    print("Downloading and verifying...")
-    success, message = perform_update(repo, plugin_dir, plugin_files)
+    # Not --check-only: repair an incomplete install, and install when the
+    # lookup said so. A failed lookup installs nothing -- nothing was compared.
+    if check.status == "update" or missing:
+        print("Downloading and verifying...")
+        success, message = perform_update(repo, plugin_dir, plugin_files)
+        if success:
+            print(f"\u2705 {message}")
+            return 0
+        print(f"\u274c {message}")
+        return 1
 
-    if success:
-        print(f"\u2705 {message}")
-        return 0
-    print(f"\u274c {message}")
-    return 1
+    if check.status == "failed":
+        return 3
 
+    print("\u2705 Already up to date.")
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
