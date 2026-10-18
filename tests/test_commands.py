@@ -245,3 +245,69 @@ class TestAdapterIntegration:
 
         await adapter._handle_message(message)
         assert ai_called is True
+
+
+class TestNoPluginCommandShadowsTheGateway:
+    """#251 / ledger row 5: the gateway-owned set is derived, not remembered.
+
+    The set used to exist as three prose copies in ``commands.py``, one ending in
+    a literal ``...`` — hand-maintained and incomplete by admission. This is the
+    ``PLUGIN_FILES`` drift mechanism (row 1) applied to command names, and it has
+    already bitten twice: #43 (``/version``) and #190/#191 (``/help``,
+    ``/status``, ``/model``).
+    """
+
+    def test_the_plugin_registers_no_gateway_owned_name(self):
+        from zulip.commands import GATEWAY_NATIVE_COMMANDS, plugin_command_names
+
+        collides = plugin_command_names() & GATEWAY_NATIVE_COMMANDS
+        assert not collides, (
+            "the plugin registers a name the gateway owns: "
+            f"{sorted(collides)} — that shadows the gateway command (#190)"
+        )
+
+    def test_the_recorded_set_names_its_host_source(self):
+        """A constant that does not say where it came from is a memory, not a source."""
+        from zulip.commands import GATEWAY_NATIVE_COMMANDS, GATEWAY_NATIVE_SOURCE
+
+        assert GATEWAY_NATIVE_COMMANDS, "the gateway-owned set must not be empty"
+        assert "GATEWAY_KNOWN_COMMANDS" in GATEWAY_NATIVE_SOURCE
+        assert "v" in GATEWAY_NATIVE_SOURCE, "record the host version it was read from"
+
+    def test_every_name_in_the_recorded_set_falls_through(self):
+        """Behaviour follows the set, not just the constant."""
+        from zulip.commands import GATEWAY_NATIVE_COMMANDS
+
+        for name in sorted(GATEWAY_NATIVE_COMMANDS):
+            result = handle_command(f"/{name}", "dm:1", "a@x.com", "Alice")
+            assert result.handled is False, (
+                f"/{name} is gateway-owned but the plugin router handled it (#190)"
+            )
+
+
+class TestCommandCollisions:
+    """The comparison the gate uses, tested directly — including that it fires."""
+
+    def _collisions(self, plugin, gateway):
+        from zulip.commands import command_collisions
+
+        return command_collisions(plugin, gateway)
+
+    def test_a_shared_name_is_reported(self):
+        assert self._collisions({"help", "pin"}, {"help", "model"}) == ["help"]
+
+    def test_every_collision_is_reported_in_order(self):
+        assert self._collisions({"stop", "help", "pin"}, {"stop", "help"}) == [
+            "help",
+            "stop",
+        ]
+
+    def test_disjoint_sets_report_nothing(self):
+        assert self._collisions({"pin", "unpin"}, {"help", "model"}) == []
+
+    def test_names_are_normalised(self):
+        # A leading slash or mixed case must not hide a collision.
+        assert self._collisions({"/Help", "PIN"}, {"help", "pin"}) == ["help", "pin"]
+
+    def test_an_empty_plugin_set_is_safe(self):
+        assert self._collisions(set(), {"help"}) == []
