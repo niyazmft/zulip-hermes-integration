@@ -361,6 +361,67 @@ def _resolve_filename(url: str, content_disposition: Optional[str]) -> str:
     return filename
 
 
+def _host_cache_media_bytes(
+    data: bytes, filename: str, mime_type: str
+) -> Optional[dict]:
+    """Let the host classify and cache inbound bytes, when it can.
+
+    Hermes' own cache is where the host looks for media and, on the profile it
+    launched with, where it cleans up. ``cache_media_bytes`` classifies the
+    bytes, checks that an image really is one, and returns a path plus the MIME
+    type ``MessageEvent.media_types`` expects. It exists on every supported host
+    (``__min_hermes__`` 0.18.2 included), but this stays a *capability*: an
+    absent or broken host must degrade to a temp file, never take the turn down.
+    """
+    try:
+        from gateway.platforms.base import cache_media_bytes
+    except Exception:
+        return None
+
+    try:
+        cached = cache_media_bytes(data, filename=filename, mime_type=mime_type)
+    except Exception as e:  # a host cache that raises is not a reason to drop a turn
+        logger.warning("host media cache failed [err=%s]", e)
+        return None
+
+    if cached is None:
+        return None
+
+    return {
+        "path": cached.path,
+        "media_type": cached.media_type,
+        "kind": cached.kind,
+    }
+
+
+def cache_inbound_upload(data: bytes, filename: str, mime_type: str) -> dict:
+    """Persist one inbound upload where the agent can open it.
+
+    Prefers the host cache (see :func:`_host_cache_media_bytes`); falls back to a
+    system temp file when the host has no cache to offer. Returns
+    ``{"path", "media_type", "kind"}``.
+    """
+    try:
+        host_cached = _host_cache_media_bytes(data, filename, mime_type)
+        if host_cached:
+            return host_cached
+    except Exception as e:  # patched or unusual host helper; still cache the file
+        logger.warning("host media cache raised [err=%s]", e)
+
+    fd, path = tempfile.mkstemp(suffix=f"_{filename}")
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+    media_type = mime_type or "application/octet-stream"
+    return {
+        "path": path,
+        "media_type": media_type,
+        "kind": "image" if media_type.startswith("image/") else "document",
+    }
+
+
 def resolve_media_max_mb() -> int:
     """Read max upload size from environment."""
     raw = runtime_scope.get_setting("ZULIP_MEDIA_MAX_MB", "").strip()
