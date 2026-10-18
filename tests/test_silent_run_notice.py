@@ -83,8 +83,12 @@ def adapter(mock_platform_config, monkeypatch, tmp_path):
 
 
 def stream_event(topic=TOPIC, chat_id=CHAT_ID, message_id=MESSAGE_ID):
+    # The source carries the session's thread_id and the send metadata is
+    # derived from it in the real gateway, so a fixture with one and not the
+    # other models a state the host cannot produce -- the shape that let #272
+    # hide (dispatch read the source, delivery read the send metadata).
     return SimpleNamespace(
-        source=SimpleNamespace(chat_id=chat_id),
+        source=SimpleNamespace(chat_id=chat_id, thread_id=topic),
         metadata={"thread_id": topic},
         message_id=message_id,
     )

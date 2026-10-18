@@ -340,8 +340,13 @@ class TestTraceSend:
 class TestTurnPairing:
     @staticmethod
     def _event():
+        # The source carries the session's thread_id and the send metadata is
+        # DERIVED from it (gateway.platforms.base._thread_metadata_for_source),
+        # so a fixture with one and not the other models a state the host cannot
+        # produce -- which is how #272 hid: the key is read from the source on
+        # one side and from the send metadata on the other.
         return SimpleNamespace(
-            source=SimpleNamespace(chat_id="573423"),
+            source=SimpleNamespace(chat_id="573423", thread_id="deploy"),
             metadata={"thread_id": "deploy"},
             message_id="55",
         )
