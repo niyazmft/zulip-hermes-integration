@@ -265,6 +265,84 @@ async def download_upload(
     return {"path": path, "content_type": content_type, "filename": filename}
 
 
+async def fetch_upload(
+    url: str, auth_header: str, max_bytes: int, base_url: str
+) -> dict:
+    """Download one inbound upload, same-site only, without following redirects.
+
+    Returns ``{"data": bytes, "content_type": str, "filename": str}``. A refusal
+    raises :class:`MediaRefused` with a short message fit for a chat turn.
+
+    Three properties, each because the alternative was a hole:
+
+    * **same scheme and host as the Zulip site** -- the path in a message is
+      attacker-supplyable, so a download that trusts it would let a user point
+      the bot's authenticated request at any host it can reach.
+    * **no redirects** -- ``requests`` follows them by default, which would
+      defeat that check one hop later.
+    * **a size cap enforced before and after reading** -- ``Content-Length`` is
+      a claim, and an absent one is not zero.
+    """
+    base = urlparse(base_url)
+    target = urlparse(url)
+    if (
+        target.scheme != base.scheme
+        or target.netloc != base.netloc
+        or not target.path.startswith("/user_uploads/")
+    ):
+        raise MediaRefused("not an upload on this Zulip site")
+
+    try:
+        import requests
+    except ImportError:
+        raise ImportError("requests package required for media download")
+
+    def _fetch():
+        return requests.get(
+            url,
+            headers={"Authorization": f"Basic {auth_header}"},
+            stream=True,
+            timeout=30,
+            allow_redirects=False,
+        )
+
+    try:
+        response = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise MediaRefused(f"the download failed: {e}") from e
+
+    if 300 <= response.status_code < 400:
+        raise MediaRefused(
+            "the upload replied with a redirect; refusing to follow it off the site"
+        )
+    if not response.ok:
+        raise MediaRefused(f"the server answered {response.status_code}")
+
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > max_bytes:
+                raise MediaRefused(
+                    f"the upload is larger than the allowed limit "
+                    f"({declared} > {max_bytes} bytes)"
+                )
+        except ValueError:
+            pass  # a malformed header is a claim we cannot use; the body check stands
+
+    data = response.content
+    if len(data) > max_bytes:
+        raise MediaRefused(
+            f"the upload is larger than the allowed limit "
+            f"({len(data)} > {max_bytes} bytes)"
+        )
+
+    return {
+        "data": data,
+        "content_type": response.headers.get("Content-Type", "application/octet-stream"),
+        "filename": _resolve_filename(url, response.headers.get("Content-Disposition")),
+    }
+
+
 def _resolve_filename(url: str, content_disposition: Optional[str]) -> str:
     """Resolve filename from Content-Disposition or URL path."""
     filename = ""
