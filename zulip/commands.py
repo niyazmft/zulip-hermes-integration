@@ -105,6 +105,15 @@ GATEWAY_NATIVE_COMMANDS: frozenset[str] = frozenset({
 GATEWAY_NATIVE_SOURCE = _GATEWAY_NATIVE_SOURCE
 
 
+def command_collisions(plugin_names: Any, gateway_names: Any) -> list[str]:
+    def _norm(name) -> str:
+        return str(name).strip().lower().lstrip("/")
+
+    plugin = {_norm(n) for n in plugin_names or ()} - {""}
+    gateway = {_norm(n) for n in gateway_names or ()} - {""}
+    return sorted(plugin & gateway)
+
+
 def plugin_command_names() -> frozenset[str]:
     """The names this plugin answers itself.
 
