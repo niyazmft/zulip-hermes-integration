@@ -453,3 +453,246 @@ class TestUploadFileToZulip:
             mock_client.upload_file.assert_not_called()
         finally:
             tempfile.tempdir = original_temp
+
+
+class TestMarkdownAndHtmlExtraction:
+    """#271: the content is Markdown, and the old pattern ate the closing token.
+
+    ``UPLOAD_PATH_RE`` was written for ``apply_markdown`` HTML, but the plugin
+    never asks for that, so ``message["content"]`` is raw Markdown. On
+    ``[shot.png](/user_uploads/2/ab/c1/shot.png)`` it kept the ``)`` and the
+    download 404'd. It also could not tell a protocol-relative link from a
+    same-site one.
+    """
+
+    BASE = "https://chat.example.com"
+
+    def test_markdown_link_does_not_keep_the_closing_paren(self):
+        content = "look [shot.png](/user_uploads/2/ab/c1/shot.png) please"
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/2/ab/c1/shot.png"
+        ]
+
+    def test_markdown_link_with_title(self):
+        content = '[report](/user_uploads/1/a/b/report.pdf "the report")'
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/1/a/b/report.pdf"
+        ]
+
+    def test_html_href_still_works(self):
+        content = '<p><a href="/user_uploads/1/2/3/file.png">image</a></p>'
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/1/2/3/file.png"
+        ]
+
+    def test_bare_path_in_text(self):
+        content = "screenshot at /user_uploads/2/ab/c1/shot.png done"
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/2/ab/c1/shot.png"
+        ]
+
+    def test_absolute_url_on_this_site(self):
+        content = "see https://chat.example.com/user_uploads/9/x/y/z.png"
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/9/x/y/z.png"
+        ]
+
+    def test_protocol_relative_other_site_is_rejected(self):
+        """`//other.example/user_uploads/...` is another site, not ours."""
+        content = "see //other.example/user_uploads/1/a/b.png"
+        assert extract_upload_urls(content, self.BASE) == []
+
+    def test_absolute_url_on_another_site_is_rejected(self):
+        content = "see https://evil.example/user_uploads/1/a/b.png"
+        assert extract_upload_urls(content, self.BASE) == []
+
+    def test_deduplicates_and_stays_stable(self):
+        content = (
+            "[a](/user_uploads/1/a/first.png) and again "
+            "/user_uploads/1/a/first.png and [b](/user_uploads/2/b/second.pdf)"
+        )
+        urls = extract_upload_urls(content, self.BASE)
+        assert urls == [
+            "https://chat.example.com/user_uploads/1/a/first.png",
+            "https://chat.example.com/user_uploads/2/b/second.pdf",
+        ]
+
+    def test_non_upload_links_are_ignored(self):
+        content = "[docs](https://chat.example.com/help) and [x](/user_uploads/1/a/b.png)"
+        assert extract_upload_urls(content, self.BASE) == [
+            "https://chat.example.com/user_uploads/1/a/b.png"
+        ]
+
+
+class TestFetchUpload:
+    """Fetching an upload: same-site only, no redirects, size-capped."""
+
+    BASE = "https://z.com"
+
+    def _response(self, *, status=200, body=b"data", headers=None):
+        response = MagicMock()
+        response.status_code = status
+        response.ok = 200 <= status < 300
+        response.headers = headers if headers is not None else {"Content-Type": "image/png"}
+        response.content = body
+        return response
+
+    @pytest.mark.asyncio
+    async def test_success_returns_bytes_type_and_name(self):
+        from zulip.media import fetch_upload
+
+        with patch("requests.get", return_value=self._response()) as get:
+            result = await fetch_upload(
+                "https://z.com/user_uploads/1/2/3/shot.png",
+                "auth123",
+                max_bytes=1024,
+                base_url=self.BASE,
+            )
+
+        assert result["data"] == b"data"
+        assert result["content_type"] == "image/png"
+        assert result["filename"] == "shot.png"
+        assert get.call_args.kwargs["allow_redirects"] is False
+        assert get.call_args.kwargs["headers"]["Authorization"] == "Basic auth123"
+
+    @pytest.mark.asyncio
+    async def test_other_origin_is_refused_without_a_request(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        with patch("requests.get") as get:
+            with pytest.raises(MediaRefused, match="not an upload on this Zulip site"):
+                await fetch_upload(
+                    "https://evil.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+        get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_scheme_is_refused(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        with patch("requests.get") as get:
+            with pytest.raises(MediaRefused):
+                await fetch_upload(
+                    "http://z.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+        get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_is_refused_not_followed(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        response = self._response(status=302, headers={"Location": "https://evil.com/x"})
+        with patch("requests.get", return_value=response):
+            with pytest.raises(MediaRefused, match="redirect"):
+                await fetch_upload(
+                    "https://z.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+
+    @pytest.mark.asyncio
+    async def test_size_limit_from_content_length(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        response = self._response(headers={"Content-Length": "5000"})
+        with patch("requests.get", return_value=response):
+            with pytest.raises(MediaRefused, match="larger than"):
+                await fetch_upload(
+                    "https://z.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+
+    @pytest.mark.asyncio
+    async def test_size_limit_from_body_when_the_header_lies(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        response = self._response(body=b"x" * 2000, headers={})
+        with patch("requests.get", return_value=response):
+            with pytest.raises(MediaRefused, match="larger than"):
+                await fetch_upload(
+                    "https://z.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+
+    @pytest.mark.asyncio
+    async def test_bad_status_is_refused(self):
+        from zulip.media import MediaRefused, fetch_upload
+
+        with patch("requests.get", return_value=self._response(status=404)):
+            with pytest.raises(MediaRefused, match="404"):
+                await fetch_upload(
+                    "https://z.com/user_uploads/1/2/3/x.png",
+                    "auth123",
+                    max_bytes=1024,
+                    base_url=self.BASE,
+                )
+
+
+class TestCacheInboundUpload:
+    """The host's own media cache is used when it exists (#271)."""
+
+    def test_host_cache_is_preferred(self, monkeypatch):
+        from zulip import media
+
+        monkeypatch.setattr(
+            media,
+            "_host_cache_media_bytes",
+            lambda data, filename, mime: {
+                "path": "/home/h/.hermes/cache/images/img_1.png",
+                "media_type": "image/png",
+                "kind": "image",
+            },
+        )
+
+        cached = media.cache_inbound_upload(b"bytes", "shot.png", "image/png")
+        assert cached == {
+            "path": "/home/h/.hermes/cache/images/img_1.png",
+            "media_type": "image/png",
+            "kind": "image",
+        }
+
+    def test_falls_back_to_a_tempfile_when_the_host_has_no_cache(self, monkeypatch):
+        from zulip import media
+
+        monkeypatch.setattr(media, "_host_cache_media_bytes", lambda *a, **k: None)
+        cached = media.cache_inbound_upload(b"bytes", "shot.png", "image/png")
+        try:
+            assert Path(cached["path"]).read_bytes() == b"bytes"
+            assert cached["media_type"] == "image/png"
+            assert cached["kind"] == "image"
+        finally:
+            Path(cached["path"]).unlink()
+
+    def test_a_document_is_classified_as_a_document(self, monkeypatch):
+        from zulip import media
+
+        monkeypatch.setattr(media, "_host_cache_media_bytes", lambda *a, **k: None)
+        cached = media.cache_inbound_upload(b"%PDF", "a.pdf", "application/pdf")
+        try:
+            assert cached["kind"] == "document"
+        finally:
+            Path(cached["path"]).unlink()
+
+    def test_host_cache_that_raises_falls_back(self, monkeypatch):
+        from zulip import media
+
+        def boom(*a, **k):
+            raise RuntimeError("host cache exploded")
+
+        monkeypatch.setattr(media, "_host_cache_media_bytes", boom)
+        cached = media.cache_inbound_upload(b"bytes", "shot.png", "image/png")
+        try:
+            assert Path(cached["path"]).exists()
+        finally:
+            Path(cached["path"]).unlink()
