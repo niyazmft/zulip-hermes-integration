@@ -128,6 +128,41 @@ class TestAttribution:
         assert adapter.client.edited == []
 
     @pytest.mark.asyncio
+    async def test_stable_topic_session_conversation_id_is_resolved(self, adapter):
+        """Stable topic sessions publish a conversation id in HERMES_SESSION_THREAD_ID.
+
+        The route alias embeds the human topic name, so attribution must resolve
+        the id through the adapter's conversation registry — and only then match.
+        """
+        await started(adapter, topic="api-review")
+        adapter._routing._conversations = SimpleNamespace(
+            current_name=lambda channel_id, conversation_id: (
+                "api-review" if conversation_id == "c0123456789ab" else None
+            )
+        )
+        adapter._test_context["HERMES_SESSION_CHAT_ID"] = "573423"
+        adapter._test_context["HERMES_SESSION_THREAD_ID"] = "c0123456789ab"
+
+        adapter.record_tool_step(tool_name="exec", status="ok", duration_ms=120)
+        await _settle()
+
+        final = adapter.client.edited[-1]["content"]
+        assert "✓ exec" in final
+
+    @pytest.mark.asyncio
+    async def test_conversation_id_resolving_to_another_topic_is_dropped(self, adapter):
+        await started(adapter, topic="api-review")
+        adapter._routing._conversations = SimpleNamespace(
+            current_name=lambda channel_id, conversation_id: "deploys"
+        )
+        adapter._test_context["HERMES_SESSION_CHAT_ID"] = "573423"
+        adapter._test_context["HERMES_SESSION_THREAD_ID"] = "c0123456789ab"
+
+        adapter.record_tool_step(tool_name="exec", status="ok")
+        await _settle()
+        assert adapter.client.edited == []
+
+    @pytest.mark.asyncio
     async def test_host_session_key_alias_also_matches(self, adapter, monkeypatch):
         """When the host exposes a session key, it is used as its own alias."""
         await started(adapter)

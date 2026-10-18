@@ -171,6 +171,20 @@ class TestRecovery:
         assert records(adapter) == {}, "and dropped regardless of the outcome"
 
     @pytest.mark.asyncio
+    async def test_a_refused_edit_posts_a_cancelled_notice(self, adapter):
+        """A board past the edit window still needs a visible terminal state."""
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 777)
+        adapter.client.edit_result = {"result": "error", "msg": "edit window"}
+
+        assert await adapter._recover_interrupted_traces() == 1
+
+        assert len(adapter.client.sent) == 1
+        sent = adapter.client.sent[0]
+        assert sent["type"] == "stream"
+        assert sent["topic"] == "api-review"
+        assert "Cancelled" in sent["content"]
+
+    @pytest.mark.asyncio
     async def test_a_raising_edit_still_clears_the_record(self, adapter):
         def boom(request):
             raise RuntimeError("network")
@@ -226,6 +240,44 @@ class TestRecovery:
         assert await adapter._recover_interrupted_traces() == 2
         assert {e["message_id"] for e in adapter.client.edited} == {701, 702}
         assert records(adapter) == {}
+
+    @pytest.mark.asyncio
+    async def test_two_runs_in_the_same_topic_keep_separate_records(self, adapter):
+        """A new run must not overwrite an orphan's record.
+
+        Records used to be keyed by chat + topic alone, so the next run in the
+        topic replaced the orphan's message id before recovery could edit it —
+        the orphan stayed ``Working`` forever.
+        """
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 701)
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 702)
+
+        stored = records(adapter)
+        assert len(stored) == 2
+        assert {r["message_id"] for r in stored.values()} == {701, 702}
+
+    @pytest.mark.asyncio
+    async def test_recovery_closes_every_orphan_in_a_topic(self, adapter):
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 701)
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 702)
+
+        assert await adapter._recover_interrupted_traces() == 2
+        assert {e["message_id"] for e in adapter.client.edited} == {701, 702}
+        assert records(adapter) == {}
+
+    @pytest.mark.asyncio
+    async def test_finalize_keeps_an_older_orphan_in_the_same_topic(self, adapter):
+        """Finishing one run must not erase the record of an earlier orphan."""
+        from zulip.tracing import drop_trace_record
+
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 701)
+        adapter._persist_trace_record("k1", "573423", {"thread_id": "api-review"}, 702)
+
+        drop_trace_record(adapter, "k1", 702)
+
+        stored = records(adapter)
+        assert len(stored) == 1
+        assert next(iter(stored.values()))["message_id"] == 701
 
 
 class TestShutdown:

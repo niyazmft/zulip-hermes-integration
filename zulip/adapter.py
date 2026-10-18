@@ -8,6 +8,7 @@ Supports stream messages (with topics) and private messages.
 import asyncio
 import logging
 import re
+import sys
 import weakref
 from pathlib import Path
 from typing import Optional, Any
@@ -116,8 +117,25 @@ from .settings import (
 
 # Live adapters, so the plugin-level ``post_tool_call`` callback — registered in
 # ``register(ctx)``, before any adapter exists — can find the one whose trace
-# owns the current work item.
-_LIVE_ADAPTERS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+# owns the current work item. Held in a process-global slot because the plugin
+# can be imported under more than one module namespace (per-profile scopes):
+# each copy would otherwise own a separate empty WeakSet while the adapter lives
+# in the other copy's set, silently disabling the trace and approval outcomes.
+_SHARED_STATE_NAME = "_hermes_zulip_plugin_shared_state"
+
+
+def _shared_live_adapters() -> "weakref.WeakSet[Any]":
+    state = sys.modules.get(_SHARED_STATE_NAME)
+    if state is None:
+        import types
+
+        state = types.ModuleType(_SHARED_STATE_NAME)
+        setattr(state, "live_adapters", weakref.WeakSet())
+        sys.modules[_SHARED_STATE_NAME] = state
+    return getattr(state, "live_adapters")
+
+
+_LIVE_ADAPTERS: "weakref.WeakSet[Any]" = _shared_live_adapters()
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
@@ -633,6 +651,12 @@ class ZulipAdapter(BasePlatformAdapter):
         # callback running in another thread/task can still find its trace.
         self._trace_sessions: dict[str, str] = {}
         _LIVE_ADAPTERS.add(self)
+        logger.info(
+            "zulip adapter registered [module=%s set=%s adapters=%d]",
+            __name__,
+            id(_LIVE_ADAPTERS),
+            len(_LIVE_ADAPTERS),
+        )
         if self._trace_cfg.enabled and ProcessingOutcome is None:
             logger.warning(
                 "ZULIP_ACTIVITY_TRACE is enabled but this gateway does not expose "
@@ -909,7 +933,7 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return
-        self._audit_turns[tracing.trace_key(chat_id, metadata)] = False
+        self._audit_turns[tracing.resolved_trace_key(self, chat_id, metadata)] = False
         await self._audit_logger.log_dispatch_turn(
             chat_id=chat_id,
             topic=_metadata_topic(metadata),
@@ -918,7 +942,7 @@ class ZulipAdapter(BasePlatformAdapter):
 
     def _note_delivery_attempt(self, chat_id: str, metadata: Any) -> None:
         """Mark this work item as having produced something to deliver."""
-        key = tracing.trace_key(chat_id, metadata)
+        key = tracing.resolved_trace_key(self, chat_id, metadata)
         if key in self._audit_turns:
             self._audit_turns[key] = True
 
@@ -953,7 +977,7 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return None
-        key = tracing.trace_key(chat_id, metadata)
+        key = tracing.resolved_trace_key(self, chat_id, metadata)
         attempted = self._audit_turns.pop(key, None)
         if attempted is False:
             await self._audit_logger.log_deliver_empty(

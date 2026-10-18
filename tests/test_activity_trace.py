@@ -70,7 +70,7 @@ class Recorder:
 
 def make_trace(recorder, clock=None, **cfg):
     clock = clock or FakeClock()
-    settings = {"enabled": True, "coalesce_ms": 400, "max_rate": 2.0}
+    settings = {"enabled": True, "coalesce_ms": 400, "max_rate": 2.0, "board_ttl": 0}
     settings.update(cfg)
     return (
         ActivityTrace(
@@ -380,3 +380,62 @@ class TestFailureIsolation:
         await trace.aclose()
         assert trace._pending is None
         assert rec.edits == [], "a cancelled flush must not edit after close"
+
+
+async def _record_rotation(target, old_id, new_id):
+    target.append((old_id, new_id))
+
+
+class TestBoardRotation:
+    """Zulip refuses edits after the realm's edit window; the board must move."""
+
+    @pytest.mark.asyncio
+    async def test_rotate_posts_a_fresh_board_and_closes_the_old_one(self):
+        rec = Recorder()
+        clock = FakeClock()
+        rotations = []
+        trace = ActivityTrace(
+            rec.post,
+            rec.edit,
+            TraceConfig(enabled=True, coalesce_ms=0, board_ttl=0),
+            clock=clock.now,
+            sleep=clock.sleep,
+            on_rotate=lambda old, new: _record_rotation(rotations, old, new),
+        )
+        await trace.start()
+        trace.step("first")
+        await trace._flush()
+
+        rec._post_result = 202
+        await trace._rotate()
+
+        assert len(rec.posts) == 2, "rotation posts a new board"
+        assert trace.message_id == 202
+        assert rec.edits[-1][0] == 101, "the old board is closed"
+        assert "Continued" in rec.edits[-1][1]
+        assert rotations == [(101, 202)], "the durable record can follow the board"
+
+    @pytest.mark.asyncio
+    async def test_finish_posts_terminal_status_when_the_edit_is_refused(self):
+        """A board that outlived the edit window must still say the run ended."""
+        rec = Recorder(edit_result=False)
+        trace, _ = make_trace(rec, coalesce_ms=0)
+        await trace.start()
+        trace.step("work")
+
+        await trace.finish("replied in 10s")
+
+        assert len(rec.posts) == 2, "the terminal state is posted as a new message"
+        assert "**Done**" in rec.posts[-1]
+        assert "replied in 10s" in rec.posts[-1]
+
+    @pytest.mark.asyncio
+    async def test_finish_does_not_post_twice_when_the_edit_succeeds(self):
+        rec = Recorder()
+        trace, _ = make_trace(rec, coalesce_ms=0)
+        await trace.start()
+        trace.step("work")
+
+        await trace.finish("Done.")
+
+        assert len(rec.posts) == 1, "the normal path still edits one board"
