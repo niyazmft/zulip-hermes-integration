@@ -265,26 +265,35 @@ class UpdateCheck:
     status: str
     latest: Optional[str] = None
     error: Optional[str] = None
-def check_for_update(repo: str, current_version: str) -> Optional[str]:
+from dataclasses import dataclass
+
+def check_for_update(repo: str, current_version: str) -> UpdateCheck:
     """Check GitHub releases for a newer version.
 
-    Returns the newer version string, or None if no update / check failed.
+    Returns an UpdateCheck dataclass with the status, latest version, and error message.
     """
-    data = _http_get_json(RELEASE_API_URL.format(repo=repo))
-    if not data:
-        return None
-    latest = data.get("tag_name", "").lstrip("v")
-    if not latest:
-        return None
     try:
-        # Simple tuple comparison for semver-like versions
-        def _to_tuple(v: str):
-            return tuple(int(x) for x in v.split(".") if x.isdigit())
-        if _to_tuple(latest) > _to_tuple(current_version):
-            return latest
-    except Exception:
-        pass
-    return None
+        data = _http_get_json(RELEASE_API_URL.format(repo=repo))
+        if not data:
+            return UpdateCheck(status='failed', error='no newer release exists')
+        latest = data.get('tag_name', '').lstrip('v')
+        if not latest:
+            return UpdateCheck(status='failed', error='the release metadata carried no version tag')
+        try:
+
+            def _to_tuple(v: str):
+                return tuple((int(x) for x in v.split('.') if x.isdigit()))
+            latest_tuple = _to_tuple(latest)
+            current_tuple = _to_tuple(current_version)
+            if not latest_tuple or not current_tuple:
+                return UpdateCheck(status='failed', error=f'could not compare versions: {latest!r}')
+            if latest_tuple > current_tuple:
+                return UpdateCheck(status='update', latest=latest)
+        except Exception as exc:
+            return UpdateCheck(status='failed', error=str(exc))
+    except LookupFailed as exc:
+        return UpdateCheck(status='failed', error=str(exc))
+    return UpdateCheck(status='current', latest=latest)
 
 
 def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, str]:
