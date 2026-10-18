@@ -308,6 +308,62 @@ def _report_gated_base_methods() -> None:
             )
 
 
+def _host_command_names() -> tuple[frozenset[str] | None, str]:
+    """The command names the installed host dispatches, and where they came from.
+
+    Derived from the artifact, never from a list we wrote down: the registry the
+    gateway itself dispatches from is ``hermes_cli.commands.GATEWAY_KNOWN_COMMANDS``
+    (present at v2026.9.14, the declared floor, and every ref since). A host that
+    does not ship it is not a failure -- the plugin records the same set as a
+    floor -- but it is reported, so a silent fallback is visible.
+    """
+    try:
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host registry unavailable ({exc!r})"
+    try:
+        names = frozenset(str(name) for name in GATEWAY_KNOWN_COMMANDS)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host registry unreadable ({exc!r})"
+    return names, f"hermes_cli.commands.GATEWAY_KNOWN_COMMANDS ({len(names)} names)"
+
+
+def _check_command_namespace() -> list[str]:
+    """Fatal when a plugin command shadows a command the host owns (#43, #190, #251).
+
+    A collision is invisible and user-facing: the plugin's router answers the
+    command and the gateway that owns it never sees it, so the user's ``/help``
+    silently does something else. That makes it a gate, not a unit test.
+    """
+    from zulip import commands as plugin_commands
+
+    plugin = plugin_commands.plugin_command_names()
+    host_names, source = _host_command_names()
+    if host_names is not None:
+        gateway, checked_against = host_names, source
+    else:
+        gateway = plugin_commands.GATEWAY_NATIVE_COMMANDS
+        checked_against = (
+            f"the plugin's recorded GATEWAY_NATIVE_COMMANDS "
+            f"({len(gateway)} names; {source})"
+        )
+
+    collisions = plugin_commands.command_collisions(plugin, gateway)
+    if collisions:
+        named = ", ".join(f"/{name}" for name in collisions)
+        return [
+            f"the plugin registers command name(s) the gateway owns: {named} -- a "
+            f"plugin command of that name shadows the host's (#43/#190). Checked "
+            f"against {checked_against}."
+        ]
+
+    print(
+        f"  command namespace: {len(plugin)} plugin command(s) checked against "
+        f"{checked_against}"
+    )
+    return []
+
+
 def _report_media_capabilities() -> None:
     """Print whether inbound uploads can be handed to this host (#271).
 
@@ -493,6 +549,7 @@ def main() -> int:
         failures.append("missing required gateway symbol(s): " + ", ".join(missing))
     failures.extend(_check_thread_metadata_contract())
     failures.extend(_check_registration(adapter))
+    failures.extend(_check_command_namespace())
 
     if failures:
         _print_failure(failures)

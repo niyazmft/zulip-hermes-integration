@@ -311,3 +311,55 @@ class TestCommandCollisions:
 
     def test_an_empty_plugin_set_is_safe(self):
         assert self._collisions(set(), {"help"}) == []
+
+
+class TestTheNamespaceGateFires:
+    """Negative coverage (#250): a gate that never fires is worse than none.
+
+    The unit test above proves the plugin is clean *today*. This proves the
+    check would say so if it were not -- otherwise a broken comparison would
+    keep reporting "no collisions" forever.
+    """
+
+    @staticmethod
+    def _checker():
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "scripts" / "check_compat.py"
+        spec = importlib.util.spec_from_file_location("_check_compat_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_shadowing_command_fails_the_gate_and_names_it(self, monkeypatch):
+        import zulip.commands as plugin_commands
+
+        checker = self._checker()
+        monkeypatch.setattr(
+            plugin_commands, "plugin_command_names", lambda: frozenset({"help", "pin"})
+        )
+
+        failures = checker._check_command_namespace()
+
+        assert failures, "the gate did not fire on a gateway-owned name"
+        assert "/help" in failures[0]
+        assert "/pin" not in failures[0], "only the colliding name may be named"
+
+    def test_a_clean_plugin_passes_and_reports_what_it_checked(self, monkeypatch, capsys):
+        checker = self._checker()
+
+        failures = checker._check_command_namespace()
+
+        assert failures == []
+        out = capsys.readouterr().out
+        assert "command namespace:" in out
+
+    def test_the_check_says_which_source_it_compared_against(self, monkeypatch, capsys):
+        checker = self._checker()
+        out = capsys.readouterr().out
+        checker._check_command_namespace()
+        text = capsys.readouterr().out
+        assert "GATEWAY_KNOWN_COMMANDS" in text or "GATEWAY_NATIVE_COMMANDS" in text, (
+            "a check that does not say what it compared against cannot be reviewed"
+        )
