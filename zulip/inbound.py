@@ -77,6 +77,7 @@ from .text_utils import (
     create_mention_regex,
     normalize_mention,
     strip_html_to_text,
+    strip_mention_markup,
     strip_onchar_prefix,
 )
 from .version import __version__
@@ -424,10 +425,18 @@ async def handle_message(adapter: Any, message: dict) -> None:
             if mention_regex.search(content):
                 content = normalize_mention(content, mention_regex)
             else:
-                logger.debug(
+                # The server flagged us but our matcher cannot find the token.
+                # Deliberately not answered in the room: we may or may not have
+                # been addressed, so this is a diagnostic. It is WARNING, not
+                # debug, because a disagreement between our regex and how the
+                # realm renders a mention is exactly the signal that would catch
+                # a real class of miss (#226) -- and at debug it is invisible on
+                # the default log level. The body is never logged.
+                content = strip_mention_markup(content)
+                logger.warning(
                     "zulip mention flagged by server but not found in text "
-                    "[msg=%s]; passing content through unmodified",
-                    message_id,
+                    "[msg=%s]; stripped mention markup and passed the rest on",
+                    mask_pii(str(message_id)),
                 )
 
     # --- Acknowledge the message ---

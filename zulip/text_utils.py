@@ -243,7 +243,14 @@ def create_mention_regex(
     text. Prefer Zulip's own ``mentioned`` flag where available; this is the
     fallback for when it is not.
     """
-    alternatives = [rf"{re.escape(bot_username)}\b"]
+    alternatives = [
+        rf"{re.escape(bot_username)}\b",
+        # Disambiguated by user id, local-part form: ``@**soju-bot|42**``.
+        # Without this the markup form of a *username* mention never matched,
+        # while the display-name form did -- an asymmetry an operator could only
+        # see by reading a debug log (#226).
+        rf"_?\*\*{re.escape(bot_username)}(?:\|\d+)?\*\*",
+    ]
     if bot_full_name:
         escaped_name = re.escape(bot_full_name)
         # Markup form, for content that has not been stripped.
@@ -432,3 +439,27 @@ def strip_think_blocks(text: str) -> str:
     # 3. Orphaned tags left behind by a partial block
     text = _ORPHAN_REASONING_TAG_PATTERN.sub("", text)
     return text
+
+
+# Zulip mention markup: ``@**Name**``, ``@_**Name**`` (silent),
+# ``@**Name|42**`` (disambiguated). A *bare* post-strip ``@Name`` is not
+# matched here on purpose: that form is indistinguishable from prose.
+_MENTION_MARKUP_RE = re.compile(r"@_?\*\*[^*\n]+\*\*")
+
+
+def strip_mention_markup(text: str) -> str:
+    """Remove Zulip mention markup from text, whatever name it carries.
+
+    The fallback for the one path :func:`create_mention_regex` cannot serve: the
+    server says the bot was mentioned, but no alternative matches the text (#226)
+    -- a renamed display name, a rendering the regex does not model. The agent
+    must not be addressed by a raw ``@**...**`` token the adapter intended to
+    strip, and leaving it in also hides the mismatch from the model.
+
+    Only markup is removed. A body with none is returned unchanged, so this can
+    never eat ordinary prose, and the caller is responsible for logging that the
+    mismatch happened.
+    """
+    if not text or "@**" not in text and "@_**" not in text:
+        return text
+    return _MENTION_MARKUP_RE.sub("", text)
