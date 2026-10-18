@@ -25,6 +25,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+class LookupFailed(Exception):
+    """The release lookup did not answer.
+
+    A different fact from "no newer release exists", and deliberately a
+    different type. Issue #264 was caused by both facts arriving as ``None``:
+    the caller could not tell them apart, so a failed check printed
+    ``Already up to date.`` and exited 0.
+    """
+
 GITHUB_ZIP_URL = "https://github.com/{repo}/archive/refs/heads/main.zip"
 RELEASE_API_URL = "https://api.github.com/repos/{repo}/releases/latest"
 CHECKSUMS_URL = "https://raw.githubusercontent.com/{repo}/main/checksums.txt"
