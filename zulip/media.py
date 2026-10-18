@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse, unquote
@@ -21,8 +22,23 @@ from .logger import mask_pii
 
 logger = logging.getLogger(__name__)
 
-# Match Zulip upload paths in HTML
-UPLOAD_PATH_RE = re.compile(r"/user_uploads/\d+/[a-zA-Z0-9_/-]+/[^\s\"'<>]+")
+# Match a Zulip upload path, in the forms the plugin actually receives.
+#
+# The content is raw Markdown, not HTML: the plugin never asks Zulip for
+# ``apply_markdown``, so a link arrives as ``[shot.png](/user_uploads/2/ab/c/shot.png)``.
+# The old pattern was written for ``href="..."`` and kept the Markdown link's
+# closing token -- ``/user_uploads/2/ab/c/shot.png)`` -- so the download 404'd
+# (issue #271). A trailing ``)``, ``]``, quote or backtick now ends the match.
+#
+# The optional leading group matters for a different reason: it lets a
+# protocol-relative ``//other.example/user_uploads/...`` be matched WHOLE, so
+# the origin check below sees another site. Matching only from
+# ``/user_uploads/`` would resolve it against our own base and hide the
+# cross-origin link.
+UPLOAD_PATH_RE = re.compile(
+    r"(?:[a-zA-Z][a-zA-Z0-9+.\-]*://)?[^\s()<>\[\]\"'`]*?/user_uploads/"
+    r"\d+/[a-zA-Z0-9_/-]+/[^\s()<>\[\]\"'`]+"
+)
 
 DEFAULT_MAX_MB = 5
 
@@ -121,6 +137,43 @@ async def _audit_refused_upload(
         logger.warning(
             "could not audit refused upload [err=%s]", mask_pii(str(e))
         )
+
+
+class MediaRefused(Exception):
+    """An inbound upload was refused, and the reason is safe to show a human.
+
+    Deliberately not a bare ``ValueError``: the inbound path must be able to
+    tell "this attachment is not ours / too large / did not answer" from a bug
+    in our own code, because the first becomes one line in the agent's turn and
+    the second must not take the turn down (issue #271).
+    """
+
+
+@dataclass
+class InboundMedia:
+    """What the inbound path collected for one message.
+
+    Mirrors :class:`gateway.platforms.event.MessageEvent`'s media fields, so the
+    caller can assign them straight across. ``refusals`` holds one agent-facing
+    line per upload that could not be read -- the agent is told, in the turn,
+    that it has no file and why, instead of meeting a dead link.
+    """
+
+    paths: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
+    text_inlined: list[bool] = field(default_factory=list)
+    refusals: list[str] = field(default_factory=list)
+
+    @property
+    def has_images(self) -> bool:
+        return any(t.startswith("image/") for t in self.media_types)
+
+
+def _basic_auth(email: str, api_key: str) -> str:
+    """Zulip's HTTP Basic credential: base64(email:api_key)."""
+    import base64
+
+    return base64.b64encode(f"{email}:{api_key}".encode()).decode()
 
 
 def extract_upload_urls(html_content: str, base_url: str) -> list[str]:
