@@ -89,21 +89,26 @@ class TestUpdaterCheck:
         from zulip.updater import check_for_update
         mock_get.return_value = {"tag_name": f"v{__version__}"}
         result = check_for_update(__repo__, __version__)
-        assert result is None
+        # "answered, nothing newer" -- NOT the same value as a failed lookup (#264).
+        assert result.status == "current"
+        assert result.error is None
 
     @patch("zulip.updater._http_get_json")
     def test_update_available(self, mock_get):
         from zulip.updater import check_for_update
         mock_get.return_value = {"tag_name": "v99.0.0"}
         result = check_for_update(__repo__, __version__)
-        assert result == "99.0.0"
+        assert result.status == "update"
+        assert result.latest == "99.0.0"
 
     @patch("zulip.updater._http_get_json")
-    def test_check_failed_gracefully(self, mock_get):
-        from zulip.updater import check_for_update
-        mock_get.return_value = None
+    def test_check_failure_is_reported_not_swallowed(self, mock_get):
+        """A lookup that did not answer is a third fact, and it says why (#264)."""
+        from zulip.updater import LookupFailed, check_for_update
+        mock_get.side_effect = LookupFailed("HTTP Error 403: rate limit exceeded")
         result = check_for_update(__repo__, __version__)
-        assert result is None
+        assert result.status == "failed"
+        assert "403" in result.error
 
 
 class TestUpdaterPerform:
@@ -128,8 +133,8 @@ class TestStartupCheck:
     @patch("zulip.updater.check_for_update")
     @patch("zulip.updater.logger")
     def test_logs_warning_when_update_available(self, mock_logger, mock_check):
-        from zulip.updater import startup_version_check
-        mock_check.return_value = "99.0.0"
+        from zulip.updater import UpdateCheck, startup_version_check
+        mock_check.return_value = UpdateCheck(status="update", latest="99.0.0")
         startup_version_check(__version__, __repo__)
         mock_logger.warning.assert_called_once()
         assert "99.0.0" in str(mock_logger.warning.call_args)
@@ -137,8 +142,8 @@ class TestStartupCheck:
     @patch("zulip.updater.check_for_update")
     @patch("zulip.updater.logger")
     def test_silent_when_up_to_date(self, mock_logger, mock_check):
-        from zulip.updater import startup_version_check
-        mock_check.return_value = None
+        from zulip.updater import UpdateCheck, startup_version_check
+        mock_check.return_value = UpdateCheck(status="current", latest=__version__)
         startup_version_check(__version__, __repo__)
         mock_logger.warning.assert_not_called()
 
