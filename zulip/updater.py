@@ -215,7 +215,7 @@ def _verify_checksums(extract_dir: Path, source_root: Path, files: list[str]) ->
     return True, None
 
 
-def _http_get_json(url: str, timeout: int = 10) -> Optional[dict]:
+def _http_get_json(url: str, timeout: int = 10) -> dict:
     """Fetch JSON from URL with short timeout."""
     try:
         req = urllib.request.Request(
@@ -227,9 +227,9 @@ def _http_get_json(url: str, timeout: int = 10) -> Optional[dict]:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
+    except (urllib.error.URLError, HTTPError, socket.timeout, json.JSONDecodeError) as e:
         logger.warning("update check failed: %s", e)
-        return None
+        raise LookupFailed(str(e).strip()[:200]) from e
 
 
 def _http_get_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
