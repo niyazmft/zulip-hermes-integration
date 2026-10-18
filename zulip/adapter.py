@@ -316,6 +316,7 @@ from .connection import ZulipConnection, message_with_flags as _message_with_fla
 from .inbound_queue import (
     SessionQueueController,
     event_route as _event_route,
+    route_key as _route_key,
     work_item_key as _work_item_key,
 )
 
@@ -479,9 +480,11 @@ class ZulipAdapter(BasePlatformAdapter):
         self._display_names = DisplayNameCache(self._data_dir)
 
         # Per-work-item delivery state for the audit trail (issue #145): the
-        # key is the same chat+topic route the activity trace uses, and the
-        # value records whether a send was attempted. Popped on completion, so
-        # it cannot grow for a run the gateway never finalizes.
+        # key is the SESSION (chat + the gateway's thread_id, which the send
+        # metadata also carries -- #272), not the route label the activity
+        # trace uses, and the value records whether a send was attempted.
+        # Popped on completion, so it cannot grow for a run the gateway never
+        # finalizes.
         self._audit_turns: dict[str, bool] = {}
 
         # Timeout configuration (Issue #62)
@@ -923,8 +926,15 @@ class ZulipAdapter(BasePlatformAdapter):
         )
 
     def _note_delivery_attempt(self, chat_id: str, metadata: Any) -> None:
-        """Mark this work item as having produced something to deliver."""
-        key = tracing.trace_key(chat_id, metadata)
+        """Mark this work item as having produced something to deliver.
+
+        The same :func:`inbound_queue.route_key` the dispatch side arms with, so
+        a delivered reply cannot be recorded as a silent run (#272). Deliberately
+        not ``tracing.trace_key``: that is the trace's identity decision, and
+        #273/#274 own it -- inheriting it here would make the audit key change
+        when trace keying does.
+        """
+        key = _route_key(chat_id, metadata)
         if key in self._audit_turns:
             self._audit_turns[key] = True
 

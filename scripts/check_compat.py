@@ -286,6 +286,32 @@ def _check_thread_metadata_contract() -> list[str]:
             f"origin topic in metadata['thread_id'] (got {metadata!r} for topic "
             f"{topic!r}); replies would silently misroute (#143)."
         ]
+
+    # The other half of the contract (#272): a source WITHOUT a thread_id must
+    # not acquire one. The delivery audit pairs dispatch with delivery on the
+    # session's thread_id -- read from ``source`` on one side and from this
+    # metadata on the other -- so a host that invented a value here (a topic
+    # name, say) would make the two disagree in the configuration most installs
+    # run: no stable topic sessions, an empty thread_id, and a per-stream
+    # session.
+    empty_source = _synthetic_source(topic)
+    empty_source.thread_id = ""
+    try:
+        empty_metadata = helper(empty_source) or {}
+    except Exception as exc:  # noqa: BLE001
+        return [
+            f"gateway.platforms.base.{THREAD_METADATA_ATTR} raised {exc!r} for a "
+            "stream source with no thread_id."
+        ]
+    if isinstance(empty_metadata, dict):
+        invented = str(empty_metadata.get("thread_id") or "").strip()
+        if invented:
+            return [
+                f"gateway.platforms.base.{THREAD_METADATA_ATTR} invents a "
+                f"thread_id ({invented!r}) for a source that has none; the "
+                "delivery audit would key dispatch and delivery differently, so "
+                "every answered run would also report 'no reply sent' (#272)."
+            ]
     return []
 
 
