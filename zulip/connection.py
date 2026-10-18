@@ -59,6 +59,90 @@ def message_with_flags(event: dict) -> dict:
     return message
 
 
+# A poll loop that has not completed a successful read for this long is
+# **stalled**, not idle: a half-open TCP connection, a proxy blackholing the
+# socket, a suspended host. The floor is far above normal long-poll latency so
+# an idle realm never trips it, and the factor means a host configured with a
+# longer long-poll gets proportionally more slack (#224).
+POLL_STALL_FLOOR_SECONDS = 180.0
+POLL_STALL_FACTOR = 3.0
+
+# A backpressure hint is honoured, but never unbounded: a server asking for an
+# hour would otherwise leave the bot deaf for an hour.
+BACKPRESSURE_MAX_WAIT_SECONDS = 60.0
+_BACKPRESSURE_CODES = {"RATE_LIMIT_HIT", "TOO_MANY_REQUESTS", "429"}
+
+
+def poll_stall_seconds(events_timeout: float) -> float:
+    """How long without a successful read counts as stalled."""
+    try:
+        timeout = float(events_timeout)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    return max(POLL_STALL_FLOOR_SECONDS, timeout * POLL_STALL_FACTOR)
+
+
+def check_poll_liveness(adapter: Any, now: float | None = None) -> bool:
+    """True (and force a re-registration) when the poll loop looks stalled.
+
+    The failure mode this exists for has no exception and no error line: the
+    socket is open, the process is healthy, and the loop sits in a read that
+    never returns. Only a liveness clock can notice.
+    """
+    last = getattr(adapter, "_last_successful_read", None)
+    if last is None:
+        return False
+    now = time.monotonic() if now is None else now
+    elapsed = now - last
+    threshold = poll_stall_seconds(getattr(adapter, "_events_timeout", 60.0))
+    if elapsed <= threshold:
+        return False
+
+    queue_mgr = getattr(adapter, "_queue_mgr", None)
+    current = getattr(queue_mgr, "_current_queue", None)
+    queue_id = getattr(current, "queue_id", "") or "unknown"
+    logger.warning(
+        "zulip poll loop stalled [elapsed=%.1fs threshold=%.1fs queue=%s]; "
+        "forcing re-registration",
+        elapsed,
+        threshold,
+        mask_pii(str(queue_id)),
+    )
+    if queue_mgr is not None and hasattr(queue_mgr, "mark_queue_expired"):
+        queue_mgr.mark_queue_expired()
+    # Reset the clock so the next iteration does not immediately re-fire while
+    # the re-registration is in flight.
+    try:
+        adapter._last_successful_read = now
+    except Exception:
+        pass
+    return True
+
+
+def backpressure_delay(payload: Any) -> float | None:
+    """The interval the server asked us to wait, clamped, or None.
+
+    Zulip answers a rate limit with a retry hint rather than a generic failure;
+    treating it as generic throws away the one piece of information the server
+    gave us and can turn a rate limit into a retry storm.
+    """
+    if not isinstance(payload, dict):
+        return None
+    hint = (
+        payload.get("retry_after")
+        or payload.get("retry-after")
+        or payload.get("retry_after_seconds")
+    )
+    code = str(payload.get("code") or "")
+    if hint is None and code not in _BACKPRESSURE_CODES:
+        return None
+    try:
+        wait = float(hint)
+    except (TypeError, ValueError):
+        wait = 1.0
+    return max(0.0, min(wait, BACKPRESSURE_MAX_WAIT_SECONDS))
+
+
 class ZulipConnection:
     """Owns connect/disconnect and the /events long-poll loop for one adapter."""
 
@@ -358,6 +442,11 @@ class ZulipConnection:
             try:
                 queue = await adapter._queue_mgr.ensure_queue()
 
+                # A loop alive but no longer reading is invisible without a
+                # clock; force re-registration rather than wait forever (#224).
+                if check_poll_liveness(adapter):
+                    continue
+
                 poll_started = time.monotonic()
                 events = await adapter._sdk_call(
                     adapter.client.get_events,
@@ -368,6 +457,15 @@ class ZulipConnection:
                 poll_elapsed = time.monotonic() - poll_started
 
                 if events.get("result") == "error":
+                    wait = backpressure_delay(events)
+                    if wait is not None:
+                        logger.warning(
+                            "zulip event queue backpressure [queue=%s wait=%.1fs]",
+                            mask_pii(str(getattr(queue, "queue_id", ""))),
+                            wait,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
                     msg = events.get("msg", "")
                     code = events.get("code")
                     is_bad_queue = (
@@ -388,6 +486,7 @@ class ZulipConnection:
                     await asyncio.sleep(1)
                     continue
 
+                adapter._last_successful_read = time.monotonic()
                 batch_max_event_id = queue.last_event_id
                 processing_tasks = []
                 had_message = False
