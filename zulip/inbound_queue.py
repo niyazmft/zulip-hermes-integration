@@ -44,6 +44,20 @@ def event_route(event: Any) -> tuple[str, Any]:
     return chat_id, getattr(event, "metadata", None)
 
 
+def route_key(chat_id: str, metadata: Any) -> str:
+    """The one string-building site for the work-item key, that the conversation id is the component and an empty one means the per-stream session, and why a topic must not be read.
+
+    The conversation id is the component and an empty one means the per-stream session.
+    It must never read `metadata["topic"]`: the host builds send metadata as {"thread_id": value} and does not send a topic, so reading one makes the two sides disagree whenever topic sessions are off (issue #272).
+    """
+    thread_id = ""
+    if isinstance(metadata, dict):
+        raw = metadata.get("thread_id")
+        if raw is not None:
+            thread_id = str(raw).strip()
+    return f"{chat_id}\x00{thread_id}"
+
+
 def work_item_key(event: Any) -> str:
     """The one key a work item's dispatch, delivery and end-of-run check share.
 
