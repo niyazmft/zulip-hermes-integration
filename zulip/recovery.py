@@ -25,6 +25,54 @@ RECOVERY_MAX_DISPATCH = 5
 # accept the legacy ``is:private`` spelling, and modern ones still honour it).
 RECOVERY_NARROW = [{"operator": "is", "operand": "dm"}]
 
+# Addressed stream traffic. The DM-only narrow was correct when recovery was
+# written -- DMs were the only path that placed an 👀 the gateway could lose --
+# but with stream triggers and sticky topic engagement a missed @mention is now
+# the *more* likely loss in a shared realm (issue #220). Scoping to mentions
+# keeps the scan proportional to work addressed to the bot rather than to total
+# realm traffic, and a server that rejects the operator costs only this half of
+# the pass: the DM scan runs first and is unaffected.
+RECOVERY_MENTION_NARROW = [{"operator": "is", "operand": "mentioned"}]
+
+
+async def _scan(
+    client: Any,
+    sdk_call: Callable,
+    narrow: list[dict],
+    send_timeout: float,
+    label: str,
+) -> list[dict]:
+    """One recovery scan. A failure is logged and dropped, never raised.
+
+    Recovery runs as a task beside startup; a server that rejects a narrow (an
+    older Zulip without ``is:mentioned``) must cost that half of the pass and
+    nothing else -- it can never delay or break the gateway coming up.
+    """
+    try:
+        result = await sdk_call(
+            client.get_messages,
+            {
+                "anchor": "newest",
+                "num_before": RECOVERY_SCAN_LIMIT,
+                "num_after": 0,
+                "narrow": narrow,
+            },
+            timeout=send_timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "zulip recovery: %s scan failed [error=%s]; skipping it", label, e
+        )
+        return []
+    if not isinstance(result, dict) or result.get("result") != "success":
+        logger.warning(
+            "zulip recovery: %s scan unavailable on this server; skipping it", label
+        )
+        return []
+    messages = result.get("messages") or []
+    logger.info("zulip recovery: %s scan found %d message(s)", label, len(messages))
+    return messages
+
 
 async def recover_interrupted_messages(
     client: Any,
@@ -38,6 +86,7 @@ async def recover_interrupted_messages(
     send_timeout: float,
     dedupe: Any = None,
     max_dispatch: int = RECOVERY_MAX_DISPATCH,
+    include_streams: bool = True,
 ) -> int:
     """Scan recent DMs for interrupted messages and re-dispatch them.
 
@@ -60,22 +109,23 @@ async def recover_interrupted_messages(
         # ``get_messages`` (GET /messages). The zulip SDK has no
         # ``get_private_messages`` method, so the former call raised
         # AttributeError on every gateway start and recovery never ran.
-        result = await sdk_call(
-            client.get_messages,
-            {
-                "anchor": "newest",
-                "num_before": RECOVERY_SCAN_LIMIT,
-                "num_after": 0,
-                "narrow": RECOVERY_NARROW,
-            },
-            timeout=send_timeout,
+        messages = await _scan(
+            client, sdk_call, RECOVERY_NARROW, send_timeout, "dm"
         )
 
-        if result.get("result") != "success":
-            logger.warning("zulip recovery: failed to fetch messages for recovery scan")
-            return 0
+        if include_streams:
+            # Addressed stream traffic, appended after the DM scan so the DM
+            # result -- and everything derived from its order -- is unchanged
+            # (#220). Ids are deduplicated: a message can match both narrows.
+            known = {str(m.get("id", "")) for m in messages}
+            for extra in await _scan(
+                client, sdk_call, RECOVERY_MENTION_NARROW, send_timeout, "mention"
+            ):
+                key = str(extra.get("id", ""))
+                if key and key not in known:
+                    known.add(key)
+                    messages.append(extra)
 
-        messages = result.get("messages", [])
         if not messages:
             return 0
 
@@ -174,15 +224,20 @@ async def recover_interrupted_messages(
                 sender_email,
             )
 
-            # Create a fresh session key to avoid the dead session from the
-            # previous gateway instance.
-            # Hash the sender email to avoid leaking PII in session keys.
-            email_hash = hashlib.sha256(sender_email.encode()).hexdigest()[:16]
-            recovery_key = (
-                f"agent:main:zulip:direct:{email_hash}:recovery:"
-                f"{int(asyncio.get_event_loop().time() * 1000)}"
-            )
-            msg["_recovery_session_key"] = recovery_key
+            # A DM needs a fresh session key to avoid the dead session from the
+            # previous gateway instance. A STREAM message must not get one: its
+            # session comes from the topic conversation registry, and a
+            # DM-shaped key would be a second, drifting derivation of routing.
+            # Preserving ``stream_id``/``subject`` (untouched on the dict) is
+            # what makes the reply land in the topic the user wrote in (#220).
+            if msg.get("type") != "stream":
+                # Hash the sender email to avoid leaking PII in session keys.
+                email_hash = hashlib.sha256(sender_email.encode()).hexdigest()[:16]
+                recovery_key = (
+                    f"agent:main:zulip:direct:{email_hash}:recovery:"
+                    f"{int(asyncio.get_event_loop().time() * 1000)}"
+                )
+                msg["_recovery_session_key"] = recovery_key
             # Recovery only selects messages that ALREADY carry the start
             # reaction, so the inbound path must not add it again: the server
             # deduplicates it silently and the log cannot tell that apart from a

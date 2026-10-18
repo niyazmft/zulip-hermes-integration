@@ -46,6 +46,7 @@ class TestRecoverInterruptedMessages:
         'get_private_messages']`` and recovery silently never ran.
         """
         from zulip.recovery import (
+            RECOVERY_MENTION_NARROW,
             RECOVERY_NARROW,
             RECOVERY_SCAN_LIMIT,
             recover_interrupted_messages,
@@ -80,14 +81,18 @@ class TestRecoverInterruptedMessages:
         assert count == 1
         handle_message.assert_awaited_once()
         assert "zulip recovery: failed" not in caplog.text
-        client.get_messages.assert_called_once_with(
-            {
-                "anchor": "newest",
-                "num_before": RECOVERY_SCAN_LIMIT,
-                "num_after": 0,
-                "narrow": RECOVERY_NARROW,
-            }
-        )
+        # Two scans since #220: DMs first (byte-identical to before), then the
+        # addressed-stream scan. The same message is returned by both here, and
+        # the id dedupe is why it is still dispatched exactly once.
+        calls = client.get_messages.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0] == {
+            "anchor": "newest",
+            "num_before": RECOVERY_SCAN_LIMIT,
+            "num_after": 0,
+            "narrow": RECOVERY_NARROW,
+        }
+        assert calls[1].args[0]["narrow"] == RECOVERY_MENTION_NARROW
 
     def test_recovery_narrow_targets_direct_messages(self):
         from zulip.recovery import RECOVERY_NARROW, RECOVERY_SCAN_LIMIT
@@ -115,12 +120,15 @@ class TestRecoverInterruptedMessages:
             send_timeout=30,
         )
 
-        sdk_call.assert_awaited_once()
-        args, kwargs = sdk_call.await_args
-        assert args[0] is client.get_messages
-        assert args[1]["narrow"] == [{"operator": "is", "operand": "dm"}]
-        assert args[1]["num_after"] == 0
-        assert kwargs == {"timeout": 30}
+        assert sdk_call.await_count == 2, "one DM scan and one mention scan (#220)"
+        first = sdk_call.await_args_list[0]
+        assert first.args[0] is client.get_messages
+        assert first.args[1]["narrow"] == [{"operator": "is", "operand": "dm"}]
+        assert first.args[1]["num_after"] == 0
+        assert first.kwargs == {"timeout": 30}
+        second = sdk_call.await_args_list[1]
+        assert second.args[1]["narrow"] == [{"operator": "is", "operand": "mentioned"}]
+        assert second.kwargs == {"timeout": 30}
 
     @pytest.mark.asyncio
     async def test_no_messages_returns_zero(self):
@@ -591,3 +599,150 @@ class TestTheRecoveryContract:
         text = " ".join(r.getMessage() for r in caplog.records)
         assert "reason=already end-reacted" in text
         assert "reason=already answered" in text
+
+
+def _stream_mention(msg_id, **overrides):
+    msg = {
+        "id": msg_id,
+        "type": "stream",
+        "stream_id": 5,
+        "subject": "deploy help",
+        "display_recipient": "test",
+        "sender_email": "user@test.com",
+        "sender_id": 2,
+        "reactions": [
+            {"emoji_name": "eyes", "user": {"email": "bot@test.com", "id": 1}},
+        ],
+    }
+    msg.update(overrides)
+    return msg
+
+
+def _two_scan_sdk(dms, mentions):
+    """``sdk_call`` that answers each narrow with its own message set."""
+
+    async def _call(fn, filters, *, timeout):
+        if filters.get("narrow") == [{"operator": "is", "operand": "mentioned"}]:
+            return {"result": "success", "messages": list(mentions)}
+        return {"result": "success", "messages": list(dms)}
+
+    return _call
+
+
+def _two_scan_sdk_with_rejected_mentions(dms):
+    async def _call(fn, filters, *, timeout):
+        if filters.get("narrow") == [{"operator": "is", "operand": "mentioned"}]:
+            return {"result": "error", "msg": "unknown operator"}
+        return {"result": "success", "messages": list(dms)}
+
+    return _call
+
+
+async def _run_two_scan(dms, mentions, handle, *, max_dispatch=5, sdk=None):
+    from zulip.recovery import recover_interrupted_messages
+
+    client = MagicMock(spec_set=_SDK_CLIENT_METHODS)
+    return await recover_interrupted_messages(
+        client=client,
+        bot_email="bot@test.com",
+        bot_user_id="1",
+        reaction_start="eyes",
+        reaction_success="check_mark",
+        reaction_error="warning",
+        handle_message=handle,
+        sdk_call=sdk or _two_scan_sdk(dms, mentions),
+        send_timeout=30,
+        max_dispatch=max_dispatch,
+    )
+
+
+class TestStreamCatchUp:
+    """#220: a missed @mention is caught up, in the topic the user wrote in."""
+
+    @pytest.mark.asyncio
+    async def test_a_stream_mention_with_a_stale_eyes_is_recovered_into_its_topic(self):
+        seen = {}
+
+        async def handle(msg):
+            seen.update(msg)
+
+        count = await _run_two_scan([], [_stream_mention(9)], handle)
+
+        assert count == 1
+        assert seen["type"] == "stream"
+        assert seen["stream_id"] == 5
+        assert seen["subject"] == "deploy help", "the topic must survive the round trip"
+        assert seen.get("_recovery_skip_start") is True
+        assert "_recovery_session_key" not in seen, (
+            "a DM-shaped session key would be a second, drifting routing derivation"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stream_mention_already_answered_is_not_recovered(self):
+        handle = AsyncMock()
+        bot_reply = {"id": 11, "type": "stream", "sender_email": "bot@test.com", "sender_id": 1}
+
+        count = await _run_two_scan([], [_stream_mention(9), bot_reply], handle)
+
+        assert count == 0
+        handle.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dm_still_gets_its_dm_session_key(self, caplog):
+        seen = {}
+
+        async def handle(msg):
+            seen.update(msg)
+
+        with caplog.at_level(logging.INFO, logger="zulip.recovery"):
+            count = await _run_two_scan([_eligible(1)], [], handle)
+
+        assert count == 1
+        assert seen["_recovery_session_key"].startswith("agent:main:zulip:direct:")
+        assert "dm scan found 1 message" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_cap_holds_across_both_scans(self):
+        handle = AsyncMock()
+
+        count = await _run_two_scan(
+            [_eligible(1)], [_stream_mention(2), _stream_mention(3)], handle, max_dispatch=1
+        )
+
+        assert count == 1
+        assert handle.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_mention_scan_does_not_lose_the_dm_scan(self, caplog):
+        handle = AsyncMock()
+
+        with caplog.at_level(logging.WARNING, logger="zulip.recovery"):
+            count = await _run_two_scan(
+                [_eligible(1)], [], handle, sdk=_two_scan_sdk_with_rejected_mentions([_eligible(1)])
+            )
+
+        assert count == 1, "the DM half must survive a server without is:mentioned"
+        assert "mention scan unavailable" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_streams_can_be_left_out_entirely(self):
+        from zulip.recovery import recover_interrupted_messages
+
+        handle = AsyncMock()
+        client = MagicMock(spec_set=_SDK_CLIENT_METHODS)
+
+        count = await recover_interrupted_messages(
+            client=client,
+            bot_email="bot@test.com",
+            bot_user_id="1",
+            reaction_start="eyes",
+            reaction_success="check_mark",
+            reaction_error="warning",
+            handle_message=handle,
+            sdk_call=_two_scan_sdk([_eligible(1)], [_stream_mention(2)]),
+            send_timeout=30,
+            include_streams=False,
+        )
+
+        assert count == 1
+        assert handle.await_args.args[0]["id"] == 1
