@@ -177,7 +177,7 @@ def _basic_auth(email: str, api_key: str) -> str:
 
 
 def extract_upload_urls(html_content: str, base_url: str) -> list[str]:
-    """Find Zulip upload URLs in HTML message content.
+    """Find Zulip upload URLs in Markdown message content.
 
     Returns absolute URLs filtered to same origin only.
     """
