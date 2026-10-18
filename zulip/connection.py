@@ -227,6 +227,10 @@ class ZulipConnection:
                 handle_message=adapter._handle_message,
                 sdk_call=adapter._sdk_call,
                 send_timeout=adapter._send_timeout,
+                # The poll loop's own store: recovery must claim an id before
+                # dispatching it, or the crash window can be answered twice
+                # (#227).
+                dedupe=adapter._dedupe,
             )
         )
 

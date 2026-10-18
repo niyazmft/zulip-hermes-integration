@@ -448,7 +448,19 @@ async def handle_message(adapter: Any, message: dict) -> None:
     # about a message it had already discarded, forever.
     #
     # Direct messages skip the stream block above and reach here normally.
-    await reactions.start()
+    #
+    # A recovered message already carries the start reaction -- that is the
+    # eligibility condition the scan selects on -- so adding it again is a
+    # duplicate the server silently absorbs and the log cannot distinguish from
+    # a failure. Recovery says so explicitly rather than encoding the rule here
+    # (#227).
+    if message.get("_recovery_skip_start"):
+        logger.debug(
+            "zulip recovery: start reaction already present [msg=%s]",
+            mask_pii(str(message_id)),
+        )
+    else:
+        await reactions.start()
 
     # Typing is owned by the gateway core's keep-typing loop, which calls
     # the send_typing/stop_typing hooks above every ~2s for the whole

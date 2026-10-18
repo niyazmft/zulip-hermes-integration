@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 # How many recent DMs to scan for stale 👀 reactions on startup.
 RECOVERY_SCAN_LIMIT = 100
 
+# How many messages one recovery pass may dispatch.
+#
+# A bound is not a nicety: recovery runs as a task started beside the poll loop,
+# so an unbounded catch-up over a busy crash window would answer an arbitrary
+# amount of traffic at once, in whatever order the server returned it.
+RECOVERY_MAX_DISPATCH = 5
+
 # ``is:dm`` narrows to direct messages (Zulip server >= 7.0; older servers
 # accept the legacy ``is:private`` spelling, and modern ones still honour it).
 RECOVERY_NARROW = [{"operator": "is", "operand": "dm"}]
@@ -29,12 +36,20 @@ async def recover_interrupted_messages(
     handle_message: Callable[[dict], Any],
     sdk_call: Callable,
     send_timeout: float,
+    dedupe: Any = None,
+    max_dispatch: int = RECOVERY_MAX_DISPATCH,
 ) -> int:
     """Scan recent DMs for interrupted messages and re-dispatch them.
 
     Looks for messages where the bot placed a 👀 (start) reaction but
     never placed a ✅ (success) or ⚠️ (error) reaction, and where no
     response from the bot exists after the message.
+
+    ``dedupe`` is the poll loop's own store (``ZulipDedupeStore``), whose
+    ``check`` claims a key on first call and returns True afterwards. Consulting
+    it here is what stops a message in the crash window from being answered
+    twice -- once by this pass and once by the new queue (#227). It is optional
+    so the function stays testable without an adapter.
 
     Returns the number of messages recovered.
     """
@@ -101,6 +116,9 @@ async def recover_interrupted_messages(
             )
 
             if not has_start:
+                logger.info(
+                    "zulip recovery: skip [id=%s reason=no start reaction]", message_id
+                )
                 continue
 
             # Check if the bot has an end reaction (success or error)
@@ -114,6 +132,9 @@ async def recover_interrupted_messages(
             )
 
             if has_end:
+                logger.info(
+                    "zulip recovery: skip [id=%s reason=already end-reacted]", message_id
+                )
                 continue
 
             # Check if there's a response from the bot after this message
@@ -124,7 +145,27 @@ async def recover_interrupted_messages(
             )
 
             if has_response:
+                logger.info(
+                    "zulip recovery: skip [id=%s reason=already answered]", message_id
+                )
                 continue
+
+            # Claim the id in the poll loop's own store before dispatching.
+            # ``check`` records on first call, so whichever of recovery and the
+            # poll loop gets here first wins and the other drops it (#227).
+            if dedupe is not None and dedupe.check(message_id):
+                logger.info(
+                    "zulip recovery: skip [id=%s reason=duplicate]", message_id
+                )
+                continue
+
+            if recovered >= max_dispatch:
+                logger.info(
+                    "zulip recovery: skip [id=%s reason=cap reached] cap=%d",
+                    message_id,
+                    max_dispatch,
+                )
+                break
 
             # This message was interrupted — re-dispatch with fresh session key
             logger.info(
@@ -142,6 +183,11 @@ async def recover_interrupted_messages(
                 f"{int(asyncio.get_event_loop().time() * 1000)}"
             )
             msg["_recovery_session_key"] = recovery_key
+            # Recovery only selects messages that ALREADY carry the start
+            # reaction, so the inbound path must not add it again: the server
+            # deduplicates it silently and the log cannot tell that apart from a
+            # failure (#227).
+            msg["_recovery_skip_start"] = True
 
             await handle_message(msg)
             recovered += 1
