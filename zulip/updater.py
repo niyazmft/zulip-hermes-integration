@@ -243,6 +243,28 @@ def _http_get_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         return None
 
 
+
+
+@dataclass(frozen=True)
+class UpdateCheck:
+    """What a release lookup established. Exactly one of three facts, not two.
+
+    ``status`` is one of:
+
+    ``"update"``   the lookup answered and ``latest`` is newer than this install
+    ``"current"``  the lookup answered and nothing newer exists
+    ``"failed"``   the lookup did not answer, or answered nothing comparable;
+                   ``error`` says why, and we do NOT know whether an update exists
+
+    ``latest`` is the version the lookup reported, when it reported a usable
+    one. ``error`` is a short human-readable reason, set only when the status is
+    ``"failed"`` -- it is what an operator sees, because a ``logger.warning``
+    alone is invisible on a host that never configured logging (issue #264).
+    """
+
+    status: str
+    latest: Optional[str] = None
+    error: Optional[str] = None
 def check_for_update(repo: str, current_version: str) -> Optional[str]:
     """Check GitHub releases for a newer version.
 
