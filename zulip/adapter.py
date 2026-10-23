@@ -331,7 +331,12 @@ from .outbound import (
 # ``self._connection`` / ``self._queue_controller`` at call time.
 from . import inbound
 from .connection import ZulipConnection, message_with_flags as _message_with_flags
-from .inbound_queue import SessionQueueController, event_route as _event_route
+from .inbound_queue import (
+    SessionQueueController,
+    event_route as _event_route,
+    route_key as _route_key,
+    work_item_key as _work_item_key,
+)
 
 # Stable conversation identity — the session/topic state, the session-key
 # derivation and the rename/delete maintenance — lives in ``zulip.routing``.
@@ -493,9 +498,11 @@ class ZulipAdapter(BasePlatformAdapter):
         self._display_names = DisplayNameCache(self._data_dir)
 
         # Per-work-item delivery state for the audit trail (issue #145): the
-        # key is the same chat+topic route the activity trace uses, and the
-        # value records whether a send was attempted. Popped on completion, so
-        # it cannot grow for a run the gateway never finalizes.
+        # key is the SESSION (chat + the gateway's thread_id, which the send
+        # metadata also carries -- #272), not the route label the activity
+        # trace uses, and the value records whether a send was attempted.
+        # Popped on completion, so it cannot grow for a run the gateway never
+        # finalizes.
         self._audit_turns: dict[str, bool] = {}
 
         # Timeout configuration (Issue #62)
@@ -651,7 +658,7 @@ class ZulipAdapter(BasePlatformAdapter):
         # callback running in another thread/task can still find its trace.
         self._trace_sessions: dict[str, str] = {}
         _LIVE_ADAPTERS.add(self)
-        logger.info(
+        logger.debug(
             "zulip adapter registered [module=%s set=%s adapters=%d]",
             __name__,
             id(_LIVE_ADAPTERS),
@@ -933,7 +940,9 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return
-        self._audit_turns[tracing.resolved_trace_key(self, chat_id, metadata)] = False
+        # One key, shared with the delivery path and the end-of-run check: the
+        # conversation id when the host set one, the topic name otherwise (#272).
+        self._audit_turns[_work_item_key(event)] = False
         await self._audit_logger.log_dispatch_turn(
             chat_id=chat_id,
             topic=_metadata_topic(metadata),
@@ -941,8 +950,15 @@ class ZulipAdapter(BasePlatformAdapter):
         )
 
     def _note_delivery_attempt(self, chat_id: str, metadata: Any) -> None:
-        """Mark this work item as having produced something to deliver."""
-        key = tracing.resolved_trace_key(self, chat_id, metadata)
+        """Mark this work item as having produced something to deliver.
+
+        The same :func:`inbound_queue.route_key` the dispatch side arms with, so
+        a delivered reply cannot be recorded as a silent run (#272). Deliberately
+        not ``tracing.trace_key``: that is the trace's identity decision, and
+        #273/#274 own it -- inheriting it here would make the audit key change
+        when trace keying does.
+        """
+        key = _route_key(chat_id, metadata)
         if key in self._audit_turns:
             self._audit_turns[key] = True
 
@@ -977,8 +993,7 @@ class ZulipAdapter(BasePlatformAdapter):
         chat_id, metadata = _event_route(event)
         if not chat_id:
             return None
-        key = tracing.resolved_trace_key(self, chat_id, metadata)
-        attempted = self._audit_turns.pop(key, None)
+        attempted = self._audit_turns.pop(_work_item_key(event), None)
         if attempted is False:
             await self._audit_logger.log_deliver_empty(
                 chat_id=chat_id, topic=_metadata_topic(metadata)

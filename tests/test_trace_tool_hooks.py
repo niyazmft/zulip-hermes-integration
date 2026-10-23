@@ -398,3 +398,17 @@ class TestHookRegistration:
 
         adapter_module.register(ctx)  # must not raise
         ctx.register_platform.assert_called_once()
+
+
+def test_live_adapter_registry_is_process_global():
+    """The hook and the tool may run in a different import copy of the module.
+
+    Pinning the registry to a process-global slot is what lets them see the
+    adapter; a per-module WeakSet silently dropped every step.
+    """
+    import sys
+
+    import zulip.adapter as adapter_module
+
+    shared = sys.modules["_hermes_zulip_plugin_shared_state"]
+    assert adapter_module._LIVE_ADAPTERS is shared.live_adapters

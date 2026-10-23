@@ -61,32 +61,37 @@ def trace_config() -> activity_trace.TraceConfig:
 
 
 def trace_key(chat_id: str, metadata: Any) -> str:
-    """Session key for a trace: the chat *plus* the topic it lands in.
+    """Session key for a trace: the chat plus the session's thread id.
 
-    Topic sessions share a chat_id across topics, so keying on chat_id alone
-    would let two concurrent topics in one stream edit each other's trace.
+    The component is the gateway's ``thread_id`` — the conversation id under
+    stable topic sessions, the topic name in legacy name-keyed sessions — so a
+    rename cannot change the identity of a run that is already in flight.
     """
     return f"{chat_id}\x00{outbound.metadata_topic(metadata) or ''}"
 
 
-def resolved_trace_key(adapter: Any, chat_id: str, metadata: Any) -> str:
-    """``trace_key`` with an outbound conversation id resolved to its topic.
+def trace_key_for_event(event: Any) -> str:
+    """The trace identity for a gateway event, resolved once at start.
 
-    Under stable topic sessions the gateway sends replies with
-    ``metadata["thread_id"]`` set to the conversation id, while the trace is
-    keyed by the human topic name at start. Resolving through the adapter's
-    own routing — the same resolution the reply itself uses — keeps reply
-    accounting on the trace's key instead of reporting a false
-    "no reply sent" (and a false ``deliver_empty``).
+    The session's thread id is the stable identity; a topic *name* is only a
+    fallback for hosts that do not publish one. The value is read from the
+    source first (the host's session) and then the event metadata, never from
+    the current topic name — a rename mid-run must not change the key.
     """
-    topic = None
-    try:
-        topic = adapter._routing.routed_topic_for_chat(chat_id, metadata)
-    except Exception:
-        topic = None
-    if topic:
-        return f"{chat_id}\x00{topic}"
-    return trace_key(chat_id, metadata)
+    source = getattr(event, "source", None)
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    metadata = getattr(event, "metadata", None)
+    thread_id = ""
+    for candidate in (
+        getattr(source, "thread_id", None),
+        metadata.get("thread_id") if isinstance(metadata, dict) else None,
+    ):
+        if candidate is not None and str(candidate).strip():
+            thread_id = str(candidate).strip()
+            break
+    if not thread_id:
+        thread_id = outbound.metadata_topic(metadata) or ""
+    return f"{chat_id}\x00{thread_id}"
 
 
 def trace_payload(
@@ -123,7 +128,7 @@ def trace_payload(
 def note_trace_reply(adapter: Any, chat_id: str, metadata: Any) -> None:
     """Record that this work item actually produced a reply."""
     if adapter._traces:
-        adapter._trace_replied.add(resolved_trace_key(adapter, chat_id, metadata))
+        adapter._trace_replied.add(trace_key(chat_id, metadata))
 
 
 def _session_aliases(adapter: Any, event: Any) -> list[str]:
@@ -199,18 +204,22 @@ def trace_for_current_session(adapter: Any) -> Optional[activity_trace.ActivityT
                 if key is not None:
                     return adapter._traces.get(key)
 
+    env = {
+        name: (_host_get_session_env(name) if _host_get_session_env is not None else None)
+        for name in (
+            "HERMES_SESSION_KEY",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+        )
+    }
     logger.debug(
         "zulip trace attribution miss: aliases=%r sessions=%r traces=%r env=%r",
-        aliases,
-        list(adapter._trace_sessions),
-        list(adapter._traces),
+        [mask_pii(str(alias)) for alias in aliases],
+        [mask_pii(str(key)) for key in adapter._trace_sessions],
+        [mask_pii(str(key)) for key in adapter._traces],
         {
-            name: (_host_get_session_env(name) if _host_get_session_env is not None else None)
-            for name in (
-                "HERMES_SESSION_KEY",
-                "HERMES_SESSION_CHAT_ID",
-                "HERMES_SESSION_THREAD_ID",
-            )
+            name: (mask_pii(str(value)) if value is not None else None)
+            for name, value in env.items()
         },
     )
     return None
@@ -446,7 +455,7 @@ def start_trace(adapter: Any, event: Any) -> None:
     if not chat_id:
         return
 
-    key = resolved_trace_key(adapter, chat_id, metadata)
+    key = trace_key_for_event(event)
     if key in adapter._traces:
         return  # already tracing this work item
 
@@ -536,7 +545,7 @@ async def finish_trace(adapter: Any, event: Any, outcome: Any) -> None:
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
     metadata = getattr(event, "metadata", None)
-    key = resolved_trace_key(adapter, chat_id, metadata)
+    key = trace_key_for_event(event)
     trace = adapter._traces.pop(key, None)
     if trace is None:
         return

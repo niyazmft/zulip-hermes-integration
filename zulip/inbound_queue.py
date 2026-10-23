@@ -36,12 +36,58 @@ def event_route(event: Any) -> tuple[str, Any]:
     """``(chat_id, metadata)`` for a gateway event, or ``("", None)``.
 
     The pair identifies the chat+topic route a work item's delivery events
-    belong to, so the activity trace and the delivery audit key work items
-    identically.
+    belong to. The activity trace keys on the route (chat + topic label); the
+    delivery audit keys on the *session* via :func:`work_item_key`, because the
+    gateway's send metadata carries the session's ``thread_id`` and never a
+    topic name (#272). Both read this pair so neither derives a route of its own.
     """
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
     return chat_id, getattr(event, "metadata", None)
+
+
+def route_key(chat_id: str, metadata: Any) -> str:
+    """The one string-building site for the work-item key.
+
+    The component is the **session's** ``thread_id`` and nothing else: the
+    conversation id when stable topic sessions minted one, or an empty string
+    when the session is the per-stream default. ``metadata["topic"]`` is
+    deliberately NOT read -- the gateway builds send metadata as
+    ``{"thread_id": value}`` and never sends a topic, so a key that fell back to
+    the event's topic name disagreed with the delivery side in the *default*
+    configuration and the "run ended without a reply" notice survived there
+    (issue #272).
+    """
+    thread_id = ""
+    if isinstance(metadata, dict):
+        raw = metadata.get("thread_id")
+        if raw is not None:
+            thread_id = str(raw).strip()
+    return f"{chat_id}\x00{thread_id}"
+
+
+def work_item_key(event: Any) -> str:
+    """The one key a work item's dispatch, delivery and end-of-run check share.
+
+    The delivery audit arms this key on dispatch (``deliver_empty`` is written
+    only if the run never sends) and checks it on the way out. Two derivations
+    drifted: dispatch keyed on the *event* metadata, which carries the topic
+    NAME, while delivery keyed on the gateway's *send* metadata, whose
+    ``thread_id`` is the stable topic-session CONVERSATION ID. With
+    ``ZULIP_TOPIC_SESSIONS`` on those are different strings, so the armed entry
+    was never marked and every answered run ALSO recorded ``deliver_empty`` --
+    with a "run ended without a reply" notice and a ✅ turned into ⚠️, on a turn
+    that answered fine (issue #272).
+
+    It is :func:`route_key` applied to the *event*'s session: the conversation
+    id when the host set one, empty for the per-stream default session. The
+    delivery side applies the same function to the gateway's send metadata, so
+    the two cannot drift apart again -- which is exactly what happened when one
+    side read the topic name and the other the conversation id.
+    """
+    chat_id, _metadata = event_route(event)
+    source = getattr(event, "source", None)
+    return route_key(chat_id, {"thread_id": getattr(source, "thread_id", None)})
 
 
 class SessionQueueController:

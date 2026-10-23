@@ -122,14 +122,27 @@ fixing the class. Rows are added as fixes land, not in a separate retrospective.
    *Status:* **open** — #242 makes the gate report on every PR so it can be a required check
    (issue #241) and `tests/test_ci_workflow.py` pins the workflow *shape*, but nothing asserts
    that a deliberately broken host is caught. Read the gate's own output before believing it.
+   *Status:* **guarded** — `tests/test_compat_floor.py::TestTheFatalPathsFire` drives every fatal
+   path against a deliberately broken host (a missing declared symbol, an unimportable declared
+   module, a missing thread-metadata helper, a wrong `thread_id`, a source that acquires one, a
+   registration missing required keys, and both no-host exits), and asserts the declarations
+   themselves are non-empty so an emptied `REQUIRED_MODULE_SYMBOLS` cannot silently disable the
+   check. The version floor is additionally enforced by a real-host CI leg (#233).
+
 5. **Do not assume a host surface; check the installed artifact.** The plugin collided with
    Hermes slash commands twice — `/version` → `!version` (#43), then `/help`, `/status` and
    `/model` shadowing the gateway that owns them (#190/#191) — and called `client.get_user`,
    which the installed SDK does not expose, silently dropping every reaction trigger
    (#196/#197). Older hosts also lack the exec-approval hook entirely (#131/#132).
-   *Status:* **open** — `scripts/check_compat.py` checks host *symbols* against real hosts and
-   `tests/test_guarded_imports.py` checks optional imports, but nothing checks host
-   *namespaces*, which is the variant that has bitten twice.
+   *Instances:* #43, #190/#191, #196/#197, #131/#132.
+   *Status:* **guarded** — `scripts/check_compat.py` checks host *symbols* against real hosts,
+   `tests/test_guarded_imports.py` checks optional imports, and since #251 it checks the
+   command *namespace* too: the plugin's registered names are compared against the host's own
+   `hermes_cli.commands.GATEWAY_KNOWN_COMMANDS`, and a collision fails with exit 1 naming the
+   command. The recorded `GATEWAY_NATIVE_COMMANDS` set is the fallback for a host that ships no
+   registry, with its host source named in the constant and asserted by a test — so the list is
+   *sourced* rather than remembered, and `reasoning`/`fast` were found to be host-owned before
+   #193 could register them.
 6. **A failure path that reports success.** A turn that delivered nothing was
    indistinguishable from one that did (#145/#186), an incomplete install reported "Already
    up to date" (#205), `update.sh` claimed a restart that never happened (#207), and a run the

@@ -340,8 +340,13 @@ class TestTraceSend:
 class TestTurnPairing:
     @staticmethod
     def _event():
+        # The source carries the session's thread_id and the send metadata is
+        # DERIVED from it (gateway.platforms.base._thread_metadata_for_source),
+        # so a fixture with one and not the other models a state the host cannot
+        # produce -- which is how #272 hid: the key is read from the source on
+        # one side and from the send metadata on the other.
         return SimpleNamespace(
-            source=SimpleNamespace(chat_id="573423"),
+            source=SimpleNamespace(chat_id="573423", thread_id="deploy"),
             metadata={"thread_id": "deploy"},
             message_id="55",
         )
@@ -410,3 +415,173 @@ class TestNoBodyOrCredentialIsWritten:
         payload = _artifact_text(tmp_path)
         assert secret not in payload
         assert "secret_leak_blocked" in payload
+
+
+class TestWorkItemKeyAgreement:
+    """#272: dispatch, delivery and the end-of-run check must use ONE key.
+
+    The audit arms on dispatch and checks on delivery. The two sides used to
+    derive the key from different metadata: dispatch from the *event* metadata
+    (which carries the topic NAME), delivery from the gateway's *send* metadata
+    (whose ``thread_id`` is the stable topic-session CONVERSATION ID). With
+    ``ZULIP_TOPIC_SESSIONS`` on, the topic name and the conversation id differ,
+    so the armed entry was never marked and every answered run also recorded
+    ``deliver_empty`` — plus a "run ended without a reply" notice and a ✅ turned
+    into ⚠️, on a turn that answered fine.
+    """
+
+    @staticmethod
+    def _event(thread_id="", topic=None, chat_id="573423"):
+        metadata = {} if topic is None else {"topic": topic, "stream_id": 5}
+        return SimpleNamespace(
+            source=SimpleNamespace(chat_id=chat_id, thread_id=thread_id),
+            metadata=metadata,
+            message_id="97",
+        )
+
+    def _key(self, event):
+        from zulip.inbound_queue import work_item_key
+
+        return work_item_key(event)
+
+    def test_conversation_id_wins_over_the_topic_name(self):
+        event = self._event(thread_id="conv-42", topic="plugin bug 219")
+        assert self._key(event) == "573423\x00conv-42"
+
+    def test_the_default_config_keys_on_the_session_not_the_route_label(self):
+        """Topic sessions OFF (the default): one session per stream, no conversation id.
+
+        The host builds send metadata as ``{"thread_id": thread_id}`` -- it never
+        carries a topic name -- so a key that falls back to the event's topic
+        name disagrees with the delivery side in the DEFAULT configuration and
+        the "run ended without a reply" notice survives there. Keying on the
+        session identity makes both sides produce ``chat\x00``.
+        """
+        event = self._event(thread_id="", topic="plugin bug 219")
+        assert self._key(event) == "573423\x00"
+
+    def test_a_dm_has_no_topic_component(self):
+        event = self._event(thread_id="", topic=None, chat_id="dm:42")
+        assert self._key(event) == "dm:42\x00"
+
+    def test_the_key_is_exactly_what_the_send_path_computes(self):
+        """The contract, stated once: the same string on both sides."""
+        from zulip.inbound_queue import route_key
+
+        event = self._event(thread_id="conv-42", topic="plugin bug 219")
+
+        assert self._key(event) == route_key("573423", {"thread_id": "conv-42"})
+        # ... and the same in the default configuration.
+        event = self._event(thread_id="", topic="plugin bug 219")
+        assert self._key(event) == route_key("573423", {"thread_id": ""})
+
+
+class TestRouteKey:
+    """``route_key`` is the one string-building site; the topic is not input."""
+
+    @staticmethod
+    def _key(chat_id, metadata):
+        from zulip.inbound_queue import route_key
+
+        return route_key(chat_id, metadata)
+
+    def test_a_conversation_id_is_the_component(self):
+        assert self._key("5", {"thread_id": "conv-42"}) == "5\x00conv-42"
+
+    def test_an_empty_thread_id_is_the_default_config_shape(self):
+        assert self._key("5", {"thread_id": ""}) == "5\x00"
+
+    def test_a_topic_is_never_the_component(self):
+        """The host does not send one, and reading it is how #272 drifted."""
+        assert self._key("5", {"topic": "plugin bug 219"}) == "5\x00"
+        assert self._key("5", {"thread_id": "", "topic": "plugin bug 219"}) == "5\x00"
+
+    def test_none_and_junk_degrade_to_the_session_only(self):
+        assert self._key("5", None) == "5\x00"
+        assert self._key("5", {"thread_id": "   "}) == "5\x00"
+
+
+class TestOneKeyAcrossDispatchDeliveryAndEnd:
+    """The behaviour the key exists for, driven through the real hooks."""
+
+    @staticmethod
+    def _event(thread_id="", topic=None, chat_id="573423", message_id="97"):
+        metadata = {} if topic is None else {"topic": topic, "stream_id": 5}
+        return SimpleNamespace(
+            source=SimpleNamespace(chat_id=chat_id, thread_id=thread_id),
+            metadata=metadata,
+            message_id=message_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_reply_is_not_reported_empty_when_they_differ(
+        self, adapter, tmp_path
+    ):
+        """The #272 regression: topic name != conversation id."""
+        event = self._event(thread_id="conv-42", topic="plugin bug 219")
+        adapter._place_error_reaction = AsyncMock()
+
+        await adapter.on_processing_start(event)
+        await adapter.send("573423", "answer", metadata={"thread_id": "conv-42"})
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        names = [e["event"] for e in _events(tmp_path)]
+        assert "deliver_payload" in names
+        assert "deliver_empty" not in names
+        adapter._place_error_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_default_config_pairs_with_the_hosts_real_metadata(
+        self, adapter, tmp_path
+    ):
+        """The shape the host actually sends: ``{"thread_id": ""}``, no topic."""
+        event = self._event(thread_id="", topic="deploy")
+        adapter._place_error_reaction = AsyncMock()
+
+        await adapter.on_processing_start(event)
+        await adapter.send("573423", "answer", metadata={"thread_id": ""})
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        assert "deliver_empty" not in [e["event"] for e in _events(tmp_path)]
+        adapter._place_error_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_topic_in_the_send_metadata_cannot_reintroduce_drift(
+        self, adapter, tmp_path
+    ):
+        """Even if a host ever added one, the delivery key must not read it."""
+        event = self._event(thread_id="", topic="deploy")
+        adapter._place_error_reaction = AsyncMock()
+
+        await adapter.on_processing_start(event)
+        await adapter.send(
+            "573423", "answer", metadata={"thread_id": "", "topic": "deploy"}
+        )
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        assert "deliver_empty" not in [e["event"] for e in _events(tmp_path)]
+        adapter._place_error_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dm_still_pairs(self, adapter, tmp_path):
+        event = self._event(thread_id="", topic=None, chat_id="dm:42")
+        adapter._place_error_reaction = AsyncMock()
+
+        await adapter.on_processing_start(event)
+        await adapter.send("dm:42", "answer")
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        assert "deliver_empty" not in [e["event"] for e in _events(tmp_path)]
+        adapter._place_error_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_silent_run_is_still_reported(self, adapter, tmp_path):
+        """The fix must not silence the notice it exists to protect."""
+        event = self._event(thread_id="conv-42", topic="plugin bug 219")
+        adapter._place_error_reaction = AsyncMock()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        assert "deliver_empty" in [e["event"] for e in _events(tmp_path)]
+        adapter._place_error_reaction.assert_awaited()

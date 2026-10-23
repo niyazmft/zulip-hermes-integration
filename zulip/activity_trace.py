@@ -269,6 +269,7 @@ class ActivityTrace:
         self._last_render: Optional[str] = None
         self._pending: Optional[asyncio.Task] = None
         self._rotate_task: Optional[asyncio.Task] = None
+        self._rotating = False
         self._final_posted = False
         self._closed = False
         self.edit_count = 0
@@ -348,9 +349,9 @@ class ActivityTrace:
             if step.status == STATUS_RUNNING:
                 step.status = STATUS_OK
         self._closed = True
-        self._cancel_rotation()
+        await self._stop_rotation()
         await self._cancel_pending()
-        if not await self._flush():
+        if await self._flush() == "refused":
             await self._post_final()
 
     async def fail(self, reason: str) -> None:
@@ -364,15 +365,15 @@ class ActivityTrace:
             if step.status == STATUS_RUNNING:
                 step.status = STATUS_FAILED
         self._closed = True
-        self._cancel_rotation()
+        await self._stop_rotation()
         await self._cancel_pending()
-        if not await self._flush():
+        if await self._flush() == "refused":
             await self._post_final()
 
     async def aclose(self) -> None:
         """Cancel any pending flush. Never raises; used on shutdown paths."""
         self._closed = True
-        self._cancel_rotation()
+        await self._stop_rotation()
         await self._cancel_pending()
 
     # --- flushing --------------------------------------------------------
@@ -425,13 +426,20 @@ class ActivityTrace:
         except (asyncio.CancelledError, Exception):  # noqa: B014 - cancellation is expected
             pass
 
-    async def _flush(self) -> bool:
-        """Apply the current render. Returns False when the edit was refused."""
+    async def _flush(self) -> str:
+        """Apply the current render.
+
+        Returns ``"ok"`` (applied or unchanged), ``"refused"`` (the server
+        rejected the edit — typically the message-edit window) or ``"error"``
+        (the call raised). The terminal path posts a replacement board only for
+        a refusal; a transient network failure must not duplicate a board that
+        is still editable.
+        """
         if self._message_id is None:
-            return True
+            return "ok"
         render = self._state.render(self._config.max_content)
         if render == self._last_render:
-            return True  # unchanged render spends no PATCH
+            return "ok"  # unchanged render spends no PATCH
 
         delay = self._pacer.delay_for(self._clock())
         if delay > 0:
@@ -443,18 +451,18 @@ class ActivityTrace:
             # Logged and dropped. No retry loop: the next step naturally
             # re-renders, and the run must never wait on the trace.
             logger.warning("activity trace edit failed (dropped): %s", e)
-            return False
+            return "error"
 
         if ok:
             self._last_render = render
             self.edit_count += 1
-            return True
+            return "ok"
         logger.warning(
             "activity trace edit refused (message %s); the board may have outlived "
             "the realm's message-edit window",
             self._message_id,
         )
-        return False
+        return "refused"
 
     # --- board rotation ---------------------------------------------------
 
@@ -486,19 +494,52 @@ class ActivityTrace:
         if task is not None and not task.done():
             task.cancel()
 
+    async def _stop_rotation(self) -> None:
+        """Stop the rotation timer, waiting for an in-flight post.
+
+        Cancelling is enough while the timer is only sleeping. Once ``_rotate``
+        is inside ``_post`` (a worker thread under ``wait_for``), cancelling the
+        task does not stop the thread: the message lands but ``new_id`` is never
+        assigned. Wait for the task instead and let ``_rotate`` close the new
+        board itself.
+        """
+        task = self._rotate_task
+        self._rotate_task = None
+        if task is None or task.done():
+            return
+        if not self._rotating:
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     async def _rotate(self) -> None:
         """Move the status board to a fresh message, then close the old one."""
         if self._closed or self._message_id is None:
             return
         render = self._state.render(self._config.max_content)
+        self._rotating = True
         try:
             new_id = await self._post(render)
         except Exception as e:
             logger.warning("activity trace rotation failed: %s", e)
             new_id = None
+        finally:
+            self._rotating = False
         if new_id is None:
-            self._rotate_task = None
-            self._schedule_rotation(delay=60.0)
+            if not self._closed:
+                self._rotate_task = None
+                self._schedule_rotation(delay=60.0)
+            return
+        if self._closed:
+            # finish() won the race while the post was in flight. The message
+            # exists but cannot become the active board, so close it with the
+            # terminal state instead of leaving an untracked Working board.
+            try:
+                await self._edit(new_id, self._state.render(self._config.max_content))
+            except Exception:
+                logger.debug("activity trace: could not close raced rotation", exc_info=True)
             return
 
         old_id = self._message_id
@@ -510,7 +551,7 @@ class ActivityTrace:
         try:
             await self._edit(
                 old_id,
-                f"**Working**\n\nContinued in the next status message (message {new_id}).",
+                "**Working**\n\nContinued in the next status message.",
             )
         except Exception:
             logger.debug("activity trace: could not close rotated board", exc_info=True)

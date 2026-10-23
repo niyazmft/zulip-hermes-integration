@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse, unquote
@@ -21,8 +22,23 @@ from .logger import mask_pii
 
 logger = logging.getLogger(__name__)
 
-# Match Zulip upload paths in HTML
-UPLOAD_PATH_RE = re.compile(r"/user_uploads/\d+/[a-zA-Z0-9_/-]+/[^\s\"'<>]+")
+# Match a Zulip upload path, in the forms the plugin actually receives.
+#
+# The content is raw Markdown, not HTML: the plugin never asks Zulip for
+# ``apply_markdown``, so a link arrives as ``[shot.png](/user_uploads/2/ab/c/shot.png)``.
+# The old pattern was written for ``href="..."`` and kept the Markdown link's
+# closing token -- ``/user_uploads/2/ab/c/shot.png)`` -- so the download 404'd
+# (issue #271). A trailing ``)``, ``]``, quote or backtick now ends the match.
+#
+# The optional leading group matters for a different reason: it lets a
+# protocol-relative ``//other.example/user_uploads/...`` be matched WHOLE, so
+# the origin check below sees another site. Matching only from
+# ``/user_uploads/`` would resolve it against our own base and hide the
+# cross-origin link.
+UPLOAD_PATH_RE = re.compile(
+    r"(?:[a-zA-Z][a-zA-Z0-9+.\-]*://)?[^\s()<>\[\]\"'`]*?/user_uploads/"
+    r"\d+/[a-zA-Z0-9_/-]+/[^\s()<>\[\]\"'`]+"
+)
 
 DEFAULT_MAX_MB = 5
 
@@ -123,8 +139,45 @@ async def _audit_refused_upload(
         )
 
 
+class MediaRefused(Exception):
+    """An inbound upload was refused, and the reason is safe to show a human.
+
+    Deliberately not a bare ``ValueError``: the inbound path must be able to
+    tell "this attachment is not ours / too large / did not answer" from a bug
+    in our own code, because the first becomes one line in the agent's turn and
+    the second must not take the turn down (issue #271).
+    """
+
+
+@dataclass
+class InboundMedia:
+    """What the inbound path collected for one message.
+
+    Mirrors :class:`gateway.platforms.event.MessageEvent`'s media fields, so the
+    caller can assign them straight across. ``refusals`` holds one agent-facing
+    line per upload that could not be read -- the agent is told, in the turn,
+    that it has no file and why, instead of meeting a dead link.
+    """
+
+    paths: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
+    text_inlined: list[bool] = field(default_factory=list)
+    refusals: list[str] = field(default_factory=list)
+
+    @property
+    def has_images(self) -> bool:
+        return any(t.startswith("image/") for t in self.media_types)
+
+
+def _basic_auth(email: str, api_key: str) -> str:
+    """Zulip's HTTP Basic credential: base64(email:api_key)."""
+    import base64
+
+    return base64.b64encode(f"{email}:{api_key}".encode()).decode()
+
+
 def extract_upload_urls(html_content: str, base_url: str) -> list[str]:
-    """Find Zulip upload URLs in HTML message content.
+    """Find Zulip upload URLs in Markdown message content.
 
     Returns absolute URLs filtered to same origin only.
     """
@@ -212,6 +265,84 @@ async def download_upload(
     return {"path": path, "content_type": content_type, "filename": filename}
 
 
+async def fetch_upload(
+    url: str, auth_header: str, max_bytes: int, base_url: str
+) -> dict:
+    """Download one inbound upload, same-site only, without following redirects.
+
+    Returns ``{"data": bytes, "content_type": str, "filename": str}``. A refusal
+    raises :class:`MediaRefused` with a short message fit for a chat turn.
+
+    Three properties, each because the alternative was a hole:
+
+    * **same scheme and host as the Zulip site** -- the path in a message is
+      attacker-supplyable, so a download that trusts it would let a user point
+      the bot's authenticated request at any host it can reach.
+    * **no redirects** -- ``requests`` follows them by default, which would
+      defeat that check one hop later.
+    * **a size cap enforced before and after reading** -- ``Content-Length`` is
+      a claim, and an absent one is not zero.
+    """
+    base = urlparse(base_url)
+    target = urlparse(url)
+    if (
+        target.scheme != base.scheme
+        or target.netloc != base.netloc
+        or not target.path.startswith("/user_uploads/")
+    ):
+        raise MediaRefused("not an upload on this Zulip site")
+
+    try:
+        import requests
+    except ImportError:
+        raise ImportError("requests package required for media download")
+
+    def _fetch():
+        return requests.get(
+            url,
+            headers={"Authorization": f"Basic {auth_header}"},
+            stream=True,
+            timeout=30,
+            allow_redirects=False,
+        )
+
+    try:
+        response = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise MediaRefused(f"the download failed: {e}") from e
+
+    if 300 <= response.status_code < 400:
+        raise MediaRefused(
+            "the upload replied with a redirect; refusing to follow it off the site"
+        )
+    if not response.ok:
+        raise MediaRefused(f"the server answered {response.status_code}")
+
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > max_bytes:
+                raise MediaRefused(
+                    f"the upload is larger than the allowed limit "
+                    f"({declared} > {max_bytes} bytes)"
+                )
+        except ValueError:
+            pass  # a malformed header is a claim we cannot use; the body check stands
+
+    data = response.content
+    if len(data) > max_bytes:
+        raise MediaRefused(
+            f"the upload is larger than the allowed limit "
+            f"({len(data)} > {max_bytes} bytes)"
+        )
+
+    return {
+        "data": data,
+        "content_type": response.headers.get("Content-Type", "application/octet-stream"),
+        "filename": _resolve_filename(url, response.headers.get("Content-Disposition")),
+    }
+
+
 def _resolve_filename(url: str, content_disposition: Optional[str]) -> str:
     """Resolve filename from Content-Disposition or URL path."""
     filename = ""
@@ -230,10 +361,124 @@ def _resolve_filename(url: str, content_disposition: Optional[str]) -> str:
     return filename
 
 
+def _host_cache_media_bytes(
+    data: bytes, filename: str, mime_type: str
+) -> Optional[dict]:
+    """Let the host classify and cache inbound bytes, when it can.
+
+    Hermes' own cache is where the host looks for media and, on the profile it
+    launched with, where it cleans up. ``cache_media_bytes`` classifies the
+    bytes, checks that an image really is one, and returns a path plus the MIME
+    type ``MessageEvent.media_types`` expects. It exists on every supported host
+    (``__min_hermes__`` 0.18.2 included), but this stays a *capability*: an
+    absent or broken host must degrade to a temp file, never take the turn down.
+    """
+    try:
+        from gateway.platforms.base import cache_media_bytes
+    except ImportError:
+        # The symbol is absent on this host: fall back to a temp file. Guarding
+        # on ImportError specifically (not Exception) is what the static guard in
+        # tests/test_guarded_imports.py can verify (#132/#271).
+        return None
+
+    try:
+        cached = cache_media_bytes(data, filename=filename, mime_type=mime_type)
+    except Exception as e:  # a host cache that raises is not a reason to drop a turn
+        logger.warning("host media cache failed [err=%s]", e)
+        return None
+
+    if cached is None:
+        return None
+
+    return {
+        "path": cached.path,
+        "media_type": cached.media_type,
+        "kind": cached.kind,
+    }
+
+
+def cache_inbound_upload(data: bytes, filename: str, mime_type: str) -> dict:
+    """Persist one inbound upload where the agent can open it.
+
+    Prefers the host cache (see :func:`_host_cache_media_bytes`); falls back to a
+    system temp file when the host has no cache to offer. Returns
+    ``{"path", "media_type", "kind"}``.
+    """
+    try:
+        host_cached = _host_cache_media_bytes(data, filename, mime_type)
+        if host_cached:
+            return host_cached
+    except Exception as e:  # patched or unusual host helper; still cache the file
+        logger.warning("host media cache raised [err=%s]", e)
+
+    fd, path = tempfile.mkstemp(suffix=f"_{filename}")
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+    media_type = mime_type or "application/octet-stream"
+    return {
+        "path": path,
+        "media_type": media_type,
+        "kind": "image" if media_type.startswith("image/") else "document",
+    }
+
+
 def resolve_media_max_mb() -> int:
     """Read max upload size from environment."""
     raw = runtime_scope.get_setting("ZULIP_MEDIA_MAX_MB", "").strip()
     return int(raw) if raw.isdigit() else DEFAULT_MAX_MB
+
+
+async def collect_inbound_media(adapter: Any, content: str) -> InboundMedia:
+    """Turn the upload links in ONE message into host-ready media.
+
+    Called on the live message only -- never on the quoted-history block, which
+    is also part of the agent-facing body. Extracting after that prepend would
+    fetch every attachment ever mentioned in the topic, an unbounded set a user
+    can grow at will (issue #271).
+
+    One refusal never costs the turn: the agent is told, in the text, that it has
+    no file and why -- a dead Markdown link is what this function exists to
+    replace.
+    """
+    result = InboundMedia()
+    urls = extract_upload_urls(content, getattr(adapter, "site", "") or "")
+    if not urls:
+        return result
+
+    max_bytes = resolve_media_max_mb() * 1024 * 1024
+    auth = _basic_auth(
+        getattr(adapter, "email", "") or "", getattr(adapter, "api_key", "") or ""
+    )
+
+    for url in urls:
+        try:
+            fetched = await fetch_upload(url, auth, max_bytes, adapter.site)
+            cached = await asyncio.to_thread(
+                cache_inbound_upload,
+                fetched["data"],
+                fetched["filename"],
+                fetched["content_type"],
+            )
+        except MediaRefused as exc:
+            result.refusals.append(f"[an upload could not be read: {exc}]")
+            continue
+        except Exception as exc:
+            logger.warning(
+                "inbound upload failed [url=%s]: %s", mask_pii(url), mask_pii(str(exc))
+            )
+            result.refusals.append("[an upload could not be read: the download failed]")
+            continue
+
+        result.paths.append(cached["path"])
+        result.media_types.append(cached["media_type"])
+        # We never inline a file's content into the turn's text, so the host is
+        # told so explicitly rather than left to hermes' legacy default.
+        result.text_inlined.append(False)
+
+    return result
 
 
 async def upload_file_to_zulip(

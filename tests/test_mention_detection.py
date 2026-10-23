@@ -331,3 +331,138 @@ class TestOtherDropPathsAreSilent:
         await adapter._handle_message(self._msg())
         adapter.handle_message.assert_not_called()
         assert self._typing_calls(adapter) == []
+
+
+class TestFlaggedButUnmatchedMention:
+    """#226: the server flagged us, our matcher cannot find the token.
+
+    Three things were wrong: the mismatch logged at *debug* (invisible on the
+    default log level), the raw ``@**...**`` markup reached the agent, and the
+    username form could not match its disambiguated rendering while the
+    display-name form could.
+    """
+
+    @pytest.fixture
+    def adapter(self, mock_platform_config, monkeypatch):
+        import zulip.zulip_client as zulip_client_module
+
+        monkeypatch.setattr(zulip_client_module, "ZULIP_AVAILABLE", True)
+
+        class MockZulipModule:
+            class Client:
+                def __init__(self, email=None, api_key=None, site=None):
+                    pass
+
+                def set_typing_status(self, *a, **k):
+                    pass
+
+                def add_reaction(self, *a, **k):
+                    pass
+
+                def remove_reaction(self, *a, **k):
+                    pass
+
+                def update_message_flags(self, *a, **k):
+                    pass
+
+                def send_message(self, *a, **k):
+                    pass
+
+        monkeypatch.setattr(zulip_client_module, "zulip", MockZulipModule())
+        monkeypatch.setenv("ZULIP_CHATMODE", "oncall")
+        monkeypatch.delenv("ZULIP_STREAM_OVERRIDES", raising=False)
+
+        from zulip.adapter import ZulipAdapter
+
+        a = ZulipAdapter(mock_platform_config)
+        a.email = "soju-bot@zulip.com"
+        a.bot_full_name = "Soju"
+        a.handle_message = AsyncMock()
+        a._sdk_call = AsyncMock(return_value={"result": "success", "id": 1})
+        return a
+
+    def _msg(self, content, flags=None):
+        return {
+            "id": 7,
+            "type": "stream",
+            "stream_id": 30,
+            "subject": "general chat",
+            "display_recipient": "general",
+            "content": content,
+            "sender_email": "user@zulip.com",
+            "sender_full_name": "User",
+            "sender_id": 42,
+            "flags": flags or [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_mismatch_warns_and_strips_the_markup(self, adapter, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="zulip.inbound"):
+            await adapter._handle_message(
+                self._msg("@**Renamed Bot|99** how much are pies", flags=["mentioned"])
+            )
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "@**" not in event.text, "raw mention markup reached the agent"
+        assert "how much are pies" in event.text
+        assert any(
+            r.levelno >= logging.WARNING and "flagged by server" in r.getMessage()
+            for r in caplog.records
+        ), "the mismatch must be visible at the default log level"
+
+    @pytest.mark.asyncio
+    async def test_the_warning_carries_no_message_content(self, adapter, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="zulip.inbound"):
+            await adapter._handle_message(
+                self._msg("SECRET_BODY_XYZ @**Renamed Bot**", flags=["mentioned"])
+            )
+
+        text = " ".join(r.getMessage() for r in caplog.records)
+        assert "SECRET_BODY_XYZ" not in text
+
+    @pytest.mark.asyncio
+    async def test_a_body_without_markup_is_untouched_and_warns_once(
+        self, adapter, caplog
+    ):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="zulip.inbound"):
+            await adapter._handle_message(self._msg("just a body", flags=["mentioned"]))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "just a body"
+        flagged = [
+            r for r in caplog.records if "flagged by server" in r.getMessage()
+        ]
+        assert len(flagged) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_matched_mention_still_normalises_as_today(self, adapter, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="zulip.inbound"):
+            await adapter._handle_message(
+                self._msg("@**Soju** hello there", flags=["mentioned"])
+            )
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "hello there"
+        assert not [r for r in caplog.records if "flagged by server" in r.getMessage()]
+
+
+class TestUsernameDisambiguatedForm:
+    def test_local_part_with_user_id_matches(self):
+        rx = create_mention_regex("soju-bot")
+        assert rx.search("@**soju-bot|42** hello")
+
+    def test_silent_local_part_with_user_id_matches(self):
+        rx = create_mention_regex("soju-bot")
+        assert rx.search("@_**soju-bot|42** hello")
+
+    def test_another_name_still_does_not_match(self):
+        rx = create_mention_regex("soju-bot", "Soju")
+        assert not rx.search("@**Other Bot|42** hello")

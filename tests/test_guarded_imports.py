@@ -38,6 +38,9 @@ _VERSION_GATED_GATEWAY_SYMBOLS = {
     # silently, so the plugin posts its own line under the fail-closed policy),
     # and an unguarded import would take the plugin down on those hosts.
     "register_timeout_notice",
+    # #271: guarded in zulip/media.py — a host without the media cache falls
+    # back to a temp file instead of losing the whole plugin.
+    "cache_media_bytes",
 }
 
 # The optional imports that actually exist today. Asserted present so the guard

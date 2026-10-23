@@ -19,10 +19,21 @@ import shutil
 import ssl
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+class LookupFailed(Exception):
+    """The release lookup did not answer.
+
+    A different fact from "no newer release exists", and deliberately a
+    different type. Issue #264 was caused by both facts arriving as ``None``:
+    the caller could not tell them apart, so a failed check printed
+    ``Already up to date.`` and exited 0.
+    """
 
 GITHUB_ZIP_URL = "https://github.com/{repo}/archive/refs/heads/main.zip"
 RELEASE_API_URL = "https://api.github.com/repos/{repo}/releases/latest"
@@ -204,8 +215,15 @@ def _verify_checksums(extract_dir: Path, source_root: Path, files: list[str]) ->
     return True, None
 
 
-def _http_get_json(url: str, timeout: int = 10) -> Optional[dict]:
-    """Fetch JSON from URL with short timeout."""
+def _http_get_json(url: str, timeout: int = 10) -> dict:
+    """Fetch a JSON object from URL with a short timeout.
+
+    A failure is signalled by raising :class:`LookupFailed`, never by returning
+    a falsy value: a ``None`` return used to be indistinguishable from "there is
+    no newer release", which is exactly how a failed check became "Already up to
+    date" with exit 0 (issue #264). The message is short and sanitized -- it is
+    printed to an operator's terminal.
+    """
     try:
         req = urllib.request.Request(
             url,
@@ -215,10 +233,17 @@ def _http_get_json(url: str, timeout: int = 10) -> Optional[dict]:
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
+        # Deliberately Exception, not a tuple of guessed transports: this module
+        # must not fail with a NameError *while handling* a network failure.
         logger.warning("update check failed: %s", e)
-        return None
+        reason = " ".join(str(e).split())[:200] or e.__class__.__name__
+        raise LookupFailed(reason) from e
+
+    if not isinstance(payload, dict):
+        raise LookupFailed("release metadata was not a JSON object")
+    return payload
 
 
 def _http_get_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
@@ -232,26 +257,65 @@ def _http_get_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         return None
 
 
-def check_for_update(repo: str, current_version: str) -> Optional[str]:
+
+
+@dataclass(frozen=True)
+class UpdateCheck:
+    """What a release lookup established. Exactly one of three facts, not two.
+
+    ``status`` is one of:
+
+    ``"update"``   the lookup answered and ``latest`` is newer than this install
+    ``"current"``  the lookup answered and nothing newer exists
+    ``"failed"``   the lookup did not answer, or answered nothing comparable;
+                   ``error`` says why, and we do NOT know whether an update exists
+
+    ``latest`` is the version the lookup reported, when it reported a usable
+    one. ``error`` is a short human-readable reason, set only when the status is
+    ``"failed"`` -- it is what an operator sees, because a ``logger.warning``
+    alone is invisible on a host that never configured logging (issue #264).
+    """
+
+    status: str
+    latest: Optional[str] = None
+    error: Optional[str] = None
+from dataclasses import dataclass
+
+def check_for_update(repo: str, current_version: str) -> UpdateCheck:
     """Check GitHub releases for a newer version.
 
-    Returns the newer version string, or None if no update / check failed.
+    Returns an UpdateCheck dataclass with the status, latest version, and error message.
     """
-    data = _http_get_json(RELEASE_API_URL.format(repo=repo))
-    if not data:
-        return None
-    latest = data.get("tag_name", "").lstrip("v")
-    if not latest:
-        return None
     try:
-        # Simple tuple comparison for semver-like versions
+        data = _http_get_json(RELEASE_API_URL.format(repo=repo))
+    except LookupFailed as exc:
+        # The lookup did not answer. Not the same fact as "nothing newer".
+        return UpdateCheck(status="failed", error=str(exc))
+
+    latest = str(data.get("tag_name") or "").lstrip("v").strip()
+    if not latest:
+        return UpdateCheck(
+            status="failed", error="the release metadata carried no version tag"
+        )
+
+    try:
+        # Simple tuple comparison for semver-like versions.
         def _to_tuple(v: str):
             return tuple(int(x) for x in v.split(".") if x.isdigit())
-        if _to_tuple(latest) > _to_tuple(current_version):
-            return latest
-    except Exception:
-        pass
-    return None
+
+        latest_tuple = _to_tuple(latest)
+        current_tuple = _to_tuple(current_version)
+        # An unparseable tag (e.g. "nightly") is not a comparison that answered
+        # "nothing newer" -- it is a check that could not be performed.
+        if not latest_tuple or not current_tuple:
+            return UpdateCheck(
+                status="failed", error=f"could not compare versions: {latest!r}"
+            )
+        if latest_tuple > current_tuple:
+            return UpdateCheck(status="update", latest=latest)
+    except Exception as exc:
+        return UpdateCheck(status="failed", error=str(exc))
+    return UpdateCheck(status="current", latest=latest)
 
 
 def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, str]:
@@ -365,15 +429,22 @@ def perform_update(repo: str, plugin_dir: str, files: list[str]) -> tuple[bool, 
     )
 
 
+from typing import Optional
+
 def startup_version_check(current_version: str, repo: str) -> None:
     """Log a warning if a newer version is available on startup."""
-    newer = check_for_update(repo, current_version)
-    if newer:
+    check = check_for_update(repo, current_version)
+    if check.status == "update":
         logger.warning(
             "Plugin update available: v%s \u2192 v%s. "
             "Run `python -m zulip.updater` to download, then restart Hermes.",
             current_version,
-            newer,
+            check.latest,
+        )
+    elif check.status == "failed":
+        logger.warning(
+            "Plugin update check failed: %s. This is not 'up to date' \u2014 nothing was compared; an update may exist.",
+            check.error,
         )
 
 
@@ -385,8 +456,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         python -m zulip.updater --check-only  # just check, don't update
         python -m zulip.updater --help        # show help
 
-    Returns a process exit code: 0 when up to date or updated, 1 on a manifest
-    or update failure, 2 when --check-only finds an incomplete install (#204).
+    Returns a process exit code: 0 when up to date, when an update was
+    installed, or when --check-only found one; 1 on a manifest or update
+    failure; 2 when --check-only finds an incomplete install (#204); 3 when
+    the version lookup could not answer (#264) -- so a cron job or update.sh
+    can tell "checked, nothing newer" from "could not check".
     """
     import argparse
 
@@ -430,14 +504,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Plugin dir: {plugin_dir}")
     print()
 
-    newer = check_for_update(repo, current)
+    check = check_for_update(repo, current)
 
-    if not newer and not missing:
-        print("\u2705 Already up to date.")
-        return 0
-
-    if newer:
-        print(f"\u2191 Update available: v{current} \u2192 v{newer}")
+    if check.status == "update":
+        print(f"\u2191 Update available: v{current} \u2192 v{check.latest}")
+    elif check.status == "failed":
+        # A print, not only a logger.warning: on a host that never configured
+        # logging the warning is invisible, and this line used to say the
+        # opposite of the truth (issue #264).
+        print(f"\u26a0\ufe0f  Could not check for updates: {check.error}")
     if missing:
         shown = ", ".join(missing[:5]) + ("\u2026" if len(missing) > 5 else "")
         print(
@@ -448,20 +523,37 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.check_only:
         if missing:
+            # Integrity first: this answer must not depend on the network.
             print("This install is incomplete. Run without --check-only to repair it.")
             return 2
-        print("Run without --check-only to download and install.")
+        if check.status == "failed":
+            print(
+                "Could not check for updates, so nothing was compared. "
+                "Try again when the lookup succeeds."
+            )
+            return 3
+        if check.status == "update":
+            print("Run without --check-only to download and install.")
+            return 0
+        print("\u2705 Already up to date.")
         return 0
 
-    print("Downloading and verifying...")
-    success, message = perform_update(repo, plugin_dir, plugin_files)
+    # Not --check-only: repair an incomplete install, and install when the
+    # lookup said so. A failed lookup installs nothing -- nothing was compared.
+    if check.status == "update" or missing:
+        print("Downloading and verifying...")
+        success, message = perform_update(repo, plugin_dir, plugin_files)
+        if success:
+            print(f"\u2705 {message}")
+            return 0
+        print(f"\u274c {message}")
+        return 1
 
-    if success:
-        print(f"\u2705 {message}")
-        return 0
-    print(f"\u274c {message}")
-    return 1
+    if check.status == "failed":
+        return 3
 
+    print("\u2705 Already up to date.")
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())

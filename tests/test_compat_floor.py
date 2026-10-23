@@ -109,3 +109,126 @@ def test_below_floor_hosts_are_rejected():
     assert gate._check_host_meets_floor() == [], (
         "an unknown host version must not be treated as below the floor"
     )
+
+
+class TestTheFatalPathsFire:
+    """#250 / ledger row 4: a gate that does not run is worse than no gate.
+
+    ``check_compat.py`` has four fatal paths; before this only the version floor
+    was proven to fire. These drive each check against a deliberately broken
+    host, and assert the *declarations themselves* are non-empty -- the silent
+    direction, where an emptied ``REQUIRED_MODULE_SYMBOLS`` would disable the
+    check while CI stayed green.
+    """
+
+    def test_the_declarations_are_not_empty(self):
+        gate = _load_gate()
+
+        assert gate.REQUIRED_MODULE_SYMBOLS, "an emptied declaration disables the check"
+        assert gate.REQUIRED_REGISTER_KEYS, "an emptied declaration disables the check"
+        assert gate.EXPECTED_REGISTER_KWARGS
+
+    def test_a_missing_declared_symbol_is_named(self, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+
+        gate = _load_gate()
+        monkeypatch.setattr(
+            gate, "REQUIRED_MODULE_SYMBOLS", {"host_mod": ("Present", "Absent")}
+        )
+        monkeypatch.setitem(sys.modules, "host_mod", SimpleNamespace(Present=object()))
+
+        failures = gate._missing_required_symbols()
+
+        assert any("host_mod.Absent" in f for f in failures), failures
+
+    def test_an_unimportable_declared_module_is_reported(self, monkeypatch):
+        import sys
+
+        gate = _load_gate()
+        monkeypatch.setattr(
+            gate, "REQUIRED_MODULE_SYMBOLS", {"no_such_host_mod_xyz": ("X",)}
+        )
+        monkeypatch.delitem(sys.modules, "no_such_host_mod_xyz", raising=False)
+
+        failures = gate._missing_required_symbols()
+
+        assert any("no_such_host_mod_xyz" in f and "import failed" in f for f in failures)
+
+    def _base_with(self, monkeypatch, helper):
+        import sys
+        from types import SimpleNamespace
+
+        gate = _load_gate()
+        attrs = {} if helper is None else {gate.THREAD_METADATA_ATTR: helper}
+        monkeypatch.setitem(sys.modules, "gateway.platforms.base", SimpleNamespace(**attrs))
+        return gate
+
+    def test_a_missing_thread_helper_explains_misrouting(self, monkeypatch):
+        gate = self._base_with(monkeypatch, None)
+
+        failures = gate._check_thread_metadata_contract()
+
+        assert failures and "#143" in failures[0], failures
+
+    def test_a_wrong_thread_id_is_explained(self, monkeypatch):
+        gate = self._base_with(monkeypatch, lambda source: {"thread_id": "other-topic"})
+
+        failures = gate._check_thread_metadata_contract()
+
+        assert failures and "#143" in failures[0], failures
+
+    def test_a_source_without_a_thread_id_may_not_acquire_one(self, monkeypatch):
+        """The half #272's audit key depends on: empty stays empty."""
+        gate = self._base_with(
+            monkeypatch,
+            lambda source: {
+                "thread_id": getattr(source, "thread_id", None) or "invented-label"
+            },
+        )
+
+        failures = gate._check_thread_metadata_contract()
+
+        assert failures and "#272" in failures[0], failures
+
+    def test_a_healthy_host_passes_the_thread_contract(self, monkeypatch):
+        gate = self._base_with(
+            monkeypatch, lambda source: {"thread_id": getattr(source, "thread_id", "")}
+        )
+
+        assert gate._check_thread_metadata_contract() == []
+
+    def test_a_registration_missing_a_required_key_is_named(self):
+        gate = _load_gate()
+
+        class _BrokenAdapter:
+            def register(self, ctx):
+                # Registers exactly one platform, with none of the required keys.
+                ctx.register_platform()
+
+        failures = gate._check_registration(_BrokenAdapter())
+
+        joined = " ".join(failures)
+        for key in gate.REQUIRED_REGISTER_KEYS:
+            assert key in joined, f"{key} missing from the failure text"
+
+    def test_no_host_is_exit_2(self, monkeypatch, capsys):
+        import sys
+
+        gate = _load_gate()
+        # ``None`` in sys.modules makes ``import gateway`` raise ImportError.
+        monkeypatch.setitem(sys.modules, "gateway", None)
+        monkeypatch.delenv("HERMES_COMPAT_SKIP", raising=False)
+
+        assert gate.main() == 2
+        assert "no Hermes gateway importable" in capsys.readouterr().err
+
+    def test_an_explicit_skip_is_exit_0_and_says_so(self, monkeypatch, capsys):
+        import sys
+
+        gate = _load_gate()
+        monkeypatch.setitem(sys.modules, "gateway", None)
+        monkeypatch.setenv("HERMES_COMPAT_SKIP", "1")
+
+        assert gate.main() == 0
+        assert "SKIP" in capsys.readouterr().out

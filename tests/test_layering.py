@@ -46,8 +46,10 @@ LAYERS: dict[int, tuple[str, ...]] = {
         "commands", "history", "policy", "probe", "reactions", "secret_guard",
         "settings",
     ),
-    2: ("approval_outcomes", "connection", "inbound", "media", "pairing", "platform_api"),
-    3: ("cli", "outbound"),
+    2: ("approval_outcomes", "connection", "media", "pairing", "platform_api"),
+    # inbound joined level 3 with #271: it now imports media, the owning module
+    # for inbound attachment handling, exactly as outbound already did.
+    3: ("cli", "inbound", "outbound"),
     4: ("inbound_queue", "routing"),
     5: ("tracing",),
     6: ("adapter",),

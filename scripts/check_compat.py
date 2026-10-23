@@ -107,6 +107,14 @@ GATED_EXEC_APPROVAL_SYMBOLS = (
     "supports_exec_approval_buttons",
 )
 
+# Inbound attachment support (#271). ``zulip/media.py`` imports
+# ``cache_media_bytes`` inside a try/except and falls back to a temp file, and
+# the ``MessageEvent`` media fields are populated by attribute assignment, so a
+# host that lost either degrades instead of breaking — capability, never fatal,
+# for the same reason as the exec-approval symbols (#230).
+MEDIA_CACHE_SYMBOL = "cache_media_bytes"
+MEDIA_EVENT_FIELDS = ("media_urls", "media_types", "media_text_inlined")
+
 # The registration kwargs the plugin passes; a typo or a dropped kwarg here is
 # as fatal as a missing symbol.
 EXPECTED_REGISTER_KWARGS = {
@@ -278,6 +286,32 @@ def _check_thread_metadata_contract() -> list[str]:
             f"origin topic in metadata['thread_id'] (got {metadata!r} for topic "
             f"{topic!r}); replies would silently misroute (#143)."
         ]
+
+    # The other half of the contract (#272): a source WITHOUT a thread_id must
+    # not acquire one. The delivery audit pairs dispatch with delivery on the
+    # session's thread_id -- read from ``source`` on one side and from this
+    # metadata on the other -- so a host that invented a value here (a topic
+    # name, say) would make the two disagree in the configuration most installs
+    # run: no stable topic sessions, an empty thread_id, and a per-stream
+    # session.
+    empty_source = _synthetic_source(topic)
+    empty_source.thread_id = ""
+    try:
+        empty_metadata = helper(empty_source) or {}
+    except Exception as exc:  # noqa: BLE001
+        return [
+            f"gateway.platforms.base.{THREAD_METADATA_ATTR} raised {exc!r} for a "
+            "stream source with no thread_id."
+        ]
+    if isinstance(empty_metadata, dict):
+        invented = str(empty_metadata.get("thread_id") or "").strip()
+        if invented:
+            return [
+                f"gateway.platforms.base.{THREAD_METADATA_ATTR} invents a "
+                f"thread_id ({invented!r}) for a source that has none; the "
+                "delivery audit would key dispatch and delivery differently, so "
+                "every answered run would also report 'no reply sent' (#272)."
+            ]
     return []
 
 
@@ -298,6 +332,90 @@ def _report_gated_base_methods() -> None:
                 f"  gated hook BasePlatformAdapter.{name}: absent "
                 "(typing falls back to the stream's last-seen topic)"
             )
+
+
+def _host_command_names() -> tuple[frozenset[str] | None, str]:
+    """The command names the installed host dispatches, and where they came from.
+
+    Derived from the artifact, never from a list we wrote down: the registry the
+    gateway itself dispatches from is ``hermes_cli.commands.GATEWAY_KNOWN_COMMANDS``
+    (present at v2026.9.14, the declared floor, and every ref since). A host that
+    does not ship it is not a failure -- the plugin records the same set as a
+    floor -- but it is reported, so a silent fallback is visible.
+    """
+    try:
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host registry unavailable ({exc!r})"
+    try:
+        names = frozenset(str(name) for name in GATEWAY_KNOWN_COMMANDS)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host registry unreadable ({exc!r})"
+    return names, f"hermes_cli.commands.GATEWAY_KNOWN_COMMANDS ({len(names)} names)"
+
+
+def _check_command_namespace() -> list[str]:
+    """Fatal when a plugin command shadows a command the host owns (#43, #190, #251).
+
+    A collision is invisible and user-facing: the plugin's router answers the
+    command and the gateway that owns it never sees it, so the user's ``/help``
+    silently does something else. That makes it a gate, not a unit test.
+    """
+    from zulip import commands as plugin_commands
+
+    plugin = plugin_commands.plugin_command_names()
+    host_names, source = _host_command_names()
+    if host_names is not None:
+        gateway, checked_against = host_names, source
+    else:
+        gateway = plugin_commands.GATEWAY_NATIVE_COMMANDS
+        checked_against = (
+            f"the plugin's recorded GATEWAY_NATIVE_COMMANDS "
+            f"({len(gateway)} names; {source})"
+        )
+
+    collisions = plugin_commands.command_collisions(plugin, gateway)
+    if collisions:
+        named = ", ".join(f"/{name}" for name in collisions)
+        return [
+            f"the plugin registers command name(s) the gateway owns: {named} -- a "
+            f"plugin command of that name shadows the host's (#43/#190). Checked "
+            f"against {checked_against}."
+        ]
+
+    print(
+        f"  command namespace: {len(plugin)} plugin command(s) checked against "
+        f"{checked_against}"
+    )
+    return []
+
+
+def _report_media_capabilities() -> None:
+    """Print whether inbound uploads can be handed to this host (#271).
+
+    Reported, never fatal: ``zulip/media.py`` guards the import and caches to a
+    temp file when the host offers no cache, so an absent symbol costs the
+    agent's vision path and the host's own cache location — not the turn.
+    """
+    try:
+        base = importlib.import_module("gateway.platforms.base")
+    except Exception:  # noqa: BLE001
+        return
+
+    if hasattr(base, MEDIA_CACHE_SYMBOL):
+        print(f"  media cache gateway.platforms.base.{MEDIA_CACHE_SYMBOL}: present")
+    else:
+        print(
+            f"  media cache gateway.platforms.base.{MEDIA_CACHE_SYMBOL}: absent "
+            "(inbound uploads fall back to a temp file)"
+        )
+
+    event_cls = getattr(base, "MessageEvent", None)
+    fields = set(getattr(event_cls, "__dataclass_fields__", {}) or {})
+    fields |= set(getattr(event_cls, "__annotations__", {}) or {})
+    for name in MEDIA_EVENT_FIELDS:
+        state = "present" if name in fields else "absent (agent cannot open the file)"
+        print(f"  media field MessageEvent.{name}: {state}")
 
 
 def _parse_version(raw: str) -> tuple[int, ...] | None:
@@ -457,6 +575,7 @@ def main() -> int:
         failures.append("missing required gateway symbol(s): " + ", ".join(missing))
     failures.extend(_check_thread_metadata_contract())
     failures.extend(_check_registration(adapter))
+    failures.extend(_check_command_namespace())
 
     if failures:
         _print_failure(failures)
@@ -465,6 +584,7 @@ def main() -> int:
     print("check_compat: plugin registration surface verified")
     _report_gated_base_methods()
     _report_gated_symbols()
+    _report_media_capabilities()
     print("check_compat: OK")
     return 0
 

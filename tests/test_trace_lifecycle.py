@@ -112,23 +112,12 @@ class TestLifecycle:
         assert "no reply sent" not in final
 
     @pytest.mark.asyncio
-    async def test_reply_with_conversation_id_still_counts(self, adapter, monkeypatch):
-        """Stable topic sessions send ``thread_id`` = conversation id.
-
-        The trace is keyed by the human topic name at start, so reply
-        accounting must resolve the id through the adapter's routing or the
-        board falsely reports "no reply sent" (and the audit logs
-        ``deliver_empty``) for a run that did reply.
-        """
-        conversations = MagicMock()
-        conversations.current_name.return_value = "api-review"
-        monkeypatch.setattr(
-            adapter._routing, "_conversations", conversations, raising=False
-        )
-        event = stream_event()
+    async def test_reply_with_conversation_id_still_counts(self, adapter):
+        """A reply's ``thread_id`` is the conversation id the trace was keyed on."""
+        event = stream_event(topic="c0123456789ab")
         await adapter.on_processing_start(event)
         await _settle()
-        adapter._note_trace_reply("573423", {"thread_id": "ce424321d2970"})
+        adapter._note_trace_reply("573423", {"thread_id": "c0123456789ab"})
         await adapter.on_processing_complete(event, SUCCESS)
 
         final = adapter.client.edited[-1]["content"]

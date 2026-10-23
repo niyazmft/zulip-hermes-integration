@@ -430,6 +430,18 @@ class TestBoardRotation:
         assert "replied in 10s" in rec.posts[-1]
 
     @pytest.mark.asyncio
+    async def test_finish_does_not_post_when_the_edit_raises(self):
+        """A transient PATCH failure must not duplicate a still-editable board."""
+        rec = Recorder(edit_raises=RuntimeError("timeout"))
+        trace, _ = make_trace(rec, coalesce_ms=0)
+        await trace.start()
+        trace.step("work")
+
+        await trace.finish("replied in 10s")
+
+        assert len(rec.posts) == 1, "only the original board exists"
+
+    @pytest.mark.asyncio
     async def test_finish_does_not_post_twice_when_the_edit_succeeds(self):
         rec = Recorder()
         trace, _ = make_trace(rec, coalesce_ms=0)

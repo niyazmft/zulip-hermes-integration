@@ -5,12 +5,13 @@ Handles BAD_EVENT_QUEUE_ID by re-registering transparently.
 """
 
 import asyncio
+import random
 import json
 import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import time
 
@@ -91,6 +92,20 @@ class QueueMetadata:
             # before we recorded event types, i.e. ["message"]. (Issue #162)
             event_types=data.get("event_types"),
         )
+
+
+# Retry band for queue registration. Equal jitter -- half the computed backoff
+# plus a random half -- so bots restarting together spread out instead of
+# re-hitting a Zulip that is still coming up at the same instants (#224), while
+# no single wait collapses toward zero.
+REGISTRATION_JITTER_LOW = 0.5
+
+
+def jittered_delay(attempt: int, base_delay: float = 1.0, rng: Any = None) -> float:
+    """Delay before retry ``attempt`` (1-based), jittered inside its band."""
+    raw = base_delay * (2 ** (attempt - 1))
+    fraction = (rng or random.uniform)(REGISTRATION_JITTER_LOW, 1.0)
+    return raw * fraction
 
 
 class ZulipQueueManager:
@@ -258,7 +273,15 @@ class ZulipQueueManager:
                     raise RuntimeError(
                         "Queue registration failed after all retries"
                     ) from e
-                delay = base_delay * (2 ** (attempt - 1))
+                delay = jittered_delay(attempt, base_delay)
+                logger.info(
+                    "zulip queue registration retrying in %.2fs "
+                    "[account=%s attempt=%d/%d]",
+                    delay,
+                    self.account_id,
+                    attempt,
+                    max_attempts,
+                )
                 await asyncio.sleep(delay)
 
         raise RuntimeError("Queue registration failed after all retries")

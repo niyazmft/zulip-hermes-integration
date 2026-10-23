@@ -7,6 +7,8 @@ from enum import Enum
 
 class MessageType(Enum):
     TEXT = "text"
+    PHOTO = "photo"
+    DOCUMENT = "document"
 
 
 @dataclass
@@ -66,6 +68,12 @@ class MessageEvent:
     source: MessageSource = field(default_factory=MessageSource)
     message_id: str = ""
     metadata: dict = field(default_factory=dict)
+    # Media attachments: local file paths the agent can open (#271). The real
+    # host reads these to attach an image to the model turn and to name any
+    # other file's path to the agent; the plugin now populates them.
+    media_urls: list = field(default_factory=list)
+    media_types: list = field(default_factory=list)
+    media_text_inlined: list = field(default_factory=list)
 
 
 class BasePlatformAdapter:
