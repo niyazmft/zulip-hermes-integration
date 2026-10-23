@@ -66,7 +66,7 @@ class TestCommandsBypassTheTriggerGate:
         a = _gated(mock_platform_config, monkeypatch)
         await a._handle_message(_stream_msg("/deny"))
         event = a.handle_message.call_args[0][0]
-        assert event.metadata.get("addressed") in (None, False)
+        assert event._zulip_meta.get("addressed") in (None, False)
         assert a._engagement_store.active_count() == 0
 
     @pytest.mark.asyncio
@@ -144,4 +144,4 @@ class TestTheOtherGatesSurvive:
         await a._handle_message(_stream_msg("/deny"))
         assert a.handle_message.call_count == 1
         event = a.handle_message.call_args[0][0]
-        assert event.metadata.get("addressed") is False
+        assert event._zulip_meta.get("addressed") is False

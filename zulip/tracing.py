@@ -80,7 +80,7 @@ def trace_key_for_event(event: Any) -> str:
     """
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
-    metadata = getattr(event, "metadata", None)
+    metadata = outbound.route_metadata(event)
     thread_id = ""
     for candidate in (
         getattr(source, "thread_id", None),
@@ -451,7 +451,7 @@ def start_trace(adapter: Any, event: Any) -> None:
         return
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
-    metadata = getattr(event, "metadata", None)
+    metadata = outbound.route_metadata(event)
     if not chat_id:
         return
 
@@ -544,7 +544,7 @@ async def finish_trace(adapter: Any, event: Any, outcome: Any) -> None:
         return
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
-    metadata = getattr(event, "metadata", None)
+    metadata = outbound.route_metadata(event)
     key = trace_key_for_event(event)
     trace = adapter._traces.pop(key, None)
     if trace is None:

@@ -317,9 +317,11 @@ def resolve_soft_gate() -> bool:
     """Whether monitored stream messages are all dispatched (issue #153).
 
     Off by default. When on, a stream message is dispatched like
-    ``ZULIP_CHATMODE=onmessage`` but its metadata carries ``addressed=False``
-    unless the bot was mentioned or an onchar prefix fired, so the agent can
-    watch a busy stream without answering all of it.
+    ``ZULIP_CHATMODE=onmessage``; one the bot was not addressed in carries
+    ``inbound.OBSERVED_STREAM_CONTEXT`` in ``channel_context`` (the turn's
+    context, which survives the host's native admission) and ``addressed=False``
+    in the adapter's private ``_zulip_meta``, so the agent can watch a busy
+    stream without answering all of it.
     """
     return _preset_value("ZULIP_SOFT_GATE").strip().lower() in (
         "true", "1", "yes", "on",

@@ -152,7 +152,7 @@ class TestTopicScoping:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "dm"
         assert event.source.chat_id == "dm:7,42,99"
-        assert event.metadata["recipient_ids"] == [7, 42, 99]
+        assert event._zulip_meta["recipient_ids"] == [7, 42, 99]
 
     @pytest.mark.asyncio
     async def test_dm_without_recipient_list_falls_back_to_sender_id(self, adapter):

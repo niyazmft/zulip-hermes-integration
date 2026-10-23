@@ -217,7 +217,7 @@ class TestMidRunMessages:
         queued_event = adapter.handle_message.call_args[0][0]
         assert queued_event.message_id == "2"
         assert queued_event.source.chat_id == "573423"
-        assert queued_event.metadata["topic"] == "api-review"
+        assert queued_event._zulip_meta["topic"] == "api-review"
 
     @pytest.mark.asyncio
     async def test_a_queued_turn_is_not_queued_twice(self, adapter):
@@ -293,7 +293,7 @@ class TestNoGlobalSerialization:
 
         second = await deliver(adapter, stream_message(2, topic="deploys"))
         assert delivered_ids(adapter) == ["1", "2"]
-        assert second.metadata["topic"] == "deploys"
+        assert second._zulip_meta["topic"] == "deploys"
         assert not reactions_of(adapter.client, "add_reaction", "2", "hourglass")
 
     @pytest.mark.asyncio
