@@ -430,6 +430,42 @@ class TestBoardRotation:
         assert "replied in 10s" in rec.posts[-1]
 
     @pytest.mark.asyncio
+    async def test_finish_during_an_in_flight_rotation_closes_both_boards(self):
+        """finish() must not cancel the rotation thread and leave a stray board."""
+        rec = Recorder()
+        trace, _ = make_trace(rec, coalesce_ms=0, board_ttl=0)
+        await trace.start()
+        trace.step("work")
+
+        rec._post_result = 202
+        posted = asyncio.Event()
+        release = asyncio.Event()
+        original_post = rec.post
+
+        async def blocked_post(content):
+            posted.set()
+            await release.wait()
+            return await original_post(content)
+
+        rec.post = blocked_post
+        trace._post = blocked_post
+
+        rotation = asyncio.create_task(trace._rotate())
+        trace._rotate_task = rotation
+        await posted.wait()
+
+        finishing = asyncio.create_task(trace.finish("replied in 10s"))
+        await asyncio.sleep(0)  # let finish() enter _stop_rotation()
+        release.set()
+
+        await asyncio.gather(rotation, finishing)
+
+        assert trace.message_id == 101, "the raced board must not become active"
+        assert all("**Done**" in content for _, content in rec.edits[-2:]), (
+            "both the original and the raced board must be terminal"
+        )
+
+    @pytest.mark.asyncio
     async def test_finish_does_not_post_when_the_edit_raises(self):
         """A transient PATCH failure must not duplicate a still-editable board."""
         rec = Recorder(edit_raises=RuntimeError("timeout"))
