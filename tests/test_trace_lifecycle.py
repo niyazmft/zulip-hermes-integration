@@ -112,6 +112,19 @@ class TestLifecycle:
         assert "no reply sent" not in final
 
     @pytest.mark.asyncio
+    async def test_reply_with_conversation_id_still_counts(self, adapter):
+        """A reply's ``thread_id`` is the conversation id the trace was keyed on."""
+        event = stream_event(topic="c0123456789ab")
+        await adapter.on_processing_start(event)
+        await _settle()
+        adapter._note_trace_reply("573423", {"thread_id": "c0123456789ab"})
+        await adapter.on_processing_complete(event, SUCCESS)
+
+        final = adapter.client.edited[-1]["content"]
+        assert "replied in" in final
+        assert "no reply sent" not in final
+
+    @pytest.mark.asyncio
     async def test_a_run_that_produced_nothing_says_so(self, adapter):
         """The case this whole epic exists for: silence was indistinguishable."""
         event = stream_event()

@@ -343,10 +343,17 @@ Names match exactly and case-insensitively; a `!` denial always wins.
 (default 400) folds bursts into one edit, `ZULIP_TRACE_MAX_RATE` (default 2/s) caps edits,
 and an unchanged render spends no edit at all.
 
+**Long runs:** Zulip refuses content edits after the realm's message-edit window
+(600 s by default). The board is rotated onto a fresh message every
+`ZULIP_TRACE_BOARD_TTL` seconds (default 420); the previous board is closed as
+"continued". If an edit is refused anyway, the terminal state is posted as a new
+message, so a run can never leave a silent `Working` board.
+
 **Failure policy:** tracing is best-effort and never blocking — a failed post drops that
-trace, a failed edit is logged and dropped (no retry loop), and a dead trace can never turn
-a successful reply into a failed dispatch. Trace writes are credential-redacted, because
-trace edits bypass the normal outbound secret guard.
+trace, a failed edit is logged (and, at the end of a run, the terminal state is posted as
+a new message), and a dead trace can never turn a successful reply into a failed dispatch.
+Trace writes are credential-redacted, because trace edits bypass the normal outbound secret
+guard.
 
 Off by default, because it adds outbound writes.
 
@@ -709,6 +716,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `ZULIP_TRACE_MAX_RATE` | `2` | `5` | ceiling on edits per second |
 | `ZULIP_TRACE_MAX_CONTENT` | `3500` | `2000` | trim older steps past this length |
 | `ZULIP_TRACE_TOOL_MATCHER` | *(all tools)* | `terminal,!browser` | which tool calls become checkpoints |
+| `ZULIP_TRACE_BOARD_TTL` | `420` | `300` | rotate the board before the message-edit window closes (0 disables) |
 
 ### History
 

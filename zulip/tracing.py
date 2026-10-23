@@ -61,12 +61,37 @@ def trace_config() -> activity_trace.TraceConfig:
 
 
 def trace_key(chat_id: str, metadata: Any) -> str:
-    """Session key for a trace: the chat *plus* the topic it lands in.
+    """Session key for a trace: the chat plus the session's thread id.
 
-    Topic sessions share a chat_id across topics, so keying on chat_id alone
-    would let two concurrent topics in one stream edit each other's trace.
+    The component is the gateway's ``thread_id`` — the conversation id under
+    stable topic sessions, the topic name in legacy name-keyed sessions — so a
+    rename cannot change the identity of a run that is already in flight.
     """
     return f"{chat_id}\x00{outbound.metadata_topic(metadata) or ''}"
+
+
+def trace_key_for_event(event: Any) -> str:
+    """The trace identity for a gateway event, resolved once at start.
+
+    The session's thread id is the stable identity; a topic *name* is only a
+    fallback for hosts that do not publish one. The value is read from the
+    source first (the host's session) and then the event metadata, never from
+    the current topic name — a rename mid-run must not change the key.
+    """
+    source = getattr(event, "source", None)
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    metadata = getattr(event, "metadata", None)
+    thread_id = ""
+    for candidate in (
+        getattr(source, "thread_id", None),
+        metadata.get("thread_id") if isinstance(metadata, dict) else None,
+    ):
+        if candidate is not None and str(candidate).strip():
+            thread_id = str(candidate).strip()
+            break
+    if not thread_id:
+        thread_id = outbound.metadata_topic(metadata) or ""
+    return f"{chat_id}\x00{thread_id}"
 
 
 def trace_payload(
@@ -146,12 +171,57 @@ def trace_for_current_session(adapter: Any) -> Optional[activity_trace.ActivityT
     Shared by the tool hook (mode A) and the progress tool (mode B) so both
     attribute through exactly **one** code path — two would drift.
     """
-    if not adapter._trace_cfg.enabled or not adapter._trace_sessions:
+    if not adapter._trace_cfg.enabled:
         return None
-    for alias in _session_aliases_from_context():
+    aliases = _session_aliases_from_context()
+    for alias in aliases:
         key = adapter._trace_sessions.get(alias)
         if key is not None:
             return adapter._traces.get(key)
+
+    # Fallback for hosts whose session identity does not byte-match the
+    # adapter's alias form: under stable topic sessions HERMES_SESSION_THREAD_ID
+    # is a conversation id, not the human topic name the route alias embeds.
+    # Resolve that id to its current topic through the adapter's own conversation
+    # registry, so the match stays exact — a different topic never matches.
+    chat_id = thread = ""
+    if _host_get_session_env is not None:
+        try:
+            chat_id = str(_host_get_session_env("HERMES_SESSION_CHAT_ID") or "")
+            thread = str(_host_get_session_env("HERMES_SESSION_THREAD_ID") or "")
+        except Exception:
+            chat_id = thread = ""
+    if chat_id and thread:
+        conversations = getattr(getattr(adapter, "_routing", None), "_conversations", None)
+        current_name = getattr(conversations, "current_name", None)
+        if callable(current_name):
+            try:
+                topic = current_name(int(chat_id), thread)
+            except Exception:
+                topic = None
+            if topic:
+                key = adapter._trace_sessions.get(f"route:{chat_id}\x00{topic}")
+                if key is not None:
+                    return adapter._traces.get(key)
+
+    env = {
+        name: (_host_get_session_env(name) if _host_get_session_env is not None else None)
+        for name in (
+            "HERMES_SESSION_KEY",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+        )
+    }
+    logger.debug(
+        "zulip trace attribution miss: aliases=%r sessions=%r traces=%r env=%r",
+        [mask_pii(str(alias)) for alias in aliases],
+        [mask_pii(str(key)) for key in adapter._trace_sessions],
+        [mask_pii(str(key)) for key in adapter._traces],
+        {
+            name: (mask_pii(str(value)) if value is not None else None)
+            for name, value in env.items()
+        },
+    )
     return None
 
 
@@ -198,6 +268,8 @@ def record_tool_step(
         detail = error_type or "failed"
     step = trace.step(str(tool_name or "tool"))
     trace.complete(step, ok=ok, detail=detail)
+    if step is None:
+        logger.debug("zulip trace step dropped: tool=%r", tool_name)
 
 
 # ── durable trace records (issue #161) ──────────────────────────────────────
@@ -235,11 +307,22 @@ def save_trace_records(adapter: Any, records: dict) -> None:
         logger.debug("zulip: could not persist trace records: %s", e)
 
 
+def trace_record_key(key: str, message_id: int) -> str:
+    """Durable-record key for one trace, unique per posted board.
+
+    Records used to be keyed by the session key (chat + topic) alone, so a new
+    run in the same topic overwrote the previous run's record before recovery
+    could close its orphaned board — the orphan then showed ``Working`` forever.
+    The message id is what recovery edits, so it belongs in the key.
+    """
+    return f"{key}\x00{int(message_id)}"
+
+
 def persist_trace_record(
     adapter: Any, key: str, chat_id: str, metadata: Any, message_id: int
 ) -> None:
     records = load_trace_records(adapter)
-    records[key] = {
+    records[trace_record_key(key, message_id)] = {
         "message_id": int(message_id),
         "chat_id": str(chat_id),
         "topic": outbound.metadata_topic(metadata) or "",
@@ -248,10 +331,31 @@ def persist_trace_record(
     save_trace_records(adapter, records)
 
 
-def drop_trace_record(adapter: Any, key: str) -> None:
+def drop_trace_record(adapter: Any, key: str, message_id: int | None = None) -> None:
+    """Forget one trace's durable record (or every record under ``key``).
+
+    ``message_id`` scopes the drop to the board that actually finished, so a
+    run in the same topic does not erase an older orphan's record before
+    recovery can close it.
+    """
     records = load_trace_records(adapter)
-    if key in records:
-        records.pop(key, None)
+    changed = False
+    if message_id is not None:
+        candidate = trace_record_key(key, message_id)
+        if candidate in records:
+            records.pop(candidate, None)
+            changed = True
+        # Legacy record written before records were keyed per trace.
+        legacy = records.get(key)
+        if isinstance(legacy, dict) and legacy.get("message_id") == message_id:
+            records.pop(key, None)
+            changed = True
+    else:
+        prefix = key + "\x00"
+        for candidate in [k for k in records if k == key or k.startswith(prefix)]:
+            records.pop(candidate, None)
+            changed = True
+    if changed:
         save_trace_records(adapter, records)
 
 
@@ -291,15 +395,34 @@ async def recover_interrupted_traces(adapter: Any) -> int:
             )
 
         if not ok:
-            # Typical cause: the realm's message-edit limit has passed.
-            # Log it and STILL clear the record, otherwise every start
-            # retries an edit the server will keep refusing.
+            # Typical cause: the realm's message-edit window has passed.
+            # Log it, post the terminal state as a new message (the board
+            # itself can no longer be edited), and STILL clear the record,
+            # otherwise every start retries an edit the server will keep
+            # refusing.
             logger.warning(
                 "zulip: interrupted trace left unfinalized"
                 " [key=%s message=%s]",
                 key,
                 message_id,
             )
+            try:
+                payload = trace_payload(
+                    adapter,
+                    str(record.get("chat_id", "")),
+                    {"topic": record.get("topic", "")},
+                    content,
+                )
+                if payload is not None:
+                    await adapter._sdk_call(
+                        adapter.client.send_message,
+                        payload,
+                        timeout=adapter._send_timeout,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "zulip: could not post the cancelled notice [key=%s]: %s", key, e
+                )
 
         records.pop(key, None)
         recovered += 1
@@ -332,7 +455,7 @@ def start_trace(adapter: Any, event: Any) -> None:
     if not chat_id:
         return
 
-    key = trace_key(chat_id, metadata)
+    key = trace_key_for_event(event)
     if key in adapter._traces:
         return  # already tracing this work item
 
@@ -378,7 +501,15 @@ def start_trace(adapter: Any, event: Any) -> None:
         )
         return isinstance(result, dict) and result.get("result") == "success"
 
-    trace = activity_trace.ActivityTrace(post, edit, adapter._trace_cfg, title=title)
+    async def rotate_record(old_id: int, new_id: int) -> None:
+        # The board moved; move its durable record with it so a later crash
+        # still has a message id that can be edited.
+        drop_trace_record(adapter, key, old_id)
+        persist_trace_record(adapter, key, chat_id, metadata, new_id)
+
+    trace = activity_trace.ActivityTrace(
+        post, edit, adapter._trace_cfg, title=title, on_rotate=rotate_record
+    )
     adapter._traces[key] = trace
     adapter._trace_started[key] = time.monotonic()
     for alias in _session_aliases(adapter, event):
@@ -414,7 +545,7 @@ async def finish_trace(adapter: Any, event: Any, outcome: Any) -> None:
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
     metadata = getattr(event, "metadata", None)
-    key = trace_key(chat_id, metadata)
+    key = trace_key_for_event(event)
     trace = adapter._traces.pop(key, None)
     if trace is None:
         return
@@ -456,4 +587,8 @@ async def finish_trace(adapter: Any, event: Any, outcome: Any) -> None:
     finally:
         # Finalized here, so a later start must not try again — even when the
         # final edit failed, or recovery would retry it forever. (#161)
-        drop_trace_record(adapter, key)
+        # Scope the drop to THIS board: an older orphan in the same topic
+        # keeps its record for restart recovery.
+        message_id = getattr(trace, "message_id", None)
+        if message_id is not None:
+            drop_trace_record(adapter, key, message_id)

@@ -104,6 +104,13 @@ def session_aliases(adapter: Any, event: Any) -> list[str]:
     if chat_id:
         thread = outbound.metadata_topic(getattr(event, "metadata", None)) or ""
         aliases.append(f"route:{chat_id}\x00{thread}")
+        # Stable topic sessions key the host session on a conversation id, and
+        # that is what HERMES_SESSION_THREAD_ID carries in tool/hook context —
+        # not the human topic name above. Register both so attribution works
+        # under either identity (#activity-trace).
+        conversation_id = str(getattr(source, "thread_id", "") or "")
+        if conversation_id and conversation_id != thread:
+            aliases.append(f"route:{chat_id}\x00{conversation_id}")
     return aliases
 
 

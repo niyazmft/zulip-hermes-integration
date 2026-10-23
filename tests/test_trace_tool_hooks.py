@@ -128,6 +128,41 @@ class TestAttribution:
         assert adapter.client.edited == []
 
     @pytest.mark.asyncio
+    async def test_stable_topic_session_conversation_id_is_resolved(self, adapter):
+        """Stable topic sessions publish a conversation id in HERMES_SESSION_THREAD_ID.
+
+        The route alias embeds the human topic name, so attribution must resolve
+        the id through the adapter's conversation registry — and only then match.
+        """
+        await started(adapter, topic="api-review")
+        adapter._routing._conversations = SimpleNamespace(
+            current_name=lambda channel_id, conversation_id: (
+                "api-review" if conversation_id == "c0123456789ab" else None
+            )
+        )
+        adapter._test_context["HERMES_SESSION_CHAT_ID"] = "573423"
+        adapter._test_context["HERMES_SESSION_THREAD_ID"] = "c0123456789ab"
+
+        adapter.record_tool_step(tool_name="exec", status="ok", duration_ms=120)
+        await _settle()
+
+        final = adapter.client.edited[-1]["content"]
+        assert "✓ exec" in final
+
+    @pytest.mark.asyncio
+    async def test_conversation_id_resolving_to_another_topic_is_dropped(self, adapter):
+        await started(adapter, topic="api-review")
+        adapter._routing._conversations = SimpleNamespace(
+            current_name=lambda channel_id, conversation_id: "deploys"
+        )
+        adapter._test_context["HERMES_SESSION_CHAT_ID"] = "573423"
+        adapter._test_context["HERMES_SESSION_THREAD_ID"] = "c0123456789ab"
+
+        adapter.record_tool_step(tool_name="exec", status="ok")
+        await _settle()
+        assert adapter.client.edited == []
+
+    @pytest.mark.asyncio
     async def test_host_session_key_alias_also_matches(self, adapter, monkeypatch):
         """When the host exposes a session key, it is used as its own alias."""
         await started(adapter)
@@ -363,3 +398,17 @@ class TestHookRegistration:
 
         adapter_module.register(ctx)  # must not raise
         ctx.register_platform.assert_called_once()
+
+
+def test_live_adapter_registry_is_process_global():
+    """The hook and the tool may run in a different import copy of the module.
+
+    Pinning the registry to a process-global slot is what lets them see the
+    adapter; a per-module WeakSet silently dropped every step.
+    """
+    import sys
+
+    import zulip.adapter as adapter_module
+
+    shared = sys.modules["_hermes_zulip_plugin_shared_state"]
+    assert adapter_module._LIVE_ADAPTERS is shared.live_adapters

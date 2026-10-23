@@ -202,6 +202,16 @@ class TestSessionAliases:
             "route:573423\x00",
         ]
 
+    def test_conversation_id_alias_is_added_when_it_differs_from_the_topic(self):
+        event = SimpleNamespace(
+            source=SimpleNamespace(chat_id="573423", thread_id="c0123456789ab"),
+            metadata={"topic": "general"},
+        )
+        assert routing.session_aliases(SimpleNamespace(), event) == [
+            "route:573423\x00general",
+            "route:573423\x00c0123456789ab",
+        ]
+
     def test_session_key_for_event_swallows_a_raising_getter(self):
         def boom(event):
             raise RuntimeError("boom")
