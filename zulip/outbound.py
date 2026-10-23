@@ -89,6 +89,40 @@ def metadata_topic(metadata: Any) -> str | None:
     return None
 
 
+def route_metadata(event: Any) -> dict | None:
+    """Route metadata for an event, rebuilt from its source when needed.
+
+    The host admits native input through a closed metadata contract
+    (``gateway.session_envelope._native_metadata``): only the WhatsApp
+    adapter's keys may cross, and any other adapter-stamped ``metadata``
+    refuses the whole message (``invalid_params``). So this adapter must not
+    stamp ``MessageEvent.metadata`` — but the session *source* is serialized
+    across admission, and carries the same identity: ``thread_id`` (the
+    conversation id under stable topic sessions) and ``chat_topic`` (the
+    topic name). Fall back to it so trace, audit and queue keys keep their
+    per-topic identity after admission.
+
+    Order: the adapter's own in-process stamp (``_zulip_meta``, set on the
+    original event for hooks that run before admission) wins, then a host
+    ``metadata`` dict (tests and hosts that still carry one), then the source.
+    """
+    stamp = getattr(event, "_zulip_meta", None)
+    if isinstance(stamp, dict) and stamp:
+        return stamp
+    metadata = getattr(event, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        return metadata
+    source = getattr(event, "source", None)
+    derived: dict[str, Any] = {}
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id:
+        derived["thread_id"] = str(thread_id)
+    topic = getattr(source, "chat_topic", None)
+    if topic:
+        derived["topic"] = str(topic)
+    return derived or None
+
+
 def safe_delete_temp_file(file_path: str) -> None:
     """Delete a local file only if it resides under /tmp or a bot workspace.
 

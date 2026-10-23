@@ -533,7 +533,7 @@ Two flags exist for this, and **they are alternatives — pick one**:
 
 | Flag | What happens | Example |
 |------|--------------|-------------------|
-| `ZULIP_SOFT_GATE=1` | **every** monitored stream message is dispatched, tagged `addressed=true/false` in metadata, so the agent decides whether to speak | the bot sees the whole conversation and usually stays quiet |
+| `ZULIP_SOFT_GATE=1` | **every** monitored stream message is dispatched; a message the bot was not addressed in is prefixed with `[Not addressed to you - observed stream traffic; answer only if it plainly needs you]` in the turn context, so the agent decides whether to speak | the bot sees the whole conversation and usually stays quiet |
 | `ZULIP_OBSERVE_GROUP=1` | non-addressed messages are **not** dispatched; they're buffered per topic (20 msgs / 4000 chars / 200 topics) and quoted into the prompt the next time the bot **is** addressed | `@**hermes-bot** what did I miss?` → it answers from the buffer |
 
 > ⚠️ **Do not enable both.** `soft_gate` dispatches everything, so messages never reach the
@@ -660,7 +660,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `ZULIP_ONCHAR_PREFIXES` | `!,>` | `?` | prefixes that trigger `onchar` |
 | `ZULIP_STREAMS` | `*` | `general,dev` | streams to monitor (`*` = all) |
 | `ZULIP_STREAM_OVERRIDES` | *(empty)* | `{"bot lab": {"chatmode": "onmessage"}}` | per-stream chatmode overrides |
-| `ZULIP_SOFT_GATE` | `false` | `1` | dispatch every stream message, tagged addressed/unaddressed — [see above](#stream-watching) |
+| `ZULIP_SOFT_GATE` | `false` | `1` | dispatch every stream message, marking unaddressed ones in the turn context — [see above](#stream-watching) |
 | `ZULIP_OBSERVE_GROUP` | `false` | `1` | buffer non-addressed messages as topic context — **not with soft gate** |
 | `ZULIP_HOME_CHANNEL` | *(empty)* | `573423` | default stream id for cron `deliver: zulip` |
 

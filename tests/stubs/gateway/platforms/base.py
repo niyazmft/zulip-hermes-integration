@@ -54,6 +54,9 @@ class MessageSource:
     chat_id: str = ""
     chat_name: str = ""
     chat_type: str = ""
+    # Channel topic on the real SessionSource; the adapter carries the Zulip
+    # topic name here because it survives the host's native admission.
+    chat_topic: str = ""
     user_id: str = ""
     user_name: str = ""
     # Session-scoping discriminator on the real SessionSource. Only set by the
@@ -68,6 +71,10 @@ class MessageEvent:
     source: MessageSource = field(default_factory=MessageSource)
     message_id: str = ""
     metadata: dict = field(default_factory=dict)
+    # Host context field prepended to the turn by the gateway. The adapter puts
+    # the soft-gate "not addressed" marker here because adapter metadata is
+    # refused by the host's native admission (issue #153).
+    channel_context: str = ""
     # Media attachments: local file paths the agent can open (#271). The real
     # host reads these to attach an image to the model turn and to name any
     # other file's path to the agent; the plugin now populates them.

@@ -138,7 +138,7 @@ class TestConversationTurn:
         seen = []
         for index in range(3):
             await adapter._handle_message(_stream_msg(f"m{index}", msg_id=index + 1))
-            seen.append(_dispatched(adapter).metadata["conversation_turn"])
+            seen.append(_dispatched(adapter)._zulip_meta["conversation_turn"])
         assert seen == [1, 2, 3]
 
     @pytest.mark.asyncio
@@ -149,7 +149,7 @@ class TestConversationTurn:
             _stream_msg("first", stream_id=2, topic="other", msg_id=2)
         )
         # A different stream is a different chat, so its own count restarts.
-        assert _dispatched(adapter).metadata["conversation_turn"] == 1
+        assert _dispatched(adapter)._zulip_meta["conversation_turn"] == 1
 
 
 class TestSessionGapSeconds:
@@ -157,7 +157,7 @@ class TestSessionGapSeconds:
     async def test_first_message_reports_zero_gap(self, make_adapter):
         adapter = make_adapter(**_DISPATCH_ALL)
         await adapter._handle_message(_stream_msg("first", msg_id=1))
-        assert _dispatched(adapter).metadata["session_gap_seconds"] == 0
+        assert _dispatched(adapter)._zulip_meta["session_gap_seconds"] == 0
 
     @pytest.mark.asyncio
     async def test_gap_reflects_elapsed_time(self, make_adapter):
@@ -165,7 +165,7 @@ class TestSessionGapSeconds:
         # Stream chat_id is str(stream_id); seed a known 120s-old message.
         adapter._last_message_time["1"] = time.time() - 120
         await adapter._handle_message(_stream_msg("later", msg_id=2))
-        gap = _dispatched(adapter).metadata["session_gap_seconds"]
+        gap = _dispatched(adapter)._zulip_meta["session_gap_seconds"]
         assert 119 <= gap <= 130, gap
         # ...and it is rounded to one decimal, as documented.
         assert gap == round(gap, 1)
@@ -176,28 +176,28 @@ class TestTopicChanged:
     async def test_false_on_first_sight_of_a_topic(self, make_adapter):
         adapter = make_adapter(**_DISPATCH_ALL)
         await adapter._handle_message(_stream_msg("hi", topic="one", msg_id=1))
-        assert _dispatched(adapter).metadata["topic_changed"] is False
+        assert _dispatched(adapter)._zulip_meta["topic_changed"] is False
 
     @pytest.mark.asyncio
     async def test_true_when_the_topic_differs(self, make_adapter):
         adapter = make_adapter(**_DISPATCH_ALL)
         await adapter._handle_message(_stream_msg("hi", topic="one", msg_id=1))
         await adapter._handle_message(_stream_msg("again", topic="two", msg_id=2))
-        assert _dispatched(adapter).metadata["topic_changed"] is True
+        assert _dispatched(adapter)._zulip_meta["topic_changed"] is True
 
     @pytest.mark.asyncio
     async def test_false_when_the_topic_is_unchanged(self, make_adapter):
         adapter = make_adapter(**_DISPATCH_ALL)
         await adapter._handle_message(_stream_msg("hi", topic="one", msg_id=1))
         await adapter._handle_message(_stream_msg("again", topic="one", msg_id=2))
-        assert _dispatched(adapter).metadata["topic_changed"] is False
+        assert _dispatched(adapter)._zulip_meta["topic_changed"] is False
 
     @pytest.mark.asyncio
     async def test_never_set_for_dms(self, make_adapter):
         adapter = make_adapter()
         for index in range(2):
             await adapter._handle_message(_dm_msg(f"m{index}", msg_id=index + 1))
-        assert _dispatched(adapter).metadata["topic_changed"] is False
+        assert _dispatched(adapter)._zulip_meta["topic_changed"] is False
 
 
 class TestDmSessionRotation:
