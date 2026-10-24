@@ -1328,6 +1328,27 @@ class ZulipAdapter(BasePlatformAdapter):
                 logger.debug(
                     "zulip session-start backfill failed", exc_info=True
                 )
+            try:
+                self._refresh_session_origin_labels()
+            except Exception:
+                # Non-critical: the per-message refresh still catches up.
+                logger.debug(
+                    "zulip origin-label backfill failed", exc_info=True
+                )
+
+    def _refresh_session_origin_labels(self, source: Any = None) -> int:
+        """Keep the stored session origin's display labels in sync (host workaround).
+
+        Called once at store wiring (backfill of each live conversation's current
+        topic name) and from ``zulip.inbound`` for every inbound message. Owned by
+        ``zulip.routing``; this delegate also contains the failure so a store
+        shape change can never disturb message flow.
+        """
+        try:
+            return self._routing.refresh_origin_labels(source)
+        except Exception:
+            logger.debug("zulip origin-label refresh failed", exc_info=True)
+            return 0
 
     def _migrate_legacy_topic_sessions(self) -> int:
         """One-time continuity migration to conversation-id session keys.

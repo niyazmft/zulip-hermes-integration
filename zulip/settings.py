@@ -497,3 +497,28 @@ def topic_sessions_enabled() -> bool:
     into per-topic sessions, which changes what an agent remembers.
     """
     return _preset_value("ZULIP_TOPIC_SESSIONS").strip().lower() in ("true", "1", "yes", "on")
+
+
+def origin_label_refresh_enabled() -> bool:
+    """Whether the adapter keeps the stored session origin's display labels current.
+
+    Workaround for a host defect (NousResearch/hermes-agent#142402): a background
+    completion is admitted only when the source rebuilt from the session store's
+    ``origin`` equals the route's last committed envelope, and ``origin`` is
+    written once, at session creation. A label the adapter starts stamping later
+    (``chat_topic``), a renamed topic or stream (``chat_topic``/``chat_name``), or
+    a changed display name therefore never reaches the stored origin, and every
+    background result for that session is refused forever with
+    ``admission_conflict``.
+
+    Refreshing those labels on each inbound message — plus a startup backfill of
+    each live conversation's current topic name — keeps the two in step without
+    touching any routing field. On by default; ``ZULIP_ORIGIN_LABEL_REFRESH=0``
+    disables it (the host fix makes it a no-op anyway).
+    """
+    return _preset_value("ZULIP_ORIGIN_LABEL_REFRESH").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )

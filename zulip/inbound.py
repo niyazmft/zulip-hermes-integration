@@ -658,6 +658,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
             # Malformed stream_id: no thread_id → degrades to the
             # per-stream session (unreachable for well-formed events).
         source = adapter.build_source(**source_kwargs)
+        # Keep the stored routing origin's labels current before admission
+        # commits this message's envelope: the host admits a background
+        # completion only when the two agree (hermes-agent#142402).
+        adapter._refresh_session_origin_labels(source)
         extra_meta = {"topic": topic, "stream_id": stream_id}
         if message.get("_reaction_trigger"):
             # Label the triggered run legibly instead of echoing the

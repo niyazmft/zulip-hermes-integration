@@ -62,6 +62,10 @@ class MessageSource:
     # Session-scoping discriminator on the real SessionSource. Only set by the
     # adapter when ZULIP_TOPIC_SESSIONS is enabled.
     thread_id: str = ""
+    # The real SessionSource always carries the adapter's platform; the host's
+    # build_source fills it, and the plugin reads it to keep a stored origin's
+    # labels inside its own platform.
+    platform: object = None
 
 
 @dataclass
@@ -100,6 +104,7 @@ class BasePlatformAdapter:
         return str(value).title()
 
     def build_source(self, **kwargs):
+        kwargs.setdefault("platform", self.platform)
         return MessageSource(**kwargs)
 
     def set_session_store(self, session_store) -> None:
