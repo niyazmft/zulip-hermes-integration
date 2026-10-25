@@ -88,6 +88,18 @@ from .zulip_client import (
 
 logger = logging.getLogger(__name__)
 
+# A stream message the bot was not addressed in, under ``ZULIP_SOFT_GATE``.
+#
+# The tag used to ride ``MessageEvent.metadata`` (``"addressed": False``), which
+# the host's native admission refuses. ``channel_context`` is a host context
+# field: it is serialized across admission and prepended to the turn
+# (``gateway.run_inbound``), so the agent still knows it is watching a stream
+# rather than being asked. Without it the soft gate would silently degrade to
+# ``onmessage`` — every monitored message answered (issue #153).
+OBSERVED_STREAM_CONTEXT = (
+    "[Not addressed to you - observed stream traffic; answer only if it plainly needs you]"
+)
+
 
 async def handle_message(adapter: Any, message: dict) -> None:
     """Process one incoming Zulip message through the full inbound gate chain.
@@ -598,6 +610,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
             logger.info("zulip DM blocked [policy=%s sender=%s]", adapter._policy.mode, mask_pii(sender_email))
             return
 
+    # Context the agent needs but that cannot ride event metadata: empty unless
+    # this is soft-gate stream traffic the bot was not addressed in.
+    channel_context = ""
+
     if msg_type == "stream":
         stream_id = message.get("stream_id")
         topic = message.get("subject", "")
@@ -611,6 +627,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
             "chat_id": chat_id,
             "chat_name": stream_name,
             "chat_type": "stream",
+            # The topic name rides the source, which survives the host's native
+            # admission; MessageEvent.metadata does not (closed WhatsApp-only
+            # contract in gateway.session_envelope._native_metadata).
+            "chat_topic": topic,
             "user_id": sender_email,
             "user_name": sender_full_name,
         }
@@ -638,6 +658,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
             # Malformed stream_id: no thread_id → degrades to the
             # per-stream session (unreachable for well-formed events).
         source = adapter.build_source(**source_kwargs)
+        # Keep the stored routing origin's labels current before admission
+        # commits this message's envelope: the host admits a background
+        # completion only when the two agree (hermes-agent#142402).
+        adapter._refresh_session_origin_labels(source)
         extra_meta = {"topic": topic, "stream_id": stream_id}
         if message.get("_reaction_trigger"):
             # Label the triggered run legibly instead of echoing the
@@ -651,6 +675,10 @@ async def handle_message(adapter: Any, message: dict) -> None:
             # Only added under the soft gate, so with the flag off the event
             # metadata is byte-identical to before (issue #153).
             extra_meta["addressed"] = addressed
+            if not addressed:
+                # The agent-facing half of the soft gate: metadata cannot cross
+                # native admission, channel_context can.
+                channel_context = OBSERVED_STREAM_CONTEXT
     else:
         sender_id = message.get("sender_id")
         chat_id = _private_chat_id(message)
@@ -724,8 +752,16 @@ async def handle_message(adapter: Any, message: dict) -> None:
         message_type=MessageType.TEXT,
         source=source,
         message_id=str(message_id),
-        metadata=extra_meta,
+        # Agent-facing context that survives native admission; metadata does not.
+        channel_context=channel_context,
     )
+    # Adapter-private context: topic/stream identity, turn counters, trace
+    # title. It must NOT ride ``MessageEvent.metadata``: the host's native
+    # admission accepts only the WhatsApp adapter's metadata keys and refuses
+    # the whole message otherwise (gateway.session_envelope._native_metadata,
+    # clause ``metadata``). Route identity is re-derived from the source
+    # (``outbound.route_metadata``), which is serialized across admission.
+    setattr(event, "_zulip_meta", extra_meta)
 
     # --- Inbound uploads (issue #271) ---
     #

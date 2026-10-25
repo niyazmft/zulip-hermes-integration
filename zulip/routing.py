@@ -39,6 +39,7 @@ from typing import Any
 from . import outbound
 from .conversations import TopicConversationRegistry
 from .logger import format_zulip_log, mask_pii
+from .settings import origin_label_refresh_enabled as _origin_label_refresh_enabled
 from .settings import topic_sessions_enabled as _topic_sessions_enabled
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def session_aliases(adapter: Any, event: Any) -> list[str]:
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
     if chat_id:
-        thread = outbound.metadata_topic(getattr(event, "metadata", None)) or ""
+        thread = outbound.metadata_topic(outbound.route_metadata(event)) or ""
         aliases.append(f"route:{chat_id}\x00{thread}")
         # Stable topic sessions key the host session on a conversation id, and
         # that is what HERMES_SESSION_THREAD_ID carries in tool/hook context —
@@ -139,10 +140,15 @@ class RoutingState:
         self._topic_cache: dict[str, str] = {}
 
         # F1: conversation ids resolved at event dispatch, keyed by message
-        # id (str). Written inline by the poll loop in event-id order;
-        # popped by _handle_message so a rename processed between dispatch
-        # and the handler's first await cannot fork the conversation.
+        # id (str). Written inline in the poll loop in event-id order; popped
+        # by _handle_message so a rename processed between dispatch and the
+        # handler's first await cannot fork the conversation.
         self._pending_conversations: dict[str, str] = {}
+
+        # The origin-label backfill (host workaround, hermes-agent#142402) runs
+        # once per process: at store wiring, or on the first inbound message if
+        # wiring happens before the store's routing index has loaded.
+        self._origin_backfill_done = False
 
     # -- gateway session-store seam ----------------------------------------
 
@@ -495,3 +501,179 @@ class RoutingState:
                 "zulip session-start backfill recorded %d labels", recorded
             )
         return recorded
+
+    # -- origin labels (host workaround) ------------------------------------
+
+    @staticmethod
+    def _same_lane(origin: Any, source: Any) -> bool:
+        """Whether a stored origin and a live source address the same lane.
+
+        Only the lane's identifiers decide this — the stream/channel id and the
+        conversation id (``thread_id``). Labels are what is being refreshed.
+        """
+        if getattr(origin, "platform", None) is None or getattr(source, "platform", None) is None:
+            return False
+        origin_platform = getattr(origin.platform, "value", str(origin.platform))
+        source_platform = getattr(source.platform, "value", str(source.platform))
+        if origin_platform != source_platform:
+            return False
+        if str(getattr(origin, "chat_id", "")) != str(getattr(source, "chat_id", "")):
+            return False
+        return getattr(origin, "thread_id", None) == getattr(source, "thread_id", None)
+
+    @staticmethod
+    def _origin_labels(source: Any) -> dict:
+        """The labels to refresh on a stored origin from a live source.
+
+        Streams: the topic name and the stream name. ``user_name`` is
+        deliberately excluded — in a shared topic the origin's ``user_id`` is the
+        session's creator while the envelope's is the latest speaker, so copying
+        the name would mix the two without fixing the id drift (and the id is not
+        a label; the host refuses that case by design).
+
+        DMs: the sender's display name, which a profile rename drifts the same way.
+        """
+        labels = {"chat_name": getattr(source, "chat_name", None)}
+        if getattr(source, "chat_type", None) == "dm":
+            labels["user_name"] = getattr(source, "user_name", None)
+        else:
+            labels["chat_topic"] = getattr(source, "chat_topic", None)
+        return labels
+
+    def _backfill_labels_locked(self, entries: dict) -> list:
+        """Relabel every live stream conversation with its current topic (lock held)."""
+        changed = []
+        for key, entry in list(entries.items()):
+            origin = getattr(entry, "origin", None)
+            if origin is None or getattr(origin, "chat_type", None) != "stream":
+                continue
+            conversation_id = getattr(origin, "thread_id", None)
+            channel = str(getattr(origin, "chat_id", "") or "")
+            if not conversation_id or not channel.isdigit():
+                continue
+            try:
+                topic = self._conversations.current_name(int(channel), conversation_id)
+            except Exception as exc:
+                logger.debug(
+                    "zulip origin-label backfill lookup failed [conv=%s]: %s",
+                    conversation_id, exc,
+                )
+                continue
+            if not topic or getattr(origin, "chat_topic", None) == topic:
+                continue
+            entries[key] = _dc_replace(
+                entry, origin=_dc_replace(origin, chat_topic=topic)
+            )
+            changed.append(key)
+        return changed
+
+    def _relabel_lane_locked(self, entries: dict, source: Any) -> list:
+        """Relabel the entries of ``source``'s lane (lock held)."""
+        labels = self._origin_labels(source)
+        changed = []
+        for key, entry in list(entries.items()):
+            origin = getattr(entry, "origin", None)
+            if origin is None or not self._same_lane(origin, source):
+                continue
+            fresh = {
+                name: value
+                for name, value in labels.items()
+                if value is not None and getattr(origin, name, None) != value
+            }
+            if not fresh:
+                continue
+            entries[key] = _dc_replace(entry, origin=_dc_replace(origin, **fresh))
+            changed.append(key)
+        return changed
+
+    def refresh_origin_labels(self, source: Any = None) -> int:
+        """Keep each stored routing origin's display labels in sync (host workaround).
+
+        The host admits a background completion only when the source rebuilt from
+        the session store's ``origin`` equals the route's last committed envelope
+        (``gateway/session_automation.py::_route_identity`` compares the whole
+        dict), and ``origin`` is written once, when the session is created. So a
+        label the adapter starts stamping later (``chat_topic`` after the
+        native-admission change) or one that changes (topic rename, stream
+        rename, display name) never reaches the origin — and every background
+        result for that session is refused with ``admission_conflict`` forever
+        (NousResearch/hermes-agent#142402).
+
+        Two passes, run at most once each:
+
+        * the **backfill** relabels every live conversation from the registry —
+          it runs on the first call of this process (store wiring, or the first
+          inbound message when wiring happens before the store has loaded) and
+          repairs sessions that predate the change without waiting for traffic;
+        * the **lane pass** relabels the entries of ``source``'s lane, called
+          from ``zulip.inbound`` before the event is built so the origin agrees
+          with the envelope admission is about to commit.
+
+        Routing fields (``platform``, ``chat_id``, ``chat_type``, ``thread_id``,
+        ``user_id``, scope) are never written, ``updated_at`` is never touched,
+        and no entry is created: this only relabels sessions that already exist.
+        Best-effort throughout — an incompatible store or a failed save degrades
+        to a no-op rather than disturbing message flow.
+        """
+        if not _origin_label_refresh_enabled():
+            return 0
+        store = getattr(self._adapter, "_session_store", None)
+        if store is None:
+            return 0
+        # The routing index loads lazily; at adapter wiring time (and in a fresh
+        # process) it can still be empty, which would make this a silent no-op.
+        ensure = getattr(store, "_ensure_loaded", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception as exc:
+                logger.debug("zulip origin-label refresh: store load failed: %s", exc)
+        entries = getattr(store, "_entries", None)
+        lock = getattr(store, "_lock", None)
+        if entries is None or lock is None:
+            logger.debug(
+                "zulip origin-label refresh skipped: no compatible session store"
+            )
+            return 0
+        changed = []
+        backfill_total = 0
+        with lock:
+            if (
+                not self._origin_backfill_done
+                and self._conversations is not None
+                and entries
+            ):
+                changed += self._backfill_labels_locked(entries)
+                self._origin_backfill_done = True
+                backfill_total = len(entries)
+            if source is not None:
+                changed += self._relabel_lane_locked(entries, source)
+        changed = list(dict.fromkeys(changed))
+        if not changed:
+            if backfill_total:
+                logger.info(
+                    "zulip origin-label backfill: %d live session(s) checked, "
+                    "nothing to relabel", backfill_total,
+                )
+            return 0
+        save_one = getattr(store, "_save_entry", None)
+        save_all = getattr(store, "_save", None)
+        try:
+            if callable(save_one):
+                for key in changed:
+                    save_one(key)
+            elif callable(save_all):
+                save_all()
+        except Exception as exc:
+            logger.debug("zulip origin-label refresh could not persist: %s", exc)
+            return 0
+        if backfill_total:
+            logger.info(
+                "zulip origin-label backfill: relabelled %d of %d live session(s)",
+                len(changed), backfill_total,
+            )
+        else:
+            logger.debug(
+                "zulip origin-label refresh: updated %d session(s)", len(changed)
+            )
+        return len(changed)

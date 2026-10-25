@@ -40,10 +40,13 @@ def event_route(event: Any) -> tuple[str, Any]:
     delivery audit keys on the *session* via :func:`work_item_key`, because the
     gateway's send metadata carries the session's ``thread_id`` and never a
     topic name (#272). Both read this pair so neither derives a route of its own.
+    ``outbound.route_metadata`` rebuilds the topic identity from the session
+    source when the event carries no adapter stamp (the host's native admission
+    refuses non-WhatsApp metadata, so a restored event has none).
     """
     source = getattr(event, "source", None)
     chat_id = str(getattr(source, "chat_id", "") or "")
-    return chat_id, getattr(event, "metadata", None)
+    return chat_id, outbound.route_metadata(event)
 
 
 def route_key(chat_id: str, metadata: Any) -> str:

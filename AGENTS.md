@@ -29,38 +29,27 @@ When a message arrives, check `source.chat_type`:
 
 ---
 
-## 🧠 Context Metadata (Use This)
+## 🧠 Context You Receive
 
-Every `MessageEvent.metadata` contains:
+`MessageEvent.metadata` carries **no adapter keys**, and you should not look for them. The host's
+native admission accepts only the WhatsApp adapter's metadata and refuses the whole message
+otherwise, so this plugin keeps its own context on the event as `_zulip_meta` — adapter-private,
+read by the plugin's hooks and tools, never by you.
 
-```python
-{
-    "conversation_turn": 12,        # int — cumulative messages in this chat
-    "session_gap_seconds": 45.2,   # float — seconds since last message
-    "topic_changed": False,         # bool — streams only
-    "addressed": True,             # bool — streams; present only under ZULIP_SOFT_GATE (see below)
-}
-```
+What you *do* receive:
 
-**How to use it:**
+| Signal | Where it arrives | What it means |
+|--------|------------------|---------------|
+| Topic name | `source.chat_topic`, and the reply target | Preserve it on every stream reply |
+| Not addressed to you | `[Not addressed to you - observed stream traffic; answer only if it plainly needs you]` at the top of the turn | `ZULIP_SOFT_GATE` is on and this message was not for you — watch it, don't answer it |
+| Observed topic history | `[Observed topic history - not addressed to you]` block in the text | Buffered chatter from `ZULIP_OBSERVE_GROUP` — context only |
 
-| Condition | What it means | What you should do |
-|-----------|---------------|-------------------|
-| `addressed` == False | You were given the message to *watch*, not to answer | Stay silent unless it plainly needs you |
-| `conversation_turn` > 20 AND `session_gap_seconds` < 60 | Dense conversation | Don't recycle old responses; user is engaged |
-| `session_gap_seconds` > 1800 (30 min) | New session | Prioritize recent context; old context may be stale |
-| `topic_changed` == True | Fresh subject | Treat as new topic; don't assume continuity |
+The per-message counters (`conversation_turn`, `session_gap_seconds`, `topic_changed`) exist only
+inside the plugin; they are not delivered to you, so don't plan around them.
 
-**Example:** `conversation_turn=25, session_gap_seconds=12` → The user has been rapidly messaging. Avoid template recycling.
+A turn with no such marker was addressed to you: you were mentioned, a trigger prefix fired, or
+the stream is configured to answer everything.
 
-**`addressed` is the important new one.** It is `True` when you were mentioned or a trigger
-prefix fired, and `False` when you are being shown traffic you were not asked to answer.
-
-It is present **only when the admin has turned on `ZULIP_SOFT_GATE`**. With the soft gate off,
-every stream message that reaches you is by definition addressed, and the key is omitted from
-the event metadata entirely (the metadata is byte-identical to before the soft gate existed —
-issue #153). So treat a *missing* `addressed` as "the soft gate is off", and a stream message
-with `addressed=False` as *context*, not a request.
 
 ---
 
@@ -117,12 +106,13 @@ Carol: "@hermes-bot review this PR"           ← You see this. RESPOND.
 
 **Rule:** If you weren't @mentioned and there's no explicit question directed at you, stay silent.
 
-**Better rule, when `metadata.addressed` is available:** if `addressed == False`, someone
-configured you to *watch* this stream. Only speak if the message is plainly for you.
+**Better rule, when the turn carries the observed-traffic marker:** if it opens with
+`[Not addressed to you - observed stream traffic…]`, someone configured you to *watch* this
+stream (`ZULIP_SOFT_GATE`). Only speak if the message is plainly for you.
 
 **Exception — sticky engagement.** If the admin enabled sticky follow-ups, a message that
 reaches you **without** a mention may still be a continuation of a conversation you already
-started in that topic. Those are marked `addressed`, and you should answer them normally. Do
+started in that topic. Those arrive without the marker, and you should answer them normally. Do
 not apply the "no mention → stay silent" rule to them; the admin turned that rule off for
 this window deliberately.
 
@@ -265,20 +255,19 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 ### Do
 - ✅ Before changing anything under `zulip/`, read [CONTRIBUTING.md § Rules That Bite](CONTRIBUTING.md#rules-that-bite) — the defect classes that have bitten this repo, and which of them CI will **not** catch
 - ✅ Preserve topic for stream replies
-- ✅ Check `metadata.addressed` before deciding to stay silent
+- ✅ Stay silent when the turn opens with `[Not addressed to you - observed stream traffic…]`
 - ✅ Reference previous context naturally
 - ✅ Be concise in busy streams
 - ✅ Respond to unknown `/` commands (they're for you)
-- ✅ Use `conversation_turn` + `session_gap_seconds` to avoid stale responses
+- ✅ Use the quoted topic history and the transcript for continuity — the turn counters are not delivered to you
 - ✅ Answer follow-ups in an engaged topic even without a mention
 
 ### Don't
 - ❌ Change the topic unless asked
-- ❌ Respond to every stream message when `addressed` is False
+- ❌ Answer an observed stream message that is not addressed to you
 - ❌ Treat `[Topic history …]` / `[Observed topic history …]` blocks as things the user just said
 - ❌ Send DMs to users who messaged you in a stream
 - ❌ Ignore topic names — they're the primary organization mechanism in Zulip
-- ❌ Assume a high `conversation_turn` means the user is frustrated (could just be a long chat)
 - ❌ Assume silence means a dropped message — it may be queued behind a running turn
 
 ### Troubleshooting

@@ -128,6 +128,9 @@ optional_env:
   - name: ZULIP_TOPIC_SESSIONS
     description: "Give each stream topic its own conversation session (default: false)"
     prompt: "Per-topic sessions"
+  - name: ZULIP_ORIGIN_LABEL_REFRESH
+    description: "Keep the stored session origin's topic/stream/display labels current so background results (reviews, delegations, process completions) still reach long-lived sessions on hosts that compare those labels as route identity (default: true)"
+    prompt: "Origin label refresh"
   - name: ZULIP_APPROVAL_ON_TIMEOUT
     description: 'What an unanswered exec approval means: "allow" (default, today''s behaviour) or "deny" (fail closed — the bot says in the topic that the request was refused and records the timeout). The gateway owns the approval timeout and refuses an unanswered request either way; this key decides what the install promises about silence. The recommended profile sets "deny".'
     prompt: "Unanswered exec approvals"
@@ -162,7 +165,7 @@ optional_env:
     description: "Extra directories the gateway may read inbound media from (os.pathsep- or comma-separated absolute paths)"
     prompt: "Media allow dirs"
   - name: ZULIP_SOFT_GATE
-    description: "Dispatch every monitored stream message like onmessage, tagging event metadata with addressed=true/false, so the bot watches a stream without replying to all of it (default: false)"
+    description: "Dispatch every monitored stream message like onmessage, marking unaddressed ones in the turn context, so the bot watches a stream without replying to all of it (default: false)"
     prompt: "Dispatch all stream messages (soft gate)"
   - name: ZULIP_OBSERVE_GROUP
     description: "Record non-addressed stream messages as bounded per-topic context without replying; the buffer is quoted into the prompt when the bot is next addressed in that topic (default: false)"

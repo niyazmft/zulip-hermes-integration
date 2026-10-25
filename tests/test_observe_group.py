@@ -186,7 +186,7 @@ class TestSoftGate:
         await adapter._handle_message(_stream_msg("just chatting"))
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
-        assert event.metadata["addressed"] is False
+        assert event._zulip_meta["addressed"] is False
         assert event.text == "just chatting"
 
     @pytest.mark.asyncio
@@ -196,14 +196,14 @@ class TestSoftGate:
             _stream_msg("hello there", flags=["mentioned"])
         )
         event = adapter.handle_message.call_args[0][0]
-        assert event.metadata["addressed"] is True
+        assert event._zulip_meta["addressed"] is True
 
     @pytest.mark.asyncio
     async def test_off_omits_addressed_metadata(self, make_adapter):
         adapter = make_adapter(ZULIP_CHATMODE="onmessage")
         await adapter._handle_message(_stream_msg("hello"))
         event = adapter.handle_message.call_args[0][0]
-        assert "addressed" not in event.metadata
+        assert "addressed" not in event._zulip_meta
 
     @pytest.mark.asyncio
     async def test_dm_dispatch_is_unchanged_by_soft_gate(self, make_adapter):
@@ -212,7 +212,7 @@ class TestSoftGate:
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "dm"
-        assert "addressed" not in event.metadata
+        assert "addressed" not in event._zulip_meta
 
 
 class TestObserveGroup:

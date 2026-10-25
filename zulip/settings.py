@@ -317,9 +317,11 @@ def resolve_soft_gate() -> bool:
     """Whether monitored stream messages are all dispatched (issue #153).
 
     Off by default. When on, a stream message is dispatched like
-    ``ZULIP_CHATMODE=onmessage`` but its metadata carries ``addressed=False``
-    unless the bot was mentioned or an onchar prefix fired, so the agent can
-    watch a busy stream without answering all of it.
+    ``ZULIP_CHATMODE=onmessage``; one the bot was not addressed in carries
+    ``inbound.OBSERVED_STREAM_CONTEXT`` in ``channel_context`` (the turn's
+    context, which survives the host's native admission) and ``addressed=False``
+    in the adapter's private ``_zulip_meta``, so the agent can watch a busy
+    stream without answering all of it.
     """
     return _preset_value("ZULIP_SOFT_GATE").strip().lower() in (
         "true", "1", "yes", "on",
@@ -495,3 +497,28 @@ def topic_sessions_enabled() -> bool:
     into per-topic sessions, which changes what an agent remembers.
     """
     return _preset_value("ZULIP_TOPIC_SESSIONS").strip().lower() in ("true", "1", "yes", "on")
+
+
+def origin_label_refresh_enabled() -> bool:
+    """Whether the adapter keeps the stored session origin's display labels current.
+
+    Workaround for a host defect (NousResearch/hermes-agent#142402): a background
+    completion is admitted only when the source rebuilt from the session store's
+    ``origin`` equals the route's last committed envelope, and ``origin`` is
+    written once, at session creation. A label the adapter starts stamping later
+    (``chat_topic``), a renamed topic or stream (``chat_topic``/``chat_name``), or
+    a changed display name therefore never reaches the stored origin, and every
+    background result for that session is refused forever with
+    ``admission_conflict``.
+
+    Refreshing those labels on each inbound message — plus a startup backfill of
+    each live conversation's current topic name — keeps the two in step without
+    touching any routing field. On by default; ``ZULIP_ORIGIN_LABEL_REFRESH=0``
+    disables it (the host fix makes it a no-op anyway).
+    """
+    return _preset_value("ZULIP_ORIGIN_LABEL_REFRESH").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
