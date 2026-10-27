@@ -737,15 +737,22 @@ async def handle_message(adapter: Any, message: dict) -> None:
     # allowed to answer or cost a round-trip on a message that is dropped.
     # DMs are never harvested: their sessions are per-user and isolated.
     if msg_type == "stream":
+        context_report: list = []
         quoted = await adapter._quoted_topic_history(
             stream_name,
             stream_id,
             topic,
             content=content,
             addressed=addressed,
+            report_out=context_report,
         )
         if quoted:
             content = quoted + content
+        if context_report:
+            # Counts only, for the activity-trace board (#225). It rides the
+            # adapter-private stamp because ``metadata`` cannot cross native
+            # admission; the trace reads it back through ``route_metadata``.
+            extra_meta["context_report"] = context_report[0]
 
     event = MessageEvent(
         text=content,

@@ -168,6 +168,10 @@ class TraceState:
     title: str = "Working"
     steps: list[TraceStep] = field(default_factory=list)
     note: str = ""
+    #: One pre-rendered line measuring the context the model was asked to carry
+    #: (issue #225). Empty for a turn that injected nothing, so the board stays
+    #: as short as it was before that measurement existed.
+    context: str = ""
 
     def add(self, label: str) -> TraceStep:
         step = TraceStep(label=label)
@@ -179,32 +183,39 @@ class TraceState:
 
         Keeps the *most recent* steps when trimming: the tail is what a reader
         watching the topic needs, and the header already says what is happening.
+        The context line (#225) is part of the header, so a long run trims steps
+        rather than the one fact about what the model was carrying.
         """
-        lines = [f"**{self.title}**", ""]
+        header = f"**{self.title}**"
+        if self.context:
+            header = f"{header}\n\n{self.context}"
+
+        body: list[str] = []
         for step in self.steps:
             mark = _STATUS_MARK.get(step.status, "·")
             line = f"{mark} {step.label}"
             if step.detail:
                 line += f" — {step.detail}"
-            lines.append(line)
+            body.append(line)
         if self.note:
-            lines += ["", self.note]
+            body += ["", self.note]
 
-        text = "\n".join(lines)
+        text = "\n".join([header, ""] + body)
         if len(text) <= max_content:
             return text
 
-        # Trim from the top of the step list, keeping the header.
-        header = f"**{self.title}**\n\n"
-        budget = max_content - len(header)
+        # Trim from the top of the step list, keeping the header (and the
+        # context line with it).
+        top = header + "\n\n"
+        budget = max_content - len(top)
         kept: list[str] = []
-        for line in reversed(lines[2:]):
+        for line in reversed(body):
             if len(line) + sum(len(k) + 1 for k in kept) > budget:
                 break
             kept.insert(0, line)
         if not kept:
-            return (header + "…").strip()
-        return header + "\n".join(kept)
+            return (top + "…").strip()
+        return top + "\n".join(kept)
 
 
 class EditPacer:
