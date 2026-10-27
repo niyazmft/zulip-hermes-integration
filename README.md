@@ -669,6 +669,7 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | Variable | Default | Example | Notes |
 |----------|---------|---------|-------|
 | `ZULIP_TOPIC_SESSIONS` | `false` | `true` | give each topic its own session — rename-proof: sessions key on stable conversation ids, so renaming a topic continues its session; `/new` starts a fresh one |
+| `ZULIP_ORIGIN_LABEL_REFRESH` | `true` | `0` | keep each stored session origin's display labels current — workaround for a host defect that refuses background results after a rename ([details](#background-results-never-arrive)) |
 | `ZULIP_DM_SESSION_TURN_LIMIT` | `20` | `0` | rotate a DM session after N turns; `0` disables |
 | `ZULIP_SESSION_QUEUE` | `false` | `1` | hold a mid-run message behind the running turn |
 | `ZULIP_QUEUE_CAP` | `20` | `5` | how many may wait before dispatching immediately |
@@ -763,7 +764,61 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | Messages held mid-run | `ZULIP_SESSION_QUEUE=1` working as intended | wait for the hourglass to clear; check `session_queue_dequeue` in the audit log |
 | `ZULIP_OBSERVE_GROUP` seems dead | `ZULIP_SOFT_GATE` is also on | they are mutually exclusive — turn soft gate off |
 | No activity trace | `ZULIP_ACTIVITY_TRACE` unset | tracing is opt-in; set it to `1` |
+| Background results never arrive | host defect on gateway ≤ v0.22.5, or an unrelated route mismatch | check the log for `admission_conflict`; see [background results never arrive](#background-results-never-arrive) |
 | Setup wizard shows instructions only | `setup_fn=interactive_setup` not passed to `register()` | reinstall the plugin from source |
+
+### Background results never arrive
+
+A `/review`, a `delegate_task(background=true)` or any background process with `notify=true`
+finishes, but nothing is posted to the topic and the log repeats this once a minute for as long
+as the gateway lives:
+
+```
+WARNING gateway.run: Watch notification not admitted for zulip chat=<stream>: admission_conflict
+```
+
+The cause is on the host, not in this plugin. A gateway at or below **v0.22.5** admits a
+background completion only when the source rebuilt from the session store's `origin` equals the
+route's last committed envelope — `gateway/session_automation.py::_route_identity` compares the
+whole dict, display labels included — and `origin` is written once, when the session is created.
+A label that changes afterwards never reaches the stored origin, so the comparison can never
+succeed again ([NousResearch/hermes-agent#142402](https://github.com/NousResearch/hermes-agent/issues/142402)).
+
+This plugin keeps those labels in step — `zulip/routing.py::refresh_origin_labels` relabels each
+live conversation at startup and each inbound message before the envelope is committed, without
+ever writing a routing field (`ZULIP_ORIGIN_LABEL_REFRESH=0` disables it). Two cases remain open
+on those hosts: a topic or stream renamed with **no** message in between, and a second speaker in
+a shared topic. Both close when the host stops treating display labels as route identity.
+
+**The result is not lost.** It stays in the host's durable ledger (`state.db`, table
+`async_delegations`), and can be recovered by hand:
+
+```bash
+HOST_DB="${HERMES_DATA_DIR:-$HOME/.hermes}/state.db"
+
+# 1. Find the rows that completed but were never delivered.
+sqlite3 "$HOST_DB" "SELECT delegation_id, state, delivery_state, delivery_attempts,
+                           datetime(completed_at,'unixepoch')
+                      FROM async_delegations
+                     WHERE state != 'running' AND delivery_state = 'pending'
+                     ORDER BY completed_at;"
+
+# 2. Read the result.
+sqlite3 "$HOST_DB" "SELECT result_json FROM async_delegations WHERE delegation_id = '<id>';"
+```
+
+Post that text in the topic it belongs to (the row's `event_json` names the chat and thread),
+then mark the row delivered so a restart replay cannot duplicate it:
+
+```bash
+sqlite3 "$HOST_DB" "UPDATE async_delegations
+                       SET delivery_state = 'delivered', updated_at = strftime('%s','now')
+                     WHERE delegation_id = '<id>';
+```
+
+Stop the gateway before writing, or the replay may post a second copy between the read and the
+update. Rows older than the host's replay cap are already dropped by the host on startup, and a
+`dropped` row still keeps its `result_json`, so the read above works either way.
 
 More detail, including the gateway-compatibility matrix, lives in [AGENTS.md](AGENTS.md).
 
