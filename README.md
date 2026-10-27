@@ -275,6 +275,13 @@ request needs judgement:
 | `/pin` | stars the message you are replying to (or asks the AI) | a decision should stay easy to find | reply with `/pin` → ⭐ added |
 | `/unpin` | un-stars it (or asks the AI) | the topic has moved on | `/unpin` → ⭐ removed |
 | `/unlisten`, `/stop-listening` | ends a [sticky engagement](#sticky-engagement) early | the bot is still answering and shouldn't be | `/unlisten` → "Stopped listening in this topic" |
+| `/pick-model` | renders the interactive model picker (providers → models, paginated buttons) | you want to switch models without typing an id | `/pick-model` → a provider list; `/pick-model openrouter` → straight to its models |
+
+Bare `/model` renders the same picker through the gateway's own hook. Both forms are
+**initiator-only**, single-use, and expire after ten minutes; each page turn replaces the
+previous form rather than stacking a second one. Clients that do not render Zulip `zform`
+widgets get the gateway's text listing (`/model`) or an actionable text list (`/pick-model`).
+Switching itself is always the gateway's path — the plugin never sets a model.
 
 Add your own:
 

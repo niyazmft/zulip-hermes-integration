@@ -72,6 +72,7 @@ from .engagement import (
 from .logger import mask_pii
 from .media import collect_inbound_media
 from . import prompt as prompt_surface
+from . import model_picker
 from .reactions import ReactionLifecycle
 from .settings import resolve_chatmode as _resolve_chatmode
 from .text_utils import (
@@ -525,6 +526,24 @@ async def handle_message(adapter: Any, message: dict) -> None:
             cmd_chat_id = _private_chat_id(message)
             cmd_topic = None
 
+        # /pick-model (#192): the plugin's own picker command. Handled here rather
+        # than in the sync command registry because it needs async I/O — a
+        # provider listing and a widget send — which a ``-> str`` handler cannot
+        # express.
+        if content.strip().lower().startswith("/pick-model"):
+            await adapter.handle_pick_model_command(
+                content, cmd_chat_id, message.get("sender_id")
+            )
+            await adapter._stop_typing(typing_params)
+            await adapter._mark_read(message_id)
+            return
+
+        # A bare /model is about to make the gateway render a picker, and the
+        # hook carries no sender — so capture who asked while the identity is
+        # still on the message (#192).
+        if content.strip().lower() == "/model":
+            adapter.note_picker_initiator(cmd_chat_id, message.get("sender_id"))
+
         # /continue and /topic-sessions (stable topic sessions): manual
         # re-bind, and the read-only listing of this topic's sessions.
         topic_cmd = (
@@ -834,6 +853,21 @@ async def handle_message(adapter: Any, message: dict) -> None:
         if not await adapter.gate_approval_decision(
             message=message, event=event, msg_type=msg_type, message_id=message_id
         ):
+            return
+
+    # --- Interactive model picker replies (issue #192) ---
+    #
+    # A zform button click arrives as an ordinary message whose text is the
+    # button's reply token. It is consumed here — after every policy gate, and
+    # before the session queue and dispatch — so a ``mm:`` token can never reach
+    # the agent as chat, while a sender who is not allowed to talk to the bot is
+    # still just blocked.
+    if model_picker.is_picker_reply(content):
+        if await adapter.handle_model_picker_reply(
+            content, message.get("sender_id"), chat_id
+        ):
+            await adapter._stop_typing(typing_params)
+            await adapter._mark_read(message_id)
             return
 
     # --- Per-session queue (issue #151) ---
