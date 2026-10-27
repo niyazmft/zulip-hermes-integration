@@ -55,7 +55,15 @@ TTL_SECONDS = 600.0
 MAX_PICKERS = 64
 
 #: Reply prefixes. ``mp``/``mm`` are navigation, ``mg`` is a selection, ``mx`` cancels.
-TOKEN_PREFIXES = ("mp", "mm", "mg", "mx")
+#: Reply prefixes. ``mp``/``mm`` are model-picker navigation, ``mg`` selects a
+#: model, ``mx`` cancels; ``cp``/``cg``/``cx`` are the flat choice picker's page
+#: turn, selection and cancel.
+TOKEN_PREFIXES = ("mp", "mm", "mg", "mx", "cp", "cg", "cx")
+
+#: Choices per page for the flat picker (#193). Today's commands (``/reasoning``
+#: at ~10, ``/fast`` at 4) fit on one page; the row only appears when a future
+#: list does not.
+CHOICE_PAGE_SIZE = 12
 
 EXPIRED_NOTICE = "Picker expired — run `/model` again."
 NOT_YOURS_NOTICE = "That picker belongs to someone else — run `/model` yourself."
@@ -111,6 +119,36 @@ class PickerState:
         return str(models[model_index]), str(provider.get("slug") or "")
 
 
+@dataclass
+class ChoiceState:
+    """One open flat choice picker (issue #193).
+
+    The sibling of :class:`PickerState` with a much smaller shape: one heading,
+    one flat list of ``{"value", "label", "is_current"}`` choices, one callback.
+    ``/reasoning`` and ``/fast`` are the users today; both fit on one page.
+    """
+
+    token: str
+    chat_id: str
+    initiator: str
+    title: str
+    choices: list[dict[str, Any]] = field(default_factory=list)
+    session_key: str = ""
+    created_at: float = 0.0
+    message_id: Optional[int] = None
+    metadata: Any = None
+    topic: Optional[str] = None
+    #: ``async (chat_id, value) -> str`` — the gateway applies the change and
+    #: returns the text to post in place. The plugin never changes state itself.
+    on_choice_selected: Optional[Callable[..., Any]] = None
+
+    def value(self, index: int) -> Optional[str]:
+        """The ``value`` behind one button, or None when out of range."""
+        if 0 <= index < len(self.choices):
+            return str(self.choices[index].get("value") or "")
+        return None
+
+
 class PickerRegistry:
     """Bounded, expiring, single-use store of open pickers."""
 
@@ -120,25 +158,27 @@ class PickerRegistry:
         ttl: float = TTL_SECONDS,
         max_pickers: int = MAX_PICKERS,
         clock: Callable[[], float] = time.monotonic,
+        factory: Callable[..., Any] = PickerState,
     ):
         self._ttl = ttl
         self._max = max(1, max_pickers)
         self._clock = clock
-        self._pickers: dict[str, PickerState] = {}
+        self._factory = factory
+        self._pickers: dict[str, Any] = {}
 
-    def open(self, **kwargs: Any) -> PickerState:
+    def open(self, **kwargs: Any) -> Any:
         """Create, remember and return a new picker."""
         self._expire()
         token = secrets.token_hex(4)
         while token in self._pickers:  # 32 bits; loop rather than trust luck
             token = secrets.token_hex(4)
-        state = PickerState(token=token, created_at=self._clock(), **kwargs)
+        state = self._factory(token=token, created_at=self._clock(), **kwargs)
         self._pickers[token] = state
         while len(self._pickers) > self._max:
             self._pickers.pop(next(iter(self._pickers)))
         return state
 
-    def peek(self, token: str) -> Optional[PickerState]:
+    def peek(self, token: str) -> Any:
         """The picker for ``token`` if it is still live, else None."""
         state = self._pickers.get(token)
         if state is None:
@@ -148,7 +188,7 @@ class PickerRegistry:
             return None
         return state
 
-    def pop(self, token: str) -> Optional[PickerState]:
+    def pop(self, token: str) -> Any:
         """Consume the picker: a second click can never act on it again."""
         state = self.peek(token)
         if state is not None:
@@ -158,7 +198,7 @@ class PickerRegistry:
     def __len__(self) -> int:
         return len(self._pickers)
 
-    def _expired(self, state: PickerState) -> bool:
+    def _expired(self, state: Any) -> bool:
         return (self._clock() - state.created_at) > self._ttl
 
     def _expire(self) -> None:
@@ -328,7 +368,7 @@ def parse_reply(content: str) -> Optional[tuple[str, PickerAction]]:
         return None
     token = parts[1]
     try:
-        if parts[0] == "mx" and len(parts) == 2:
+        if parts[0] in ("mx", "cx") and len(parts) == 2:
             return token, PickerAction(kind="cancel")
         if parts[0] == "mp" and len(parts) == 3:
             return token, PickerAction(kind="providers", page=int(parts[2]))
@@ -340,6 +380,49 @@ def parse_reply(content: str) -> Optional[tuple[str, PickerAction]]:
             return token, PickerAction(
                 kind="select", provider_index=int(parts[2]), model_index=int(parts[3])
             )
+        if parts[0] == "cp" and len(parts) == 3:
+            return token, PickerAction(kind="choices", page=int(parts[2]))
+        if parts[0] == "cg" and len(parts) == 3:
+            return token, PickerAction(kind="choose", model_index=int(parts[2]))
     except ValueError:
         return None
     return None
+
+
+# ------------------------------------------------------- the flat picker
+
+
+def render_choices(state: ChoiceState, page: int = 0) -> tuple[str, str]:
+    """``(context_text, widget_json)`` for a flat choice picker (#193).
+
+    Same payload shape, same delete-and-repost flow and the same ``✓`` marking as
+    the model picker — only the shape of the list differs: one heading, one button
+    per choice, no drill-down. The navigation row appears only when a list is long
+    enough to need it, so today's commands render as a single flat row.
+    """
+    choices = list(state.choices)
+    page = _clamp_page(page, len(choices), CHOICE_PAGE_SIZE)
+    total = _page_count(len(choices), CHOICE_PAGE_SIZE)
+    start = page * CHOICE_PAGE_SIZE
+
+    buttons: list[dict[str, str]] = []
+    for offset, choice in enumerate(choices[start : start + CHOICE_PAGE_SIZE]):
+        index = start + offset
+        label = str(choice.get("label") or choice.get("value") or "")
+        if choice.get("is_current"):
+            label = f"✓ {label}"
+        buttons.append(
+            _choice(chr(ord("A") + len(buttons)), label, f"cg:{state.token}:{index}")
+        )
+
+    if total > 1:
+        if page > 0:
+            buttons.append(_choice("◀", "Previous page", f"cp:{state.token}:{page - 1}"))
+        if page + 1 < total:
+            buttons.append(_choice("▶", "Next page", f"cp:{state.token}:{page + 1}"))
+    buttons.append(_choice("✕", "Cancel", f"cx:{state.token}"))
+
+    heading = state.title or "Choose one"
+    if total > 1:
+        heading += f" (page {page + 1}/{total})"
+    return heading, _widget(heading, buttons)

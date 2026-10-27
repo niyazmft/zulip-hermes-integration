@@ -538,10 +538,11 @@ async def handle_message(adapter: Any, message: dict) -> None:
             await adapter._mark_read(message_id)
             return
 
-        # A bare /model is about to make the gateway render a picker, and the
-        # hook carries no sender — so capture who asked while the identity is
-        # still on the message (#192).
-        if content.strip().lower() == "/model":
+        # A bare picker-bearing command is about to make the host render a form,
+        # and the picker hooks carry no sender — so capture who asked while the
+        # identity is still on the message (#192, #193).
+        command_verb = content.strip().lower()
+        if command_verb in ("/model", "/reasoning", "/fast"):
             adapter.note_picker_initiator(cmd_chat_id, message.get("sender_id"))
 
         # /continue and /topic-sessions (stable topic sessions): manual
@@ -859,11 +860,11 @@ async def handle_message(adapter: Any, message: dict) -> None:
     #
     # A zform button click arrives as an ordinary message whose text is the
     # button's reply token. It is consumed here — after every policy gate, and
-    # before the session queue and dispatch — so a ``mm:`` token can never reach
-    # the agent as chat, while a sender who is not allowed to talk to the bot is
-    # still just blocked.
+    # before the session queue and dispatch — so a ``mm:`` or ``cg:`` token can
+    # never reach the agent as chat, while a sender who is not allowed to talk to
+    # the bot is still just blocked.
     if model_picker.is_picker_reply(content):
-        if await adapter.handle_model_picker_reply(
+        if await adapter.handle_picker_reply(
             content, message.get("sender_id"), chat_id
         ):
             await adapter._stop_typing(typing_params)
