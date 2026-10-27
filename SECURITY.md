@@ -42,6 +42,36 @@ The exec-approval widget maps each button to the same `/approve`-family message 
 user would type, so authorization is identical either way
 (`zulip/adapter.py::ZulipAdapter._EA_ZFORM_REPLY`).
 
+### Known host limitation: background delivery on gateway ≤ v0.22.5
+
+A gateway at or below **v0.22.5** admits a background completion only when the
+source rebuilt from the session store's `origin` equals the route's last committed
+envelope — `gateway/session_automation.py::_route_identity` compares the whole
+dict, display labels included — and `origin` is written once, when the session is
+created. A label that changes afterwards therefore never reaches the stored
+origin, the comparison can never succeed again, and the completion is refused with
+`admission_conflict` once a minute for as long as the gateway lives. Inbound
+messages and normal replies are unaffected; only **background** deliveries
+(`/review`, `delegate_task(background=true)`, a background process with
+`notify=true`) are lost.
+
+A label starts changing as soon as this adapter stamps `chat_topic`, which is what
+v1.13.1 does on every message, so on such a host **every session created before
+the upgrade** is exposed on upgrade day. Refreshing the stored origin's display
+labels keeps them deliverable and is on by default
+(`zulip/routing.py::refresh_origin_labels`, `ZULIP_ORIGIN_LABEL_REFRESH=0`
+disables it); routing fields are never written and no entry is created. Two cases
+remain open on those hosts, and closing them needs the host fix
+([NousResearch/hermes-agent#142402](https://github.com/NousResearch/hermes-agent/issues/142402)):
+
+- a topic or stream renamed with **no** message in between the rename and the
+  completion;
+- a second speaker in a shared topic, which fails the comparison on `user_id`.
+
+The result is preserved in the host's durable ledger rather than lost, and can be
+recovered by hand — see
+[Background results never arrive](README.md#background-results-never-arrive).
+
 ---
 
 ## Reporting a Vulnerability
