@@ -38,6 +38,7 @@ PLUGIN_FILES = [
     "policy.py",
     "probe.py",
     "prompt.py",
+    "model_picker.py",
     "queue_manager.py",
     "rate_limiter.py",
     "reaction_triggers.py",

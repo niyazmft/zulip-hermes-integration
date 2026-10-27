@@ -282,6 +282,7 @@ from .zulip_client import (
 # ``from .history import ...`` binding would silently stop honouring a patch of
 # ``zulip.history``.
 from . import history
+from . import model_picker
 from .history import (
     FETCHED_HISTORY_LABEL,
     OBSERVED_HISTORY_LABEL,
@@ -411,6 +412,19 @@ def _resolve_reaction_triggers() -> ReactionTriggerConfig:
         any_message=str(any_message or "").strip().lower()
         not in ("", "false", "0", "no", "off"),
     )
+
+
+def providers_for_picker_available() -> bool:
+    """Whether this host exposes the picker provider listing.
+
+    Guarded per repo convention: a host without ``hermes_cli.model_switch_providers``
+    must degrade to the text path rather than fail to import the plugin.
+    """
+    try:
+        from hermes_cli.model_switch_providers import list_picker_providers  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 class ZulipAdapter(BasePlatformAdapter):
@@ -573,6 +587,13 @@ class ZulipAdapter(BasePlatformAdapter):
         # profile's client, and the loop is bound at connect (the hook fires on
         # the agent thread).
         self._approval_ledger = approval_outcomes.ApprovalLedger()
+        # Open ``/model`` pickers (#192). Bounded, expiring and single-use; the
+        # token scheme and rendering live in ``zulip.model_picker``.
+        self._model_pickers = model_picker.PickerRegistry()
+        # Who asked for a picker the host is about to render, keyed by chat id.
+        # The hook carries no sender, so this is captured on the inbound
+        # ``/model`` message and consumed when the picker opens.
+        self._picker_initiators: dict[str, str] = {}
         self._zulip_loop: Optional[asyncio.AbstractEventLoop] = None
         # The owner address #214 resolved, remembered so the approval authority
         # (#228) and the DM allowlist cannot disagree about who the owner is.
@@ -2328,6 +2349,312 @@ class ZulipAdapter(BasePlatformAdapter):
 
     def _approval_fallback_instructions(self, prompt: ExecApprovalPrompt) -> str:
         return approvals.approval_fallback_instructions(prompt)
+
+    # ── Interactive model picker (issue #192) ──────────────────────────────    # The token scheme, the registry, pagination and the zform payloads live in
+    # ``zulip.model_picker`` (pure). These methods are the adapter's half: the
+    # gateway hook, the send/delete I/O, and the reply interception. Nothing here
+    # switches a model — the gateway's own callback does, through the same path
+    # ``/model <name>`` uses.
+
+    def _picker_request(self, chat_id: str, topic: Optional[str]) -> Optional[dict]:
+        """Send request for a picker form, or None when the route is unusable."""
+        try:
+            target = _parse_target(chat_id)
+        except Exception:
+            logger.warning("zulip model picker: unparseable target")
+            return None
+        if target["type"] == "dm":
+            return {"type": "private", "to": target["user_ids"]}
+        return {"type": "stream", "to": target["stream_id"], "topic": topic or "general"}
+
+    async def _send_picker_form(
+        self, state: model_picker.PickerState, heading: str, widget: str
+    ) -> Optional[int]:
+        """Post one form message, deleting the one it replaces.
+
+        A rendered zform widget REPLACES its message body, so the heading is also
+        sent as the body: widget-less clients read it there, and the widget's own
+        header carries it where the buttons render.
+        """
+        request = self._picker_request(state.chat_id, state.topic)
+        if request is None:
+            return None
+        previous = state.message_id
+        try:
+            result = await self._sdk_call(
+                self.client.send_message,
+                {**request, "content": heading, "widget_content": widget},
+                timeout=self._send_timeout,
+            )
+        except Exception as e:
+            logger.warning("zulip model picker send failed: %s", mask_pii(str(e)))
+            return None
+        if not isinstance(result, dict) or result.get("result") != "success":
+            logger.warning("zulip model picker send refused: %s", mask_pii(str(result)))
+            return None
+        try:
+            message_id = int(result.get("id"))
+        except (TypeError, ValueError):
+            return None
+        state.message_id = message_id
+        if previous is not None and int(previous) != message_id:
+            # zform cannot be edited in place (``update_message`` only changes the
+            # body), so a page turn is delete-and-repost. Best-effort: a refused
+            # delete leaves one inert old form, never a broken turn.
+            try:
+                await self.delete_message(int(previous))
+            except Exception:
+                logger.debug(
+                    "zulip model picker: could not delete the previous form",
+                    exc_info=True,
+                )
+        return message_id
+
+    async def _picker_notice(self, state: model_picker.PickerState, text: str) -> None:
+        """Post one short line to the picker's route (expiry, refusal, cancel)."""
+        request = self._picker_request(state.chat_id, state.topic)
+        if request is None:
+            return
+        try:
+            await self._sdk_call(
+                self.client.send_message,
+                {**request, "content": text},
+                timeout=self._send_timeout,
+            )
+        except Exception:
+            logger.debug("zulip model picker notice failed", exc_info=True)
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected: Any,
+        metadata: Any = None,
+    ) -> SendResult:
+        """Gateway hook for bare ``/model``: render the picker as zform buttons.
+
+        ``providers`` is the gateway's own listing — nothing is hard-coded here.
+        A failure returns ``success=False`` so the gateway posts its native text
+        listing instead of leaving the user with nothing.
+        """
+        if not providers:
+            return SendResult(success=False, message_id="")
+        # The host's hook carries no sender, so the initiator is recorded when the
+        # bare ``/model`` message passed through inbound (``note_picker_initiator``).
+        # When nothing was recorded the first click binds it instead — still one
+        # owner, still single-use, and never worse than an open form.
+        initiator = self._picker_initiators.pop(str(chat_id), "")
+        topic = None
+        try:
+            target = _parse_target(chat_id)
+            if target["type"] == "stream":
+                topic = self._routed_topic(target["stream_id"], metadata)
+        except Exception:
+            topic = None
+        state = self._model_pickers.open(
+            chat_id=chat_id,
+            initiator=str(initiator),
+            session_key=str(session_key or ""),
+            providers=list(providers),
+            current_model=str(current_model or ""),
+            current_provider=str(current_provider or ""),
+            on_model_selected=on_model_selected,
+            metadata=metadata,
+            topic=topic,
+        )
+        heading, widget = model_picker.render_providers(state, 0)
+        message_id = await self._send_picker_form(state, heading, widget)
+        if message_id is None:
+            self._model_pickers.pop(state.token)
+            return SendResult(success=False, message_id="")
+        return SendResult(success=True, message_id=str(message_id))
+
+    def note_picker_initiator(self, chat_id: str, sender_id: Any) -> None:
+        """Remember who asked for a picker the host is about to render.
+
+        The ``send_model_picker`` hook receives the chat and the providers but no
+        sender, so the identity is captured where it does exist — on the inbound
+        ``/model`` message — and consumed here. Bounded: one entry per chat, and
+        an entry nobody consumes is overwritten by the next request.
+        """
+        if chat_id and sender_id not in (None, ""):
+            self._picker_initiators[str(chat_id)] = str(sender_id)
+
+    async def handle_model_picker_reply(
+        self,
+        content: str,
+        sender_id: Any,
+        chat_id: str,
+    ) -> bool:
+        """Handle one picker reply token. Returns whether it was consumed.
+
+        Consumed means the message is ours and must not reach the agent: a
+        selection, a page turn, a cancel, or a refusal. A token that names no
+        live picker still gets answered (expired pickers must say so in place)
+        and is still consumed — the alternative is a ``mm:`` string leaking into
+        the conversation as chat.
+        """
+        parsed = model_picker.parse_reply(content)
+        if parsed is None:
+            return False
+        token, action = parsed
+        state = self._model_pickers.peek(token)
+        if state is None:
+            await self._picker_notice_for_chat(chat_id, model_picker.EXPIRED_NOTICE)
+            return True
+
+        clicker = str(sender_id or "")
+        if not state.initiator:
+            # Nothing recorded (a picker the host opened outside a message): bind
+            # it to the first person to engage. Single-use and short-lived, so
+            # this is a fallback, not the rule.
+            state.initiator = clicker
+        elif clicker and clicker != state.initiator:
+            await self._picker_notice(state, model_picker.NOT_YOURS_NOTICE)
+            return True
+
+        if action.kind == "cancel":
+            self._model_pickers.pop(token)
+            await self._picker_notice(state, model_picker.CANCELLED_NOTICE)
+            return True
+
+        if action.kind == "providers":
+            heading, widget = model_picker.render_providers(state, action.page)
+            await self._send_picker_form(state, heading, widget)
+            return True
+
+        if action.kind == "models":
+            heading, widget = model_picker.render_models(
+                state, action.provider_index, action.page
+            )
+            await self._send_picker_form(state, heading, widget)
+            return True
+
+        # A selection: single-use, so consume before the switch runs.
+        chosen = state.model(action.provider_index, action.model_index)
+        self._model_pickers.pop(token)
+        if chosen is None:
+            await self._picker_notice(state, model_picker.EXPIRED_NOTICE)
+            return True
+        model_id, provider_slug = chosen
+        if state.message_id is not None:
+            # The form has done its job; leaving it clickable would be a second
+            # switch from a dead picker.
+            try:
+                await self.delete_message(int(state.message_id))
+            except Exception:
+                logger.debug("zulip model picker: could not delete the used form", exc_info=True)
+        text = ""
+        if state.on_model_selected is not None:
+            try:
+                text = str(
+                    await state.on_model_selected(state.chat_id, model_id, provider_slug)
+                    or ""
+                )
+            except Exception as e:
+                logger.warning("zulip model picker switch failed: %s", mask_pii(str(e)))
+                text = "Could not switch the model — run `/model` again."
+        if text:
+            await self._picker_notice(state, text)
+        return True
+
+    async def _picker_notice_for_chat(self, chat_id: str, text: str) -> None:
+        """Send a notice when there is no live picker left to route through."""
+        request = self._picker_request(chat_id, None)
+        if request is None:
+            return
+        try:
+            await self._sdk_call(
+                self.client.send_message,
+                {**request, "content": text},
+                timeout=self._send_timeout,
+            )
+        except Exception:
+            logger.debug("zulip model picker notice failed", exc_info=True)
+
+    async def handle_pick_model_command(
+        self,
+        content: str,
+        chat_id: str,
+        sender_id: Any,
+        metadata: Any = None,
+    ) -> bool:
+        """``/pick-model [provider]``: the same picker without the host's hook.
+
+        Returns whether the command was handled. The provider list comes from the
+        gateway (guarded import); when it is unavailable, or the widget cannot be
+        sent, an actionable text list is posted instead so the command never
+        leaves the user with nothing.
+        """
+        if not providers_for_picker_available():
+            # No listing on this host: still a command, so say where to go rather
+            # than letting ``/pick-model`` fall through to the agent as chat.
+            await self._picker_notice_for_chat(
+                chat_id,
+                "This host does not expose a model listing — use `/model` instead.",
+            )
+            return True
+
+        argument = content.strip()[len("/pick-model") :].strip()
+        try:
+            providers = await self._picker_providers()
+        except Exception as e:
+            logger.warning("zulip /pick-model listing failed: %s", mask_pii(str(e)))
+            providers = []
+        if not providers:
+            await self._picker_notice_for_chat(
+                chat_id, "No authenticated providers found — run `/model` instead."
+            )
+            return True
+
+        state = self._model_pickers.open(
+            chat_id=chat_id,
+            initiator=str(sender_id or ""),
+            session_key="",
+            providers=providers,
+            current_model=str(getattr(self, "_model_name", "") or ""),
+            current_provider="",
+            metadata=metadata,
+        )
+        start_at = 0
+        if argument:
+            wanted = argument.lower()
+            for index, provider in enumerate(providers):
+                if wanted in (
+                    str(provider.get("slug") or "").lower(),
+                    str(provider.get("name") or "").lower(),
+                ):
+                    start_at = index
+                    break
+            else:
+                await self._picker_notice(
+                    state, f"No provider matching `{argument}` — showing all providers."
+                )
+
+        if argument and start_at:
+            heading, widget = model_picker.render_models(state, start_at, 0)
+        else:
+            heading, widget = model_picker.render_providers(state, 0)
+        if await self._send_picker_form(state, heading, widget) is None:
+            # Widget-less path: an actionable text list, then drop the picker.
+            self._model_pickers.pop(state.token)
+            await self._picker_notice(state, model_picker.render_text_listing(state))
+        return True
+
+    async def _picker_providers(self) -> list:
+        """The gateway's provider listing, off the loop, or [] when unavailable."""
+        from hermes_cli.model_switch_providers import list_picker_providers
+
+        return await asyncio.to_thread(
+            list_picker_providers,
+            max_models=50,
+            include_moa=True,
+            non_blocking_catalogs=True,
+            probe_custom_providers=False,
+        )
 
     # ── Exec-approval outcomes (issue #222) ─────────────────────────────────
     # The ledger, the policy and the wording live in ``zulip.approval_outcomes``
