@@ -187,6 +187,20 @@ entry that can never match a sender looks like it works.
 
 ---
 
+## The prompt half
+
+This document covers **what the adapter does**. It deliberately does not cover
+**what the model is told**: that is a separate surface with its own setting
+(`ZULIP_PROMPT_PRESET`), its own split between a non-removable core and
+droppable sections, and its own document —
+[docs/PROMPT-PRESETS.md](PROMPT-PRESETS.md).
+
+The boundary matters for operators: turning a profile on or a prompt preset to
+`lean` never changes delivery, addressing, threading, reactions, chunking or
+approvals. A preset changes which guidance is sent, never what the adapter does.
+
+---
+
 ## Why the code is shaped this way
 
 Two placements are forced, and are not accidents:
