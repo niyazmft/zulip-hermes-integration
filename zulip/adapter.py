@@ -1865,6 +1865,7 @@ class ZulipAdapter(BasePlatformAdapter):
         *,
         content: str,
         addressed: bool,
+        report_out: list | None = None,
     ) -> str:
         """Quoted context prepended to the agent-facing body for one turn.
 
@@ -1874,6 +1875,12 @@ class ZulipAdapter(BasePlatformAdapter):
         best-effort — a failed harvest is logged and dropped — and neither ever
         reaches a slash command or a policy/rate-limit gate, which have already
         been decided by the time this runs.
+
+        ``report_out`` is an optional one-slot collector: when given, exactly one
+        :class:`zulip.history.ContextReport` describing this turn is appended to
+        it, whether or not anything was injected. That is how the activity trace
+        learns what the model was asked to carry (issue #225) without this method
+        having to return two values.
         """
         # Bookkeeping first (#217): a turn the bot was addressed in makes this topic
         # part of the conversation, which is what later lets chatter here be
@@ -1882,24 +1889,38 @@ class ZulipAdapter(BasePlatformAdapter):
         if addressed:
             self._addressed_topics.mark(stream_id, topic)
 
+        blocks: list[str] = []
+        history_chars = history_messages = 0
+        observed_chars = observed_messages = 0
+        harvest = history.HARVEST_NOT_ATTEMPTED
+
         # Slash commands belong to the gateway — never spend a harvest on them
         # and never modify their body (#148, #190).
-        if is_command(content):
-            return ""
+        if not is_command(content):
+            if self._observe_group and addressed:
+                observed = self._observed_context.render(stream_id, topic)
+                if observed:
+                    blocks.append(f"{history.OBSERVED_HISTORY_LABEL}\n{observed}")
+                    observed_chars, observed_messages = history.measure_block(observed)
 
-        blocks: list[str] = []
+            if self._history_mode != "off" and (
+                self._history_mode == "always" or history.history_intent_matches(content)
+            ):
+                harvested, harvest = await self._harvest_history_block(stream_name, topic)
+                if harvested:
+                    blocks.append(f"{history.FETCHED_HISTORY_LABEL}\n{harvested}")
+                    history_chars, history_messages = history.measure_block(harvested)
 
-        if self._observe_group and addressed:
-            observed = self._observed_context.render(stream_id, topic)
-            if observed:
-                blocks.append(f"{history.OBSERVED_HISTORY_LABEL}\n{observed}")
-
-        if self._history_mode != "off" and (
-            self._history_mode == "always" or history.history_intent_matches(content)
-        ):
-            harvested = await self._harvest_history_block(stream_name, topic)
-            if harvested:
-                blocks.append(f"{history.FETCHED_HISTORY_LABEL}\n{harvested}")
+        if report_out is not None:
+            report_out.append(
+                history.ContextReport(
+                    history_chars=history_chars,
+                    history_messages=history_messages,
+                    observed_chars=observed_chars,
+                    observed_messages=observed_messages,
+                    harvest=harvest,
+                )
+            )
 
         if not blocks:
             return ""
@@ -1930,8 +1951,13 @@ class ZulipAdapter(BasePlatformAdapter):
         messages = result.get("messages")
         return messages if isinstance(messages, list) else []
 
-    async def _harvest_history_block(self, stream_name: str, topic: str) -> str:
+    async def _harvest_history_block(self, stream_name: str, topic: str) -> tuple[str, str]:
         """Best-effort quoted slice of the real topic history (#148).
+
+        Returns ``(text, outcome)``. The outcome is what the status board needs
+        (issue #225): a harvest that timed out, one that failed and one that
+        simply found nothing all yield no text, and conflating them makes a slow
+        realm look like an empty one.
 
         Streams/topics only — DMs have their own per-user sessions and are
         never harvested across. Any error response or timeout is logged and
@@ -1949,20 +1975,21 @@ class ZulipAdapter(BasePlatformAdapter):
                 mask_pii(stream_name),
                 mask_pii(topic),
             )
-            return ""
+            return "", history.HARVEST_TIMEOUT
         except Exception as e:
             logger.warning(
                 "zulip history harvest failed (dropped): %s", mask_pii(str(e))
             )
-            return ""
+            return "", history.HARVEST_FAILED
         if not messages:
-            return ""
-        return history.render_history_block(
+            return "", history.HARVEST_EMPTY
+        text = history.render_history_block(
             messages,
             max_messages=self._history_max_messages,
             window_hours=self._history_window_hours,
             max_chars=self._history_max_chars,
         )
+        return text, (history.HARVEST_INJECTED if text else history.HARVEST_EMPTY)
 
     async def _handle_message(self, message: dict):
         """Process an incoming Zulip message.

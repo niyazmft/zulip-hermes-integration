@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import activity_trace
+from . import history
 from . import outbound
 from . import routing
 from .logger import mask_pii
@@ -510,6 +511,15 @@ def start_trace(adapter: Any, event: Any) -> None:
     trace = activity_trace.ActivityTrace(
         post, edit, adapter._trace_cfg, title=title, on_rotate=rotate_record
     )
+    # What the model was asked to carry (#225): the context line is measured on
+    # the turn that was dispatched, before admission, and rides the stamp.
+    # Best-effort by contract -- a measurement that cannot be computed must
+    # leave the board exactly as it was, never delay or break the trace.
+    try:
+        report = metadata.get("context_report") if isinstance(metadata, dict) else None
+        trace.state.context = history.render_context_line(report)
+    except Exception:
+        logger.debug("activity trace: context measurement unavailable", exc_info=True)
     adapter._traces[key] = trace
     adapter._trace_started[key] = time.monotonic()
     for alias in _session_aliases(adapter, event):

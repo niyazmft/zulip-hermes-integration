@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 from .text_utils import strip_html_to_text, truncate_text
@@ -43,6 +44,30 @@ FETCHED_HISTORY_LABEL = "[Topic history - recent messages quoted for context]"
 #: Best-effort budget for one history harvest (#148). A slow or failing fetch
 #: is dropped rather than awaited beyond this.
 HISTORY_FETCH_TIMEOUT = 2.0
+
+#: How a history harvest ended (issue #225). The status board has to separate
+#: "there was nothing to quote" from "we could not look": a slow realm is not an
+#: empty one, and only the first is a fact about the conversation.
+HARVEST_NOT_ATTEMPTED = ""
+HARVEST_INJECTED = "injected"
+HARVEST_EMPTY = "empty"
+HARVEST_TIMEOUT = "timeout"
+HARVEST_FAILED = "failed"
+
+#: Phrasing for the outcomes worth showing on the board. ``injected`` speaks for
+#: itself through its character count, and ``not attempted`` cost nothing, so it
+#: is not shown at all -- a turn that harvested nothing must leave the board
+#: exactly as short as it was before #225.
+_HARVEST_PHRASE = {
+    HARVEST_EMPTY: "history harvest empty",
+    HARVEST_TIMEOUT: "history harvest timed out",
+    HARVEST_FAILED: "history harvest failed",
+}
+
+#: Characters per token for the approximate count. Deliberately crude: this
+#: plugin ships no tokenizer, and a wrong-but-precise-looking number is worse
+#: than an honest estimate.
+APPROX_CHARS_PER_TOKEN = 4
 
 #: Narrow "do we already know this?" question shapes for ``on-demand`` history
 #: (#148). Deliberately conservative: a harvest costs one Zulip round-trip and
@@ -223,3 +248,73 @@ def render_history_block(
     if lines and len(lines[0]) > max_chars:
         lines[0] = truncate_text(lines[0], max_chars)
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class ContextReport:
+    """What quoted context one turn carried, in counts only (issue #225).
+
+    Counts and outcomes, never text: the status board is visible in the room, and
+    quoting a message body there would leak context into the channel. Sizes are
+    measured on the rendered block *body* — the part that costs context — so the
+    fixed labels are not counted.
+
+    ``harvest`` records how the history harvest ended even when nothing was
+    injected, which is the whole point: "no history matched" and "the fetch timed
+    out" both render nothing, and an owner looking at a thin answer cannot act on
+    either without being told which happened.
+    """
+
+    history_chars: int = 0
+    history_messages: int = 0
+    observed_chars: int = 0
+    observed_messages: int = 0
+    harvest: str = HARVEST_NOT_ATTEMPTED
+
+
+def measure_block(text: str) -> tuple[int, int]:
+    """``(characters, messages)`` of one rendered quoted block, or ``(0, 0)``.
+
+    Messages are counted as rendered lines, which is exactly what the block
+    carries: ``render_history_block`` emits one line per message and the observed
+    buffer stores one line per message.
+    """
+    if not text:
+        return 0, 0
+    return len(text), text.count("\n") + 1
+
+
+def render_context_line(report: ContextReport | None) -> str:
+    """One compact board line describing a turn's injected context (#225).
+
+    Returns ``""`` when the turn carried nothing *and* nothing went wrong, so an
+    install that never harvests sees exactly the board it saw before this existed.
+    A harvest that was attempted and produced nothing is shown, because that is a
+    fact about our behaviour (a slow realm), not about the conversation.
+
+    Approximate tokens are labelled approximate on purpose: no tokenizer ships
+    with this plugin, and a precise-looking wrong number is worse than an honest
+    estimate.
+    """
+    if report is None:
+        return ""
+
+    parts: list[str] = []
+    if report.history_chars:
+        parts.append(f"history {report.history_chars:,} chars")
+    if report.observed_chars:
+        count = report.observed_messages
+        parts.append(
+            f"observed {report.observed_chars:,} chars "
+            f"({count} msg{'s' if count != 1 else ''})"
+        )
+    phrase = _HARVEST_PHRASE.get(report.harvest, "")
+    if phrase:
+        parts.append(phrase)
+    if not parts:
+        return ""
+
+    chars = report.history_chars + report.observed_chars
+    if chars:
+        parts.append(f"~{max(1, chars // APPROX_CHARS_PER_TOKEN):,} tok")
+    return "context: " + " · ".join(parts)
