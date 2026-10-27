@@ -283,6 +283,11 @@ previous form rather than stacking a second one. Clients that do not render Zuli
 widgets get the gateway's text listing (`/model`) or an actionable text list (`/pick-model`).
 Switching itself is always the gateway's path — the plugin never sets a model.
 
+`/reasoning` and `/fast` render the same way when called with no argument: a flat row of
+one-tap buttons with `✓` on the current value. They share the picker's token scheme,
+authorization and expiry, and when the widget cannot be sent the gateway's own text status
+card stands — that hook has no custom fallback by design.
+
 Add your own:
 
 ```python

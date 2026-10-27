@@ -594,6 +594,11 @@ class ZulipAdapter(BasePlatformAdapter):
         # The hook carries no sender, so this is captured on the inbound
         # ``/model`` message and consumed when the picker opens.
         self._picker_initiators: dict[str, str] = {}
+        # Open flat choice pickers (#193: ``/reasoning``, ``/fast``). Same
+        # registry rules — bounded, expiring, single-use — over a smaller state.
+        self._choice_pickers = model_picker.PickerRegistry(
+            factory=model_picker.ChoiceState
+        )
         self._zulip_loop: Optional[asyncio.AbstractEventLoop] = None
         # The owner address #214 resolved, remembered so the approval authority
         # (#228) and the DM allowlist cannot disagree about who the owner is.
@@ -2471,6 +2476,115 @@ class ZulipAdapter(BasePlatformAdapter):
             self._model_pickers.pop(state.token)
             return SendResult(success=False, message_id="")
         return SendResult(success=True, message_id=str(message_id))
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected: Any,
+        metadata: Any = None,
+    ) -> SendResult:
+        """Gateway hook: one-tap buttons for a finite choice list (#193).
+
+        Returns ``success=False`` when nothing was sent, which is what makes the
+        gateway keep its own text status card — this hook deliberately has no
+        custom text fallback of its own.
+        """
+        if not choices:
+            return SendResult(success=False, message_id="")
+        topic = None
+        try:
+            target = _parse_target(chat_id)
+            if target["type"] == "stream":
+                topic = self._routed_topic(target["stream_id"], metadata)
+        except Exception:
+            topic = None
+        state = self._choice_pickers.open(
+            chat_id=chat_id,
+            initiator=self._picker_initiators.pop(str(chat_id), ""),
+            title=str(title or ""),
+            choices=list(choices),
+            session_key=str(session_key or ""),
+            on_choice_selected=on_choice_selected,
+            metadata=metadata,
+            topic=topic,
+        )
+        heading, widget = model_picker.render_choices(state, 0)
+        message_id = await self._send_picker_form(state, heading, widget)
+        if message_id is None:
+            self._choice_pickers.pop(state.token)
+            return SendResult(success=False, message_id="")
+        return SendResult(success=True, message_id=str(message_id))
+
+    async def handle_picker_reply(
+        self, content: str, sender_id: Any, chat_id: str
+    ) -> bool:
+        """Route one picker token to the family that owns it.
+
+        Both families share the inbound interception point, and a token that
+        names no live picker in either registry is still consumed and answered:
+        a ``cg:`` string leaking into the conversation as chat is the failure
+        this exists to prevent.
+        """
+        parsed = model_picker.parse_reply(content)
+        if parsed is None:
+            return False
+        _token, action = parsed
+        if action.kind in ("choices", "choose"):
+            return await self._handle_choice_reply(parsed, sender_id, chat_id)
+        return await self.handle_model_picker_reply(content, sender_id, chat_id)
+
+    async def _handle_choice_reply(
+        self,
+        parsed: tuple[str, model_picker.PickerAction],
+        sender_id: Any,
+        chat_id: str,
+    ) -> bool:
+        """Apply one flat-picker click: page turn, selection, or cancel."""
+        token, action = parsed
+        state = self._choice_pickers.peek(token)
+        if state is None:
+            await self._picker_notice_for_chat(chat_id, model_picker.EXPIRED_NOTICE)
+            return True
+
+        clicker = str(sender_id or "")
+        if not state.initiator:
+            # Nothing recorded: bind to the first person to engage. Single-use
+            # and short-lived, so this is a fallback, not the rule.
+            state.initiator = clicker
+        elif clicker and clicker != state.initiator:
+            await self._picker_notice(state, model_picker.NOT_YOURS_NOTICE)
+            return True
+
+        if action.kind == "choices":
+            heading, widget = model_picker.render_choices(state, action.page)
+            await self._send_picker_form(state, heading, widget)
+            return True
+
+        value = state.value(action.model_index)
+        self._choice_pickers.pop(token)
+        if value is None:
+            await self._picker_notice(state, model_picker.EXPIRED_NOTICE)
+            return True
+        if state.message_id is not None:
+            try:
+                await self.delete_message(int(state.message_id))
+            except Exception:
+                logger.debug(
+                    "zulip choice picker: could not delete the used form", exc_info=True
+                )
+        text = ""
+        if state.on_choice_selected is not None:
+            try:
+                text = str(await state.on_choice_selected(state.chat_id, value) or "")
+            except Exception as e:
+                logger.warning("zulip choice picker apply failed: %s", mask_pii(str(e)))
+                text = "Could not apply that choice — run the command again."
+        if text:
+            await self._picker_notice(state, text)
+        return True
 
     def note_picker_initiator(self, chat_id: str, sender_id: Any) -> None:
         """Remember who asked for a picker the host is about to render.
