@@ -728,6 +728,12 @@ choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
 | `ZULIP_HISTORY_WINDOW_HOURS` | `72` | `168` | how far back to harvest |
 | `ZULIP_HISTORY_MAX_CHARS` | `4000` | `8000` | cap on the quoted block |
 
+### Prompt
+
+| Variable | Default | Example | Notes |
+|----------|---------|---------|-------|
+| `ZULIP_PROMPT_PRESET` | `off` | `lean` | how much guidance is added to a turn: `off` (nothing — byte-identical to before this existed), `full` (the delivery core plus every section), `lean` (core plus what a chat-shaped bot needs). The core — identity, how a reply is produced, how a message reaches you, topics — is present in every preset and cannot be removed by one. [Details](docs/PROMPT-PRESETS.md) |
+
 ### Output, security and limits
 
 | Variable | Default | Example | Notes |
@@ -849,6 +855,7 @@ stay true.
 - **[AGENTS.md](AGENTS.md)** — the runtime guide the agent itself reads: addressing rules, metadata, injected context labels, troubleshooting
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — development setup, what CI runs, repo-specific rules
 - **[SECURITY.md](SECURITY.md)** — threat model, credential handling, explicit non-guarantees
+- **[docs/PROMPT-PRESETS.md](docs/PROMPT-PRESETS.md)** — what the prompt adds to a turn, and the part no preset can remove
 - **[SUPPORT.md](SUPPORT.md)** — where to ask for help
 - **[docs/RELEASING.md](docs/RELEASING.md)** — release procedure
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
