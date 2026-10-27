@@ -20,6 +20,9 @@ optional_env:
   - name: ZULIP_PROFILE
     description: 'Named default posture. "recommended" turns on the shared-teammate defaults (mention-gated streams, DM allowlist seeded from the Zulip bot owner, activity trace, on-demand history, observation, per-session queue, per-topic sessions, reaction triggers) without editing any other setting. An explicit ZULIP_* value always wins; unset means unchanged legacy behaviour (default: none)'
     prompt: "Profile (recommended | leave empty)"
+  - name: ZULIP_PROMPT_PRESET
+    description: 'Which prompt guidance the plugin adds to a turn. "off" (default) adds nothing; "full" adds the non-removable delivery core plus every optional section; "lean" keeps the core and only what a chat-shaped bot needs (drops domain and repo/PR guidance). The core — identity, how a reply is produced, how a message is addressed to you, and topics — is present in every preset and cannot be removed by one. An unknown value warns once and falls back to "full". Changing this never changes delivery, addressing, threading, reactions, chunking or approvals (default: off)'
+    prompt: "Prompt preset (off | full | lean)"
   - name: ZULIP_ALLOWED_USERS
     description: "Comma-separated emails allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
