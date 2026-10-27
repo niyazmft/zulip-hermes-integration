@@ -71,6 +71,7 @@ from .engagement import (
 )
 from .logger import mask_pii
 from .media import collect_inbound_media
+from . import prompt as prompt_surface
 from .reactions import ReactionLifecycle
 from .settings import resolve_chatmode as _resolve_chatmode
 from .text_utils import (
@@ -99,6 +100,30 @@ logger = logging.getLogger(__name__)
 OBSERVED_STREAM_CONTEXT = (
     "[Not addressed to you - observed stream traffic; answer only if it plainly needs you]"
 )
+
+
+def _with_prompt_prefix(channel_context: str) -> str:
+    """Put the plugin's prompt surface ahead of the turn's context (#223).
+
+    ``channel_context`` is the only per-turn text channel this adapter owns that
+    survives the host's native admission (the same field the soft-gate marker
+    uses), so the prompt is prepended there. Order matters: the static core and
+    the preset's sections come **first**, and anything per-turn follows, so the
+    cacheable prefix is byte-identical across turns.
+
+    Best-effort by contract. An install with no preset resolves to ``off`` and
+    gets its ``channel_context`` back unchanged, byte for byte; a prompt that
+    cannot be rendered must never drop or alter a message.
+    """
+    try:
+        prefix = prompt_surface.render_static()
+    except Exception:
+        logger.debug("zulip prompt preset unusable; turn sent without it", exc_info=True)
+        return channel_context
+    if not prefix:
+        return channel_context
+    context = (channel_context or "").strip()
+    return f"{prefix}\n\n{context}" if context else prefix
 
 
 async def handle_message(adapter: Any, message: dict) -> None:
@@ -760,7 +785,7 @@ async def handle_message(adapter: Any, message: dict) -> None:
         source=source,
         message_id=str(message_id),
         # Agent-facing context that survives native admission; metadata does not.
-        channel_context=channel_context,
+        channel_context=_with_prompt_prefix(channel_context),
     )
     # Adapter-private context: topic/stream identity, turn counters, trace
     # title. It must NOT ride ``MessageEvent.metadata``: the host's native

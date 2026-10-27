@@ -43,8 +43,8 @@ LAYERS: dict[int, tuple[str, ...]] = {
     ),
     1: (
         "activity_trace", "admin_actions", "approvals", "audit_logger",
-        "commands", "history", "policy", "probe", "reactions", "secret_guard",
-        "settings",
+        "commands", "history", "policy", "probe", "prompt", "reactions",
+        "secret_guard", "settings",
     ),
     2: ("approval_outcomes", "connection", "media", "pairing", "platform_api"),
     # inbound joined level 3 with #271: it now imports media, the owning module

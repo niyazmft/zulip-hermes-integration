@@ -37,6 +37,7 @@ PLUGIN_FILES = [
     "plugin.yaml",
     "policy.py",
     "probe.py",
+    "prompt.py",
     "queue_manager.py",
     "rate_limiter.py",
     "reaction_triggers.py",
