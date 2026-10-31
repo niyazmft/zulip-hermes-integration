@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-10-31
+
+A one-line release with a diagnostic purpose. A plugin command is answered before the
+gateway dispatches, so `/streams`, `/pin` and the rest wrote nothing at all to
+`gateway.log` -- and a working reply became indistinguishable from a message that never
+arrived, which is how a healthy bot got investigated as a broken one.
+
+### Highlights
+- **Plugin commands are visible in `gateway.log`.** A command now logs its name and a masked sender where it used to log nothing, so a reply that was answered directly can be told apart from one that was never received -- the arguments are never logged, and a command the plugin does not own is not claimed.
+
 ### Internal
 - **Plugin commands leave a trace in `gateway.log`.** A command is answered before the gateway dispatches, so `/streams`, `/pin` and the rest produced none of the `inbound message` / `response ready` lines a turn does; a working reply was indistinguishable from a message that never arrived. The command name is logged, never its arguments, and a command the plugin does not own is not logged at all.
 
