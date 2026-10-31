@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Internal
+- **Plugin commands leave a trace in `gateway.log`.** A command is answered before the gateway dispatches, so `/streams`, `/pin` and the rest produced none of the `inbound message` / `response ready` lines a turn does; a working reply was indistinguishable from a message that never arrived. The command name is logged, never its arguments, and a command the plugin does not own is not logged at all.
+
 ## [1.15.1] - 2026-10-31
 
 A patch release about believing your own verification. The compatibility gate was
