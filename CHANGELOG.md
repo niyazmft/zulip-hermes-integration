@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-10-31
+
+A patch release about believing your own verification. The compatibility gate was
+reading the host version from installed metadata, so a container-flattened install
+that reports `0.0.0` was rejected as below the declared floor -- a supported host
+failing a check that claimed to support it. Fixing that exposed how unreliable the
+hand-run device check was, so it is a script now, and the two dependencies that
+were quietly wrong (`PyYAML` for the config view, the Zulip SDK for setup) are
+either unnecessary or installable where a person can see it.
+
+### Highlights
+- **A gate that grades the real host:** an install that records `0.0.0` in its dist-info no longer reads as an unsupported Hermes -- the gate falls back to the host's own `hermes --version`, and an unstamped install is reported as unknown rather than below the floor.
+- **Device checks that can be trusted:** one command stages the working tree on a device, runs the real-host gate there, cross-checks the version it detected, and names which of the four host/plugin cells the device is in -- replacing a hand run that produced four confident false passes in one afternoon.
+- **Two dependencies that stopped being problems:** `config.sh --advanced` reads the manifest without PyYAML, so a host shipping only `ruamel.yaml` still lists every knob, and setup offers once to install the Zulip SDK into the interpreter the gateway itself runs from.
+
 ### Added
 - **Two test devices are now verifiable in one command.** `scripts/verify_device.sh` stages the working tree on a device, runs the real-host gate there, cross-checks the host version it detects against `hermes --version`, and names the state the device is in (`host new/old`, `plugin new/old`); `--matrix` covers both fixtures, and `docs/DEVICE-MATRIX.md` explains the four cells and why one device deliberately stays behind.
 - **Setup offers to install the Zulip SDK.** When it is not importable, `hermes gateway setup` asks once (default yes), installs into the interpreter the gateway itself runs from, re-probes, and continues if the install fails. One call site, never at import.
