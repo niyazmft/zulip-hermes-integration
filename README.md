@@ -33,7 +33,7 @@ Hermes gateway adapter for Zulip streams and private messages, with topic thread
 - [Stream Watching](#stream-watching)
 - [Actionable Refs](#actionable-refs)
 - [Sending Files](#sending-files)
-- [Environment Variable Reference](#environment-variable-reference)
+- [Configuration Reference](#configuration-reference)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [Documentation](#documentation)
@@ -73,8 +73,12 @@ hermes plugins enable zulip
 hermes gateway
 ```
 
-Step 3 can be done for you: `hermes gateway setup` prompts for each declared setting and
-writes them to `~/.hermes/.env`, so nothing needs editing by hand.
+Step 3 can be done for you: `hermes gateway setup` prompts for each declared setting, writes
+them to `~/.hermes/.env`, and asks one question — *"Use the recommended setup?"*, default
+yes — which writes `ZULIP_PROFILE=recommended`. If you would rather edit the file yourself, the
+repository ships [`.env.example`](.env.example) — a commented template with every knob and its
+default — so start from that instead of a blank file, and **uncomment `ZULIP_PROFILE=recommended`**
+there: it is the recommended posture, and leaving it commented gets you the plain legacy defaults.
 
 Then tell the gateway to run the platform, in `~/.hermes/config.yaml`:
 
@@ -85,12 +89,13 @@ gateway:
       enabled: true
 ```
 
-> ⚠️ Install the whole repository, not individual files — the plugin is 28 modules that
-> import from each other, so copying only `adapter.py` fails to load.
+> ⚠️ Install the whole repository, not individual files — the plugin is dozens of modules
+> that import from each other, so copying only `adapter.py` fails to load. The module map is
+> in [CONTRIBUTING.md § Project Layout](CONTRIBUTING.md#project-layout).
 
 ### Recommended setup — the whole product, one question
 
-The plugin reads 50+ knobs, but a fresh install needs none of them. Run setup,
+The plugin reads dozens of knobs, but a fresh install needs none of them. Run setup,
 answer **one** question, and stop:
 
 ```bash
@@ -114,8 +119,8 @@ bash ~/.hermes/plugins/zulip/config.sh --advanced  # every knob the plugin reads
 bash ~/.hermes/plugins/zulip/config.sh --wizard    # change them, deviations only
 ```
 
-The [Environment Variable Reference](#environment-variable-reference) below is
-the **advanced** surface: every knob, with examples.
+The [Configuration Reference](#configuration-reference) below covers the six decisions that
+matter and where the rest of the surface lives.
 
 **Unset `ZULIP_PROFILE` and none of this applies.** An install without the marker
 behaves exactly as it did before the flag existed — that is a tested contract, not
@@ -149,9 +154,10 @@ cd ~/.hermes/plugins/zulip && git pull origin main && hermes gateway restart
 ### Inspecting and changing settings
 
 With `ZULIP_PROFILE=recommended` you should rarely need to set anything, but
-`zulip config` answers "what did it decide for me?" by printing every knob with
-the **source** of its value — `env` (you set it), `profile` (supplied by the
-preset) or `default` (the built-in):
+`zulip config` answers "what did it decide for me?" by printing the knobs that matter
+with the **source** of each value — `env` (you set it), `profile` (supplied by the
+preset) or `default` (the built-in). The profile itself is the first row, which is
+the point: it is the one setting that decides all the others.
 
 ```bash
 bash ~/.hermes/plugins/zulip/config.sh             # the settings that matter
@@ -167,6 +173,15 @@ The wizard writes **only deviations** to `.env`: answering with the value the
 profile (or the built-in default) already supplies removes the entry instead of
 restating it, so the file stays a short list of where this install differs
 rather than a copy of the profile.
+
+That is also why the wizard never asks about the profile itself. It is the
+baseline those answers are measured against, so it is displayed but not offered —
+switching an existing install to it is one explicit edit to `.env`:
+
+```bash
+# ~/.hermes/.env
+ZULIP_PROFILE=recommended
+```
 
 DM the bot, or @-mention it in a stream it is subscribed to.
 
@@ -200,7 +215,7 @@ filtered — see [Troubleshooting](#troubleshooting).
 |---------|--------------|-------------|
 | **Streams & Topics** | talk to the bot in public streams; replies stay threaded to the topic they came from | the work should be visible to the team |
 | **DMs** | private messages, with per-user session isolation and policy controls | it's between you and the bot |
-| **Slash Commands** | `/streams`, `/user`, `/pin`, `/unpin` are answered directly; `/help`, `/status`, `/model` pass through to Hermes | you want a quick answer without spending a model call |
+| **Slash Commands** | `/streams`, `/user`, `/pin`, `/unpin` are answered directly; `/model`, `/reasoning`, `/fast`, `/pick-model` open a button picker; the rest passes through to Hermes | you want a quick answer without spending a model call |
 | **Status Reactions** | 👀 while working → ✅ when done (⚠️ on error) | you want to know the turn is alive without reading it |
 | **Typing Indicator** | Zulip shows the bot as typing while it works | you want to see it is alive without reading a reply |
 | **File Attachments** | inbound uploads are downloaded, cached where the host caches media, and attached to the turn — an image is handed to the model for vision, any other file's path is named to the agent; outbound files are sent as uploads | you're handing the bot a file, or want one back |
@@ -235,8 +250,8 @@ filtered — see [Troubleshooting](#troubleshooting).
 ## Configuration
 
 Credentials are set in [Quick Start](#quick-start). This section covers how the bot decides
-**when** to answer; every knob is also in the
-[environment reference](#environment-variable-reference).
+**when** to answer; the full surface is in [`.env.example`](.env.example) and
+[the Configuration Reference](#configuration-reference).
 
 ### Stream trigger modes
 
@@ -625,29 +640,30 @@ Available methods: `save_text()`, `save_bytes()`, `save_json()`, `read_text()`,
 `list_files()`, `clear()`. Temp files auto-delete after upload; path traversal and symlinks
 are rejected.
 
-## Environment Variable Reference
+## Configuration Reference
 
-Set these in `~/.hermes/.env`. Credentials can also be provided by the setup wizard.
-*This section is reference material — the features above are the place to start.*
+Six decisions change what the bot *is*. Everything else has a defensible default, and a
+fresh install needs none of it.
 
-### Required
+| Decision | Variable | Values |
+|----------|----------|--------|
+| Who may DM the bot | `ZULIP_DM_POLICY` | `open` *(default)* / `allowlist` / `pairing` / `disabled` |
+| Who may trigger it in streams | `ZULIP_GROUP_POLICY` (+ `ZULIP_GROUP_ALLOW_FROM`) | `open` *(default)* / `allowlist` / `disabled` |
+| When it answers in a stream | `ZULIP_CHATMODE` | `onmessage` *(default)* / `oncall` / `onchar` |
+| Who owns it | `ZULIP_OWNER_EMAIL` | found automatically under `ZULIP_PROFILE=recommended` |
+| What the model is told | `ZULIP_PROMPT_PRESET` | `off` *(default)* / `full` / `lean` — [what each adds](docs/PROMPT-PRESETS.md) |
+| Every default at once | `ZULIP_PROFILE` | `recommended` — see [the spec](docs/RECOMMENDED-PROFILE.md) |
 
-| Variable | Example | Notes |
-|----------|---------|-------|
-| `ZULIP_API_KEY` | `abcd1234…` | bot API key from Zulip settings |
-| `ZULIP_EMAIL` | `hermes-bot@your-org.zulipchat.com` | bot email |
-| `ZULIP_SITE` | `https://your-org.zulipchat.com` | realm URL, `https://` only unless insecure HTTP is allowed |
+**The rest of the surface lives in two places, and neither is this file:**
 
-### Access control
+- **[`.env.example`](.env.example)** — the annotated reference: every knob the plugin reads,
+  grouped, with its default and what it does. Copy it over `~/.hermes/.env` and uncomment.
+- **`bash ~/.hermes/plugins/zulip/config.sh --advanced`** — every knob *this* installed
+  version reads, with the value in force and the layer that supplied it (`env` / `profile` /
+  `default`). That is the authoritative answer for a running install, because it reads the
+  same manifest the setup prompt does.
 
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_DM_POLICY` | `open` | `pairing` | `open` / `allowlist` / `pairing` / `disabled` |
-| `ZULIP_ALLOWED_USERS` | *(empty)* | `dana@org.zulipchat.com` | comma-separated DM allowlist |
-| `ZULIP_GROUP_POLICY` | `open` | `allowlist` | who may trigger the bot in streams |
-| `ZULIP_GROUP_ALLOW_FROM` | *(empty)* | `dana@org.zulipchat.com` | comma-separated stream allowlist |
-| `ZULIP_ALLOW_ALL_USERS` | `false` | `false` | disables authorization entirely — **dev only** |
-| `ZULIP_MAX_MESSAGES_PER_MINUTE` | `60` | `10` | per-sender rate limit; `0` disables |
+Each feature section above also names its own knobs, which is why they are not repeated here.
 
 **Pairing mode:** a new user DMs the bot → the bot replies with a code that lasts 24 hours
 and works once → an admin approves it → they can DM immediately.
@@ -662,111 +678,6 @@ python3 -m zulip.pairing revoke them@org.zulipchat.com     # take access away
 Pending requests are stored next to the allowlist, and the running gateway notices a change
 on the next DM it handles — there is nothing to restart. `allowlist` mode is the simpler
 choice when you do not want a code at all: it just reads `ZULIP_ALLOWED_USERS`.
-
-### Stream triggers and addressing
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_CHATMODE` | `onmessage` | `oncall` | `onmessage` / `oncall` / `onchar` |
-| `ZULIP_REQUIRE_MENTION` | `true` | `false` | require @mention in streams |
-| `ZULIP_ONCHAR_PREFIXES` | `!,>` | `?` | prefixes that trigger `onchar` |
-| `ZULIP_STREAMS` | `*` | `general,dev` | streams to monitor (`*` = all) |
-| `ZULIP_STREAM_OVERRIDES` | *(empty)* | `{"bot lab": {"chatmode": "onmessage"}}` | per-stream chatmode overrides |
-| `ZULIP_SOFT_GATE` | `false` | `1` | dispatch every stream message, marking unaddressed ones in the turn context — [see above](#stream-watching) |
-| `ZULIP_OBSERVE_GROUP` | `false` | `1` | buffer non-addressed messages as topic context — **not with soft gate** |
-| `ZULIP_HOME_CHANNEL` | *(empty)* | `573423` | default stream id for cron `deliver: zulip` |
-
-### Sessions
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_TOPIC_SESSIONS` | `false` | `true` | give each topic its own session — rename-proof: sessions key on stable conversation ids, so renaming a topic continues its session; `/new` starts a fresh one |
-| `ZULIP_ORIGIN_LABEL_REFRESH` | `true` | `0` | keep each stored session origin's display labels current — workaround for a host defect that refuses background results after a rename ([details](#background-results-never-arrive)) |
-| `ZULIP_DM_SESSION_TURN_LIMIT` | `20` | `0` | rotate a DM session after N turns; `0` disables |
-| `ZULIP_SESSION_QUEUE` | `false` | `1` | hold a mid-run message behind the running turn |
-| `ZULIP_QUEUE_CAP` | `20` | `5` | how many may wait before dispatching immediately |
-
-### Exec approvals
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_APPROVAL_ON_TIMEOUT` | `allow` | `deny` | What an unanswered approval means: `allow` = today's behaviour (the gateway's refusal stands, the bot adds nothing); `deny` = also state the refusal in the topic and record `timeout` as the decider. The gateway owns the timeout and refuses either way — no setting makes silence run a command |
-| `ZULIP_APPROVAL_AUTHORITY` | `anyone` | `owner` | Who may decide an exec approval: `anyone` = today's behaviour; `owner` = only the bot owner (`bot_owner_id`, or `ZULIP_OWNER_EMAIL`), with anyone else's decision refused, stated in the topic and audited, and the prompt left open for the owner. With no owner resolvable, nobody can decide |
-
-### Sticky engagement
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_ENGAGEMENT_MODE` | `off` | `sticky_topic` | answer follow-ups without a mention |
-| `ZULIP_ENGAGEMENT_SCOPE` | `user` | `topic` | `user` = only the mentioner; `topic` = anyone |
-| `ZULIP_ENGAGEMENT_TTL_MINUTES` | `45` | `5` | idle minutes before the window lapses |
-| `ZULIP_ENGAGEMENT_EXPIRY_NOTICE` | `true` | `false` | post a notice when it lapses |
-| `ZULIP_ENGAGEMENT_EXPIRY_SCAN_SECONDS` | `30` | `10` | how often expiry is scanned |
-
-### Status reactions
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_REACTIONS_ENABLED` | `true` | `false` | master switch for 👀/✅/⚠️ |
-| `ZULIP_REACTION_START` | `eyes` | `hourglass` | reaction while working |
-| `ZULIP_REACTION_SUCCESS` | `check_mark` | `tada` | reaction on success |
-| `ZULIP_REACTION_ERROR` | `warning` | `x` | reaction on failure |
-| `ZULIP_REACTION_CLEAR_ON_FINISH` | `true` | `false` | remove the status reaction when done |
-
-### Action triggers
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_REACTION_TRIGGERS` | *(empty)* | `{"+1": "Proceed with the proposed step."}` | emoji name → instruction |
-| `ZULIP_REACTION_TRIGGER_ANY_MESSAGE` | `false` | `true` | allow triggers on messages the bot did not author |
-
-### Activity trace
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_ACTIVITY_TRACE` | `false` | `1` | master switch for the live status board |
-| `ZULIP_TRACE_COALESCE_MS` | `400` | `1000` | fold bursty updates into one edit |
-| `ZULIP_TRACE_MAX_RATE` | `2` | `5` | ceiling on edits per second |
-| `ZULIP_TRACE_MAX_CONTENT` | `3500` | `2000` | trim older steps past this length |
-| `ZULIP_TRACE_TOOL_MATCHER` | *(all tools)* | `terminal,!browser` | which tool calls become checkpoints |
-| `ZULIP_TRACE_BOARD_TTL` | `420` | `300` | rotate the board before the message-edit window closes (0 disables) |
-
-### History
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_HISTORY_MODE` | `off` | `on-demand` | `off` / `on-demand` / `always` |
-| `ZULIP_HISTORY_MAX_MESSAGES` | `8` | `20` | quoted messages per turn |
-| `ZULIP_HISTORY_WINDOW_HOURS` | `72` | `168` | how far back to harvest |
-| `ZULIP_HISTORY_MAX_CHARS` | `4000` | `8000` | cap on the quoted block |
-
-### Prompt
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_PROMPT_PRESET` | `off` | `lean` | how much guidance is added to a turn: `off` (nothing — byte-identical to before this existed), `full` (the delivery core plus every section), `lean` (core plus what a chat-shaped bot needs). The core — identity, how a reply is produced, how a message reaches you, topics — is present in every preset and cannot be removed by one. [Details](docs/PROMPT-PRESETS.md) |
-
-### Output, security and limits
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_TEXT_CHUNK_LIMIT` | `10000` | `4000` | max chars per outbound message |
-| `ZULIP_CHUNK_MODE` | `length` | `newline` | split by size, or on every newline |
-| `ZULIP_MAX_MESSAGE_LENGTH` | `20000` | `5000` | hard cap before chunking; `0` disables. Truncated content gets a `[...message truncated]` marker |
-| `ZULIP_RESPONSE_PREFIX` | *(empty)* | `🤖 ` | prepended to every reply |
-| `ZULIP_BLOCK_SECRET_LEAKS` | `true` | `false` | refuse to send a message containing a host credential |
-| `ZULIP_ALLOW_INSECURE_HTTP` | `false` | `true` | allow an `http://` or private `ZULIP_SITE` — the API key then travels unencrypted |
-| `ZULIP_MEDIA_MAX_MB` | `5` | `20` | max inbound attachment size (enforced before and after the download) |
-| `ZULIP_BLOCK_STREAMING` | `false` | `true` | experimental block streaming |
-
-### Timeouts and legacy
-
-| Variable | Default | Example | Notes |
-|----------|---------|---------|-------|
-| `ZULIP_CONNECT_TIMEOUT` | `30` | `10` | connection validation calls (seconds) |
-| `ZULIP_READ_TIMEOUT` | `60` | `120` | read/get API calls |
-| `ZULIP_SEND_TIMEOUT` | `90` | `120` | send/write API calls |
-| `ZULIP_TYPING_DELAY_SECONDS` | *(unset)* | `5` | legacy typing duration; typing is now owned by the gateway's keep-typing loop |
 
 ## Troubleshooting
 
@@ -865,12 +776,18 @@ stay true.
 ## Documentation
 
 - **[AGENTS.md](AGENTS.md)** — the runtime guide the agent itself reads: addressing rules, metadata, injected context labels, troubleshooting
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — development setup, what CI runs, repo-specific rules
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — development setup, what CI runs, the module map and repo-specific rules
 - **[SECURITY.md](SECURITY.md)** — threat model, credential handling, explicit non-guarantees
+- **[`.env.example`](.env.example)** — the annotated reference for every setting
+- **[docs/RECOMMENDED-PROFILE.md](docs/RECOMMENDED-PROFILE.md)** — what `ZULIP_PROFILE=recommended` turns on, and the precedence rule
 - **[docs/PROMPT-PRESETS.md](docs/PROMPT-PRESETS.md)** — what the prompt adds to a turn, and the part no preset can remove
+- **[docs/DEVICE-MATRIX.md](docs/DEVICE-MATRIX.md)** — the two test devices, the four host/plugin cells they cover, and how to verify one
+- **[docs/STABLE-TOPIC-SESSIONS.md](docs/STABLE-TOPIC-SESSIONS.md)** — why a topic keeps its session across a rename
+- **[docs/PARITY.md](docs/PARITY.md)** — how this adapter's behaviour stays level with the OpenClaw sibling, and the matrix behind it
 - **[SUPPORT.md](SUPPORT.md)** — where to ask for help
 - **[docs/RELEASING.md](docs/RELEASING.md)** — release procedure
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** — the community standard
 
 ## Related
 

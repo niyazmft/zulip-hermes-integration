@@ -81,11 +81,26 @@ Messages starting with `/` are intercepted **before** they reach you:
 | `/user` | plugin (delegates to AI) | ❌ No |
 | `/pin` | plugin (delegates to AI) | ❌ No |
 | `/unpin` | plugin (delegates to AI) | ❌ No |
-| `/unlisten`, `/stop-listening` | plugin (sticky-engagement stop) | ❌ No |
-| `/help`, `/status`, `/model`, `/stop`, `/new`, `/reset`, … | Hermes gateway (native) | ❌ No |
+| `/unlisten`, `/stop-listening`, `/stop_listening` | plugin (sticky-engagement stop) | ❌ No |
+| `/pick-model [provider]` | plugin (renders the model picker itself) | ❌ No |
+| `/model`, `/reasoning`, `/fast` | Hermes, rendered through the plugin's picker hook | ❌ No |
+| a picker reply (`mp:`, `cp:`, …) | plugin (`zulip.model_picker`) | ❌ No |
+| `/help`, `/status`, `/stop`, `/new`, `/reset`, … | Hermes gateway (native) | ❌ No |
 | anything else starting with `/` | gateway / falls through | ✅ Yes (treat as normal message) |
 
-**Do not silently drop `/` messages.** The plugin handles only the four admin commands (`/streams`, `/user`, `/pin`, `/unpin`) and the sticky-engagement stops; gateway-native commands fall through to Hermes, which owns them. If a message isn't one of the commands above, it's a user question for you. The admin commands delegate to you — if a user asks you to manage streams or pin a message, use the adapter's `star_message()`, `list_streams()`, `get_user_info()` methods.
+**Do not silently drop `/` messages.** The plugin answers the four admin commands (`/streams`,
+`/user`, `/pin`, `/unpin`), the sticky-engagement stops, and `/pick-model` itself; a bare
+`/model`, `/reasoning` or `/fast` is the gateway's command rendered through a hook this plugin
+supplies. Everything else falls through to Hermes, which owns it. If a message isn't one of the
+commands above, it's a user question for you. The admin commands delegate to you — if a user
+asks you to manage streams or pin a message, use the adapter's `star_message()`,
+`list_streams()`, `get_user_info()` methods.
+
+**A picker reply is not a message.** `/model`, `/reasoning` and `/fast` with no argument — and
+`/pick-model` — answer with a Zulip `zform` widget: a row of buttons. A click comes back as a
+token such as `mp:3:0:1`, which the plugin consumes and turns into an in-place form edit. You
+never see one. If a token-shaped string ever does reach you, it is a form left over from a
+previous install, not a request: do not answer it as chat.
 
 **A slash command is never mention-gated.** In any chatmode, including `oncall` in a quiet topic, a `/`-message reaches the gateway: a command is not conversation, and the gateway owns slash authorization. This is what makes the exec-approval buttons work — a click sends an ordinary `/approve` or `/deny` from the clicker. The sender rate limit, the stream filter and the policy gates still apply to it (issue #259).
 
@@ -286,11 +301,12 @@ edits as work proceeds, closed out when the run ends. It is **off by default**
 
 ## 🔌 Gateway Compatibility
 
-| Hermes gateway | Native exec-approval buttons | Reply routing (`thread_id`) | Typing cleared in the run's own topic |
-|----------------|------------------------------|-----------------------------|--------------------------------------|
-| **≥ 0.21.3** | ✅ Clickable buttons — Allow Once / Allow Session / Always Allow / Deny | ✅ | ✅ via `_stop_typing_with_metadata` + `_accepts_kwarg` |
-| **0.18.2 – 0.21.2** (`__min_hermes__`) | ➖ Not available (import guarded) — plain-text `/approve` / `/deny` | ✅ | ➖ Falls back to the stream's last-seen topic |
-| < 0.18.2 | ❌ Unsupported | — | — |
+| Hermes gateway | Native exec-approval buttons | Approval timeout notice | Reply routing (`thread_id`) | Typing cleared in the run's own topic |
+|----------------|------------------------------|-------------------------|-----------------------------|--------------------------------------|
+| **≥ 0.21.4** | ✅ Clickable buttons — Allow Once / Allow Session / Always Allow / Deny | ✅ The host posts its own | ✅ | ✅ via `_stop_typing_with_metadata` + `_accepts_kwarg` |
+| **0.21.3** | ✅ Same buttons | ➖ The plugin states the refusal under `ZULIP_APPROVAL_ON_TIMEOUT=deny` | ✅ | ✅ via the same helpers |
+| **0.18.2 – 0.21.2** (`__min_hermes__`) | ➖ Not available (import guarded) — plain-text `/approve` / `/deny` | ➖ The plugin states the refusal; there is no host notice to defer to | ✅ | ➖ Falls back to the stream's last-seen topic |
+| < 0.18.2 | ❌ Unsupported | — | — | — |
 
 Native buttons rely on the gateway's `_send_exec_approval_prompt` hook, imported defensively
 so older gateways still load. A real-host contract gate for these symbols lives in

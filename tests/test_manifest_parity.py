@@ -35,6 +35,11 @@ _ENV_NAME = re.compile(r"^(?:ZULIP|HERMES)_[A-Z0-9_]+$")
 #:   * ``runtime_scope.effective_value`` / ``resolve_setting`` -- the preset gate
 #:     (epic #211, child #213), which resolvers now read through
 #:   * ``settings._preset_value``  -- that module's local wrapper over the gate
+#:   * ``resolve_int_setting`` / ``_resolve_int_setting``  -- the positive-integer
+#:     resolver, which forwards its ``name`` to ``runtime_scope.get_setting``.
+#:     A local alias (``as _resolve_int_setting``) is the same call under another
+#:     name; missing it is how ``ZULIP_QUEUE_MAX_ACTIVE_SECONDS`` stayed invisible
+#:     to this check while being read at ``zulip/adapter.py``.
 _SETTING_ACCESSORS = frozenset(
     {
         "getenv",
@@ -42,7 +47,9 @@ _SETTING_ACCESSORS = frozenset(
         "get_setting",
         "effective_value",
         "resolve_setting",
+        "resolve_int_setting",
         "_preset_value",
+        "_resolve_int_setting",
     }
 )
 
@@ -253,4 +260,24 @@ def test_preset_gate_reads_are_detected():
         assert name in reads, (
             f"{name} is read through the preset gate but the parity scanner no "
             "longer sees it; add the accessor to _SETTING_ACCESSORS"
+        )
+
+
+def test_integer_resolver_reads_are_detected():
+    """A read through ``resolve_int_setting`` is still a read.
+
+    The integer resolver forwards its name to ``runtime_scope.get_setting``, so a
+    knob read only that way (``ZULIP_QUEUE_MAX_ACTIVE_SECONDS``, ``ZULIP_HISTORY_*") ``
+    was invisible here -- which let it be read at ``zulip/adapter.py`` and declared
+    nowhere, the exact drift this module exists to prevent.
+    """
+    reads = _code_env_reads()
+    for name in (
+        "ZULIP_QUEUE_MAX_ACTIVE_SECONDS",
+        "ZULIP_HISTORY_MAX_MESSAGES",
+        "ZULIP_QUEUE_CAP",
+    ):
+        assert name in reads, (
+            f"{name} is read through resolve_int_setting but the parity scanner no "
+            "longer follows it; add it to _SETTING_ACCESSORS"
         )
