@@ -213,11 +213,22 @@ python3 -m pytest tests/test_policy.py -v
 ## Documentation Claims Are Tested
 
 README.md, AGENTS.md and SECURITY.md make claims that are asserted in the suite —
-`tests/test_security_docs.py`, `tests/test_readme_docs.py`, `tests/test_compat_floor.py` and
-`tests/test_ci_workflow.py`. If you change configuration, defaults, the supported Hermes
-range, the README badges or the workflow shape, expect those tests to fail and **update the
-document to match the code — never the test to match the document.** Softening a claim to
-land a change is the failure mode these tests exist to prevent.
+`tests/test_security_docs.py`, `tests/test_readme_docs.py`, `tests/test_compat_floor.py`,
+`tests/test_ci_workflow.py` and `tests/test_doc_surface.py`. If you change configuration,
+defaults, the supported Hermes range, the README badges or the workflow shape, expect those
+tests to fail and **update the document to match the code — never the test to match the
+document.** Softening a claim to land a change is the failure mode these tests exist to
+prevent.
+
+**Which file owns a claim.** `README.md` is an introduction: the six decisions that matter
+and a pointer to the two authoritative surfaces. `zulip/plugin.yaml` declares every knob
+(Hermes drives setup, `doctor` and upgrade prompting from it), and [`.env.example`](.env.example)
+is the annotated reference that must list every declared knob. `AGENTS.md` is a runtime
+contract the agent reads, so it is exhaustive by design — a command or an injected block it
+omits is one the agent can mishandle. `tests/test_doc_surface.py` ties those three together:
+declared knobs must appear in `.env.example`, every `docs/*.md` must be linked from the
+README, and every command the plugin answers must be named in `AGENTS.md`. Add a knob, a doc
+or a command without updating the file that owns it and CI says so.
 
 ---
 

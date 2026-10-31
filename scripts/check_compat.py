@@ -55,6 +55,7 @@ import ast
 import importlib
 import importlib.metadata
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -149,14 +150,60 @@ def _read_min_hermes() -> str:
     return "unknown"
 
 
+def _banner_version(text: str) -> str:
+    """The ``X.Y[.Z]`` after a leading ``v`` in a version banner, or ``""``.
+
+    ``Hermes Agent v0.22.5 (2026.9.24) ...`` -> ``0.22.5``. The date in brackets is
+    deliberately ignored: it is the tag's date, not the version.
+    """
+    for token in (text or "").split():
+        if token[:1] not in ("v", "V"):
+            continue
+        parts = token[1:].split("-")[0].split(".")
+        if len(parts) >= 2 and all(part.isdigit() for part in parts):
+            return ".".join(parts)
+    return ""
+
+
+def _host_cli_version() -> str:
+    """The version the host's own CLI reports, or ``""``.
+
+    A container-flattened or editable install can carry ``0.0.0`` in its
+    dist-info while the CLI knows the release. lab-hermes is exactly that: it
+    reported ``hermes-agent==0.0.0`` from ``importlib.metadata``, ships
+    ``version = "0.0.0"`` in its own ``pyproject.toml``, exports no
+    ``gateway.__version__`` -- and yet prints ``Hermes Agent v0.22.5``. The CLI is
+    the source every document quotes, so ask it before concluding anything about
+    the floor.
+    """
+    try:
+        completed = subprocess.run(
+            ["hermes", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return _banner_version(completed.stdout)
+
+
 def _host_version() -> str:
     for dist in ("hermes-agent", "hermes"):
         try:
-            return importlib.metadata.version(dist)
+            found = importlib.metadata.version(dist)
         except importlib.metadata.PackageNotFoundError:
             continue
         except Exception:
             continue
+        # 0.0.0 is a placeholder, not a version: it is what an editable install or
+        # a flattened image records when nothing stamped the real one. Returning
+        # it makes the floor check reject a supported host, so fall through.
+        if _parse_version(found) not in (None, (0, 0, 0)):
+            return found
+    from_cli = _host_cli_version()
+    if from_cli:
+        return from_cli
     try:
         import gateway  # type: ignore
 

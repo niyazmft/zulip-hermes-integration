@@ -179,6 +179,9 @@ optional_env:
   - name: ZULIP_QUEUE_CAP
     description: "How many turns may wait behind one running session before a new message is dispatched immediately instead of being dropped (default: 20)"
     prompt: "Session queue cap"
+  - name: ZULIP_QUEUE_MAX_ACTIVE_SECONDS
+    description: "Free a session marked active for longer than this many seconds, so a run whose completion the host never reported cannot stall its topic forever (default: 1800)"
+    prompt: "Session queue active timeout (seconds)"
   - name: ZULIP_HISTORY_MODE
     description: 'Quote real stream/topic history into the prompt: "off", "on-demand" (only for history questions), or "always" (default: off)'
     prompt: "History context mode"

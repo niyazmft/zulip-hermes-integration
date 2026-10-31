@@ -65,6 +65,58 @@ def test_readme_states_the_floor_in_prose_and_in_the_badge():
     assert f"%3E%3D{__min_hermes__}" in text, "the Hermes badge must state the floor"
 
 
+def test_the_banner_version_ignores_the_tag_date():
+    """``v0.22.5 (2026.9.24)`` is version 0.22.5, not 2026.9.24.
+
+    Tags are dates and versions are semver; the banner carries both, so the
+    parser has to pick the right one.
+    """
+    gate = _load_gate()
+    banner = "Hermes Agent v0.22.5 (2026.9.24) \u00b7 upstream bf0203a7"
+    assert gate._banner_version(banner) == "0.22.5"
+    assert gate._banner_version("no version here") == ""
+    assert gate._banner_version("") == ""
+
+
+def test_a_real_metadata_version_is_preferred_over_the_cli(monkeypatch):
+    """The CLI is a fallback, not the first answer: a truthful dist is cheaper."""
+    gate = _load_gate()
+    monkeypatch.setattr(gate.importlib.metadata, "version", lambda _dist: "0.18.2")
+
+    def _must_not_run():
+        raise AssertionError("a truthful metadata version must not shell out")
+
+    monkeypatch.setattr(gate, "_host_cli_version", _must_not_run)
+    assert gate._host_version() == "0.18.2"
+
+
+def test_a_placeholder_metadata_version_falls_through_to_the_cli(monkeypatch):
+    """``0.0.0`` is not a version, it is a missing stamp.
+
+    lab-hermes records ``hermes-agent==0.0.0`` in its dist-info, ships
+    ``version = "0.0.0"`` in its own ``pyproject.toml``, exports no
+    ``gateway.__version__`` -- and still prints ``Hermes Agent v0.22.5``. Grading
+    it as host 0.0.0 rejected a supported host as below the floor, and made a
+    hand-run verification unreproducible, which is the worst outcome this gate
+    can have.
+    """
+    gate = _load_gate()
+    monkeypatch.setattr(gate.importlib.metadata, "version", lambda _dist: "0.0.0")
+    monkeypatch.setattr(gate, "_host_cli_version", lambda: "0.22.5")
+    assert gate._host_version() == "0.22.5"
+
+
+def test_a_placeholder_version_without_a_cli_is_unknown_not_zero(monkeypatch):
+    """And when nothing knows the version, the floor check must not fire on it."""
+    gate = _load_gate()
+    monkeypatch.setattr(gate.importlib.metadata, "version", lambda _dist: "0.0.0")
+    monkeypatch.setattr(gate, "_host_cli_version", lambda: "")
+    assert gate._host_version() == "unknown"
+    assert gate._check_host_meets_floor() == [], (
+        "an unstamped install is not evidence of an unsupported host (#230)"
+    )
+
+
 def test_typing_helpers_are_capabilities_not_requirements():
     """#230: their absence degrades typing, so it must never fail the gate."""
     gate = _load_gate()

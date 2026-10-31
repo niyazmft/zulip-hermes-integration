@@ -91,6 +91,18 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _sdk_present(monkeypatch):
+    """These tests are about the profile question, not about installing the SDK.
+
+    The Zulip SDK is genuinely absent from this test environment, so without this
+    the setup flow would ask "Install it now with pip?" and consume a yes/no answer
+    that belongs to the test -- silently changing what every assertion below is
+    measuring. The offer has its own file: ``tests/test_setup_sdk.py``.
+    """
+    monkeypatch.setattr(cli, "_zulip_sdk_available", lambda: True)
+
+
 CREDENTIALS = ("https://test.zulipchat.com", "bot@test.zulipchat.com", "secret-key")
 
 

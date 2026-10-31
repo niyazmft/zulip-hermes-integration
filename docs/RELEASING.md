@@ -141,6 +141,19 @@ when it names the version, because only then is the set of changes final.
    The pre-push hook runs the same checks as CI (pytest, `py_compile`, YAML
    validation, checksums) and writes `checksums.txt` in place.
 
+   The tree is now clean at the new version, which is the only moment the
+   deployed-integrity comparison means anything. **Verify both device cells before
+   tagging:**
+
+   ```bash
+   bash scripts/verify_device.sh --matrix
+   ```
+
+   `lab-hermes` is the new/new cell. `8x` deliberately runs an older Hermes, so it
+   reports capabilities as absent and its plugin as behind — that is the cell being
+   covered, not a failure ([docs/DEVICE-MATRIX.md](DEVICE-MATRIX.md)). A device that
+   is behind is reported, never graded.
+
 5. **Open the release PR** (`chore: release vX.Y.Z`), wait for CI, then
    **apply the `release` label** — this is what keeps the PR out of its own
    release notes. Merge it.
@@ -177,6 +190,18 @@ when it names the version, because only then is the set of changes final.
    `**N pull requests · M contributors**`, the collapsed **Curated release
    notes** and **What's Changed** sections (your handle on your own PRs, which is
    the whole credit record), and the three `Full changelog` links.
+
+9. **Deploy, then re-verify.** `update.sh` on each device — the updater is
+   version-gated, so a `git pull` deploys nothing. Update `lab-hermes` to the new
+   release, and `8x`'s **plugin only**: leave its Hermes where it is unless the
+   floor itself moves, because the old host is the coverage. Then:
+
+   ```bash
+   bash scripts/verify_device.sh --matrix
+   ```
+
+   Both cells should now pass with the new plugin version, `8x` still reporting its
+   degraded capabilities as absent.
 
 ## Notes
 

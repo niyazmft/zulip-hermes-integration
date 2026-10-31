@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Two test devices are now verifiable in one command.** `scripts/verify_device.sh` stages the working tree on a device, runs the real-host gate there, cross-checks the host version it detects against `hermes --version`, and names the state the device is in (`host new/old`, `plugin new/old`); `--matrix` covers both fixtures, and `docs/DEVICE-MATRIX.md` explains the four cells and why one device deliberately stays behind.
+- **Setup offers to install the Zulip SDK.** When it is not importable, `hermes gateway setup` asks once (default yes), installs into the interpreter the gateway itself runs from, re-probes, and continues if the install fails. One call site, never at import.
+
+### Fixed
+- **The compatibility gate no longer grades a placeholder version.** `scripts/check_compat.py` read the host version from installed metadata, and an editable or container-flattened install reports `0.0.0` (lab-hermes does), so a supported host was rejected as below the declared floor. It now falls back to `hermes --version` and treats an unstamped install as unknown rather than as an incompatibility.
+- **`config.sh --advanced` no longer needs PyYAML.** The manifest is read directly when `import yaml` fails, so a host that ships only `ruamel.yaml` still lists every declared knob.
+- **`zulip config` shows the profile.** `ZULIP_PROFILE` — the one setting that decides every other row — was visible only under `--advanced`. It is the first row of the curated view now, with its value and source.
+- **`ZULIP_QUEUE_MAX_ACTIVE_SECONDS` is declared.** It was read by the adapter and documented nowhere; the manifest-parity scanner now follows `resolve_int_setting`, so the knob reaches setup and `--advanced`.
+
+### Docs
+- **One owner per claim.** `README.md` is an introduction again: the six decisions that matter plus pointers to `.env.example` (the annotated reference) and `config.sh --advanced` (the effective view). The 143-line duplicated environment table is gone.
+- **`.env.example` is the annotated reference**, and now lists every declared knob, including the four it was missing.
+- **`AGENTS.md` documents the picker commands** and states that a picker reply is not a message; its gateway table gains the 0.21.4 row for the host's own approval-timeout notice.
+- **Every doc is linked from the README**, including `docs/DEVICE-MATRIX.md`, `docs/PARITY.md` and `docs/STABLE-TOPIC-SESSIONS.md`, which nothing referred to.
+
+### Internal
+- `tests/test_doc_surface.py` ties the documentation set together: declared knobs must appear in `.env.example`, every `docs/*.md` must be linked from the README, and every command the plugin answers must be named in `AGENTS.md`.
+
 ## [1.15.0] - 2026-10-28
 
 Two surfaces got a better shape this release: **what a person chooses**, and **what the model is told**. Choosing a model or a reasoning level is now a row of buttons in the conversation rather than a command whose syntax you have to remember, and the instruction block is split so an operator can trim domain guidance without being able to remove the rules that make replies work. Alongside them, the status board can finally say how much context a turn carried.

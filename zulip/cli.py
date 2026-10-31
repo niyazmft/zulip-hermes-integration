@@ -41,6 +41,8 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +76,90 @@ STANDALONE_DEFAULT_TOPIC = "general"
 def check_requirements() -> bool:
     """Return True if the zulip SDK is installed."""
     return zulip_client.import_zulip_sdk() is not None
+
+
+# --- the SDK: probe, and exactly one consented install ----------------------
+#
+# The plugin cannot sign in or send a message without the SDK, and
+# ``check_requirements`` reports that to Hermes, which correctly refuses to enable
+# the plugin. Reporting is not repairing, though: a first-time user has no way to
+# act on that report from inside the setup flow. So the offer lives here -- one
+# call site, with a human present and expecting prompts -- and nowhere else.
+#
+# Deliberately NOT at import, on a message path, or during an update. A plugin that
+# pip-installs when it loads mutates the environment the *host* runs from, needs
+# network at deploy time, fails silently into a startup log, and can fight a
+# version the host already pinned.
+
+#: The SDK requirement, deliberately identical to ``requirements.txt``.
+ZULIP_SDK_REQUIREMENT = "zulip>=0.9.0"
+
+#: Bound on the install, so an unreachable index cannot hold setup open forever.
+SDK_INSTALL_TIMEOUT_SECONDS = 300
+
+
+def _zulip_sdk_available() -> bool:
+    """Whether the real Zulip SDK is importable from this interpreter."""
+    return zulip_client.import_zulip_sdk() is not None
+
+
+def install_zulip_sdk() -> tuple[bool, str]:
+    """Install the SDK into the *running* interpreter. Returns ``(ok, output)``.
+
+    ``sys.executable`` on purpose: the plugin has to be installed where the gateway
+    runs, and that is the interpreter executing this code. Split out from the prompt
+    so the consent flow is testable without a network.
+    """
+    command = [sys.executable, "-m", "pip", "install", ZULIP_SDK_REQUIREMENT]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=SDK_INSTALL_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return completed.returncode == 0, (completed.stderr or completed.stdout or "").strip()
+
+
+def ensure_zulip_sdk(
+    *, prompt_yes_no, print_info, print_warning, print_success
+) -> bool:
+    """Offer to install the SDK when it is missing; True when it is importable after.
+
+    The printer/prompt functions are injected rather than imported, so this stays
+    free of ``hermes_cli`` and testable in isolation -- the same reason
+    ``interactive_setup`` lazy-imports that package.
+
+    Default answer is **yes**: a setup that leaves the plugin unable to send a
+    message is not finished. Declining is one keystroke and prints the exact
+    command, so nothing is hidden and nothing is forced.
+    """
+    if _zulip_sdk_available():
+        return True
+
+    manual = f"{sys.executable} -m pip install '{ZULIP_SDK_REQUIREMENT}'"
+    print_info("")
+    print_info("The Zulip Python SDK is not installed in this environment.")
+    print_info(f"   Hermes needs it to sign in and send messages: {ZULIP_SDK_REQUIREMENT}")
+    if not prompt_yes_no("Install it now with pip?", True):
+        print_warning("Skipped. Install it before starting the gateway:")
+        print_warning(f"   {manual}")
+        return False
+
+    print_info(f"   Running: {manual}")
+    ok, output = install_zulip_sdk()
+    if ok and _zulip_sdk_available():
+        print_success("Zulip SDK installed.")
+        return True
+
+    print_warning("The SDK is still not importable; Hermes will not enable Zulip until it is:")
+    for line in output.splitlines()[-3:]:
+        if line.strip():
+            print_warning(f"   {line.strip()}")
+    print_warning(f"   {manual}")
+    return False
 
 
 def validate_config(config: Any) -> bool:
@@ -166,6 +252,16 @@ def interactive_setup() -> None:
         print_warning("API key is required — skipping Zulip setup")
         return
     save_env_value("ZULIP_API_KEY", api_key.strip())
+
+    # Offer the SDK now, while a human is here and expecting prompts. It is the one
+    # dependency the plugin cannot degrade without, and this is the only place that
+    # repairs it (see ensure_zulip_sdk).
+    ensure_zulip_sdk(
+        prompt_yes_no=prompt_yes_no,
+        print_info=print_info,
+        print_warning=print_warning,
+        print_success=print_success,
+    )
 
     # One question, default yes (epic #211, child #215).
     #
@@ -535,6 +631,22 @@ CURATED_KNOBS: tuple[CuratedKnob, ...] = (
     ),
 )
 
+#: Shown in the curated view, but deliberately **not** a wizard question.
+#:
+#: The profile is the baseline every other curated knob is measured against
+#: (:func:`baseline_value`), not a deviation from it. Offering it in the wizard
+#: would let one answer rewrite the meaning of every other answer collected in the
+#: same run -- "set activity_trace=false" means one thing under the recommended
+#: posture and another under the legacy defaults. Making it settable needs a
+#: decision about what the wizard writes when you pick it (#299); until then it is
+#: displayed with its source, because "what did it decide for me?" is unanswerable
+#: without the one knob that decides the rest.
+_PROFILE_KNOB = "ZULIP_PROFILE"
+_PROFILE_SUMMARY = (
+    "Named default posture; 'recommended' turns on the shared-teammate setup. "
+    "Unset means the legacy defaults"
+)
+
 
 @dataclass(frozen=True)
 class ConfigRow:
@@ -555,16 +667,78 @@ def manifest_path() -> Path:
     return Path(__file__).resolve().parent / "plugin.yaml"
 
 
+#: A manifest section header: ``requires_env:`` / ``optional_env:``.
+_MANIFEST_SECTION = re.compile(r"^(requires_env|optional_env):\s*$")
+#: A manifest entry's first line: ``  - name: ZULIP_FOO``.
+_MANIFEST_ENTRY = re.compile(r"^\s+-\s+name:\s*(\S+)\s*$")
+#: An entry's description line: ``    description: "..."``.
+_MANIFEST_DESCRIPTION = re.compile(r"^\s+description:\s*(.+?)\s*$")
+
+
+def _unquote(raw: str) -> str:
+    """Strip one layer of YAML quoting, or return the text unchanged."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        inner = raw[1:-1]
+        return inner.replace("''", "'") if raw[0] == "'" else inner.replace('\\"', '"')
+    return raw
+
+
+def _declared_settings_without_yaml(text: str) -> list[tuple[str, str]]:
+    """``(name, description)`` read straight out of the manifest, without PyYAML.
+
+    ``config.sh`` has to work on an install whose gateway environment has no YAML
+    library. lab-hermes is exactly that: it ships ``ruamel.yaml`` and no ``yaml``,
+    so the lazy ``import yaml`` below turned the documented ``config.sh --advanced``
+    into a traceback. Installing PyYAML into the host's venv would fix one machine
+    and mutate the environment Hermes itself runs from -- which is why this reads
+    our own manifest instead.
+
+    This is the degraded path, so it is tolerant by design: a line it does not
+    recognise is skipped rather than raised on. ``tests/test_config_command.py``
+    compares the result against ``yaml.safe_load`` wherever PyYAML is present, so
+    drift fails in CI rather than on a user's device.
+    """
+    rows: list[tuple[str, str]] = []
+    section: str | None = None
+    for line in text.splitlines():
+        header = _MANIFEST_SECTION.match(line)
+        if header:
+            section = header.group(1)
+            continue
+        if line.strip() and not line[:1].isspace():
+            # Any other top-level key ends the section we were reading.
+            section = None
+            continue
+        if section is None:
+            continue
+        entry = _MANIFEST_ENTRY.match(line)
+        if entry:
+            rows.append((entry.group(1), ""))
+            continue
+        description = _MANIFEST_DESCRIPTION.match(line)
+        if description and rows:
+            rows[-1] = (rows[-1][0], _unquote(description.group(1)))
+    return rows
+
+
 def declared_settings() -> list[tuple[str, str]]:
     """``(name, description)`` for every declared knob, in manifest order.
 
     The manifest is the single source of truth for *which* knobs exist, so the
     view cannot drift from what the plugin actually reads -- the parity test in
     ``tests/test_manifest_parity.py`` already ties the manifest to the code.
-    """
-    import yaml  # local: the plugin must import without PyYAML outside the CLI
 
-    data = yaml.safe_load(manifest_path().read_text(encoding="utf-8")) or {}
+    PyYAML is used when present and is **not** a deployment dependency: a host
+    without it still gets the full list, from :func:`_declared_settings_without_yaml`.
+    """
+    text = manifest_path().read_text(encoding="utf-8")
+    try:
+        import yaml  # local: the plugin must import without PyYAML outside the CLI
+    except ImportError:
+        return _declared_settings_without_yaml(text)
+
+    data = yaml.safe_load(text) or {}
     rows: list[tuple[str, str]] = []
     for section in ("requires_env", "optional_env"):
         for entry in data.get(section) or []:
@@ -593,7 +767,9 @@ def effective_config(*, advanced: bool = False) -> list[ConfigRow]:
     Provenance is the whole reason child #212's resolver returns it.
     """
     rows: list[ConfigRow] = []
-    curated = {knob.name for knob in CURATED_KNOBS}
+    curated = {knob.name for knob in CURATED_KNOBS} | {_PROFILE_KNOB}
+    posture = runtime_scope.resolve_setting(_PROFILE_KNOB, "")
+    rows.append(ConfigRow(_PROFILE_KNOB, posture.value, posture.source, _PROFILE_SUMMARY))
     for knob in CURATED_KNOBS:
         resolved = runtime_scope.resolve_setting(knob.name, knob.default)
         rows.append(
@@ -638,6 +814,9 @@ def render_config(*, advanced: bool = False) -> str:
             "",
             "  The remaining declared knobs are plumbing with a default of their",
             "  own; add --advanced to list them.",
+            f"  {_PROFILE_KNOB} is the baseline every row above is measured against,",
+            "  so it is shown here but never asked by the wizard: change it by",
+            "  editing .env (the setup wizard writes it for you).",
         ]
     if soft_gate_observe_conflict():
         # Same string the adapter logs at startup, so the CLI and the log cannot
