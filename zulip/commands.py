@@ -182,6 +182,14 @@ def handle_command(
     if handler is None:
         return CommandResult(handled=False)
 
+    # One line, so a plugin command is visible at all. A command is answered before
+    # the gateway dispatches, so it produces none of the ``inbound message`` /
+    # ``response ready`` lines a turn does -- which made a working /streams reply
+    # indistinguishable from a message that had never arrived. The name and a masked
+    # sender only: arguments can carry an email address or a key, and this file is
+    # durable.
+    logger.info("zulip command [name=%s sender=%s]", cmd, mask_pii(sender_email))
+
     try:
         reply = handler(args, chat_id, sender_email, sender_name)
         return CommandResult(handled=True, reply=reply)

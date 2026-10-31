@@ -363,3 +363,50 @@ class TestTheNamespaceGateFires:
         assert "GATEWAY_KNOWN_COMMANDS" in text or "GATEWAY_NATIVE_COMMANDS" in text, (
             "a check that does not say what it compared against cannot be reviewed"
         )
+
+
+class TestCommandLogging:
+    """A command leaves a trace; it does not leave a transcript.
+
+    A plugin command is answered before the gateway dispatches, so it produces none
+    of the ``inbound message`` / ``response ready`` lines a turn does. Before this,
+    a working ``/streams`` reply was indistinguishable in ``gateway.log`` from a
+    message that had never arrived -- which is exactly how a healthy bot got
+    investigated as a broken one.
+    """
+
+    def test_a_handled_command_is_logged_with_its_name(self, caplog):
+        with caplog.at_level("INFO"):
+            result = handle_command("/streams", "573423", "dana@example.com", "Dana")
+
+        assert result.handled is True
+        assert "zulip command [name=streams" in caplog.text
+
+    def test_the_arguments_are_never_logged(self, caplog, monkeypatch):
+        """Arguments can carry an address or a key, and this file is durable."""
+        monkeypatch.setitem(_COMMANDS, "echo", lambda args, chat_id, email, name: "ok")
+
+        with caplog.at_level("INFO"):
+            result = handle_command(
+                "/echo s3cr3t-token@example.com", "1", "dana@example.com", "Dana"
+            )
+
+        assert result.handled is True
+        assert "name=echo" in caplog.text
+        assert "s3cr3t-token" not in caplog.text
+
+    def test_the_sender_is_masked(self, caplog):
+        with caplog.at_level("INFO"):
+            handle_command("/streams", "1", "dana@example.com", "Dana")
+
+        assert "dana@example.com" not in caplog.text, (
+            "the log names the command, not the person's address in the clear"
+        )
+
+    def test_a_command_the_plugin_does_not_own_is_not_logged(self, caplog):
+        """/help, /model and the rest belong to the gateway; claiming them would lie."""
+        with caplog.at_level("INFO"):
+            result = handle_command("/help", "1", "dana@example.com", "Dana")
+
+        assert result.handled is False
+        assert "zulip command" not in caplog.text
