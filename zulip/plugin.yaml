@@ -4,6 +4,15 @@ kind: platform
 version: 1.15.2
 description: Zulip gateway adapter for Hermes Agent. Supports streams with topics and private messages.
 author: Niyaz
+# Declared so Hermes' package manager (PM) admits the SDK into EVERY dependency
+# generation it builds, instead of relying on a host-baked core venv. A
+# generation venv does not see /opt/hermes/.venv (pm.activate_dependencies puts
+# only the selected generation's site-packages on sys.path), so without this
+# declaration the adapter's `check_requirements()` fails inside the profile
+# runtime scope and Hermes silently serves 2 platforms (telegram + api_server)
+# with no warning.
+python_dependencies:
+  - "zulip>=0.9.1,<0.10"
 requires_env:
   - name: ZULIP_API_KEY
     description: "Bot API key from Zulip Settings → Bots"
