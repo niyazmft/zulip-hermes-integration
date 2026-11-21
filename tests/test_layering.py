@@ -38,7 +38,7 @@ LAYERS: dict[int, tuple[str, ...]] = {
         "conversations", "dedupe_store", "display_names", "engagement",
         "fallback_reader", "logger", "queue_manager", "rate_limiter",
         "reaction_triggers", "recovery", "refs", "runtime_scope",
-        "session_queue", "text_utils", "updater", "version", "workspace",
+        "session_queue", "text_utils", "topic_lock", "updater", "version", "workspace",
         "zulip_client",
     ),
     1: (

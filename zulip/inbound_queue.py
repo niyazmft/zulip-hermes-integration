@@ -291,6 +291,13 @@ class SessionQueueController:
         on arrival (issue #151).
         """
         adapter = self._adapter
+        stamp = outbound.route_metadata(event) or {}
+        if "locked_topic_addressed" in stamp:
+            # Place the normal dispatch acknowledgement before starting the
+            # deferred task. An immediate lock error must be able to replace it.
+            await adapter._mark_read(message_id)
+            await reactions.success()
+            return await adapter.handle_message(event)
         try:
             await adapter.handle_message(event)
         except Exception:

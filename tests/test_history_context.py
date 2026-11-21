@@ -7,6 +7,7 @@ short timeout so it can never delay or fail a dispatch. DMs are never
 harvested across.
 """
 
+import asyncio
 import time
 from unittest.mock import AsyncMock
 
@@ -117,6 +118,92 @@ def _topic_message(text, *, msg_id, age_seconds=60, sender="Alice"):
         "sender_full_name": sender,
         "timestamp": time.time() - age_seconds,
     }
+
+
+@pytest.mark.asyncio
+async def test_coordinated_turn_fetches_after_the_previous_turn(make_adapter, monkeypatch, tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+    from zulip.topic_lock import TopicLock
+
+    adapter = make_adapter(
+        ZULIP_TOPIC_LOCK_DIR=str(tmp_path), ZULIP_TOPIC_SESSIONS="true", ZULIP_HISTORY_MODE="off"
+    )
+    await adapter._handle_message(_stream_msg("@**Test Bot** second", msg_id=12))
+    event = adapter.handle_message.await_args.args[0]
+    adapter._active_sessions = {}
+    adapter._session_tasks = {}
+    adapter._session_key_for_event = lambda _: "session"
+    assert adapter.client.get_messages_calls == []
+    previous_bot = TopicLock(str(tmp_path), adapter.site)
+
+    started = asyncio.Event()
+    admitted = asyncio.Event()
+    delivery_done = asyncio.Event()
+
+    async def admit(_event):
+        adapter._session_tasks["session"] = asyncio.create_task(delivery_done.wait())
+        admitted.set()
+
+    process = AsyncMock(side_effect=admit)
+    monkeypatch.setattr(BasePlatformAdapter, "handle_message", process)
+    async with previous_bot.hold("1", "GENERAL"):
+        async def run_turn():
+            started.set()
+            await adapter._run_coordinated_turn(event, event._zulip_meta)
+
+        waiting = asyncio.create_task(run_turn())
+        await started.wait()
+        assert adapter.client.get_messages_calls == []
+        process.assert_not_awaited()
+        adapter.client._client.get_messages_result = {
+            "result": "success",
+            "messages": [_topic_message("Synthetic first reply", msg_id=13, sender="First Bot")],
+        }
+    await asyncio.wait_for(admitted.wait(), 2)
+    process.assert_awaited_once_with(event)
+    assert "Synthetic first reply" in event.text
+    assert adapter.client.get_messages_calls[0]["narrow"][-1] == {
+        "operator": "topic", "operand": "general",
+    }
+
+    acquiring = asyncio.Event()
+
+    async def next_turn():
+        acquiring.set()
+        async with previous_bot.hold("1", "GENERAL"):
+            pass
+
+    next_waiter = asyncio.create_task(next_turn())
+    await acquiring.wait()
+    assert not next_waiter.done()
+    delivery_done.set()
+    await asyncio.wait_for(waiting, 2)
+    await asyncio.wait_for(next_waiter, 2)
+
+
+@pytest.mark.asyncio
+async def test_coordinated_turn_skips_model_when_history_fails(make_adapter, monkeypatch, tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = make_adapter(ZULIP_TOPIC_LOCK_DIR=str(tmp_path), ZULIP_TOPIC_SESSIONS="true")
+    adapter.client._client.get_messages_result = {"result": "error", "msg": "synthetic outage"}
+    await adapter._handle_message(_stream_msg("@**Test Bot** second", msg_id=12))
+    event = adapter.handle_message.await_args.args[0]
+    adapter._active_sessions = {}
+    adapter._session_tasks = {}
+    adapter._session_key_for_event = lambda _: "session"
+    process = AsyncMock()
+    monkeypatch.setattr(BasePlatformAdapter, "handle_message", process)
+    adapter._place_error_reaction = AsyncMock()
+    await adapter._run_coordinated_turn(event, event._zulip_meta)
+    process.assert_not_awaited()
+    adapter._place_error_reaction.assert_awaited_once_with(event)
+
+    async def take_lock():
+        async with adapter._topic_lock.hold("1", "general"):
+            pass
+
+    await asyncio.wait_for(take_lock(), 2)
 
 
 class TestHistoryModeResolution:

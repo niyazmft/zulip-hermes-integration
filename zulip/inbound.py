@@ -781,7 +781,11 @@ async def handle_message(adapter: Any, message: dict) -> None:
     # decided this turn, so quoted context can never change what the bot is
     # allowed to answer or cost a round-trip on a message that is dropped.
     # DMs are never harvested: their sessions are per-user and isolated.
-    if msg_type == "stream":
+    if msg_type == "stream" and adapter._topic_lock is not None and not is_command(content):
+        # Fresh context must be fetched after other bots have finished their
+        # turns. Pass the request to the gateway's actual processing task.
+        extra_meta["locked_topic_addressed"] = addressed
+    elif msg_type == "stream":
         context_report: list = []
         quoted = await adapter._quoted_topic_history(
             stream_name,

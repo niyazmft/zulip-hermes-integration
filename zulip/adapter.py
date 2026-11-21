@@ -63,6 +63,7 @@ from .session_queue import (
     SessionQueue,
     SessionQueueConfig,
 )
+from .topic_lock import TopicLock
 from .commands import is_command
 from .policy import (
     PolicyEngine,
@@ -468,6 +469,11 @@ class ZulipAdapter(BasePlatformAdapter):
                     INSECURE_HTTP_ENV,
                     mask_pii(self.site),
                 )
+
+        lock_dir = (runtime_scope.get_setting("ZULIP_TOPIC_LOCK_DIR") or "").strip()
+        if lock_dir and not _topic_sessions_enabled():
+            raise ValueError("ZULIP_TOPIC_LOCK_DIR requires ZULIP_TOPIC_SESSIONS=true")
+        self._topic_lock = TopicLock(lock_dir, self.site) if lock_dir else None
 
         _zulip = zulip_client.import_zulip_sdk()
         if not _zulip:
@@ -1883,6 +1889,68 @@ class ZulipAdapter(BasePlatformAdapter):
             mask_pii(topic),
         )
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        stamp = getattr(event, "_zulip_meta", None) or {}
+        if self._topic_lock is None or "locked_topic_addressed" not in stamp:
+            return await super().handle_message(event)
+
+        # Return promptly, like the host does. The existing per-session queue
+        # can call this from the previous owner's completion hook.
+        task = asyncio.create_task(self._run_coordinated_turn(event, stamp))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_coordinated_turn(self, event: MessageEvent, stamp: dict) -> None:
+        session_key = self._session_key_for_event(event)
+        if session_key is None:
+            # Older hosts build the key inline, without an event-key helper.
+            from gateway.session import build_session_key
+
+            extra = self.config.extra or {}
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            )
+        try:
+            async with self._topic_lock.hold(event.source.chat_id, stamp["topic"]):
+                # A native command or uncoordinated turn can already own the
+                # local session. Stay out of Hermes' busy-input queue, where
+                # admission no longer owns the task that will post the reply.
+                while session_key in self._active_sessions:
+                    owner = self._session_tasks.get(session_key)
+                    if owner is None:
+                        await asyncio.sleep(0.1)  # a command can own just the guard
+                    elif owner.done():
+                        break  # the host heals a finished owner on admission
+                    else:
+                        await asyncio.wait({owner})
+                report: list = []
+                quoted = await self._quoted_topic_history(
+                    event.source.chat_name,
+                    stamp["stream_id"],
+                    stamp["topic"],
+                    content=event.text,
+                    addressed=stamp["locked_topic_addressed"],
+                    report_out=report,
+                    require_fresh=True,
+                )
+                if report[0].harvest != history.HARVEST_INJECTED:
+                    raise ValueError("fresh topic history unavailable")
+
+                event.text = quoted + event.text
+                stamp["context_report"] = report[0]
+                await super().handle_message(event)
+                owner = self._session_tasks.get(session_key)
+                if owner is not None:
+                    # The host's admission returns before generation or delivery.
+                    # Wait for the owner, including its final sends, before unlock.
+                    await owner
+        except (OSError, ValueError) as exc:
+            logger.warning("zulip coordinated turn failed: %s", mask_pii(str(exc)))
+            await self._place_error_reaction(event)
+            await self._drain_session_queue(event)
+
     async def _quoted_topic_history(
         self,
         stream_name: str,
@@ -1892,15 +1960,16 @@ class ZulipAdapter(BasePlatformAdapter):
         content: str,
         addressed: bool,
         report_out: list | None = None,
+        require_fresh: bool = False,
     ) -> str:
         """Quoted context prepended to the agent-facing body for one turn.
 
         Two independent sources: the observed-topic buffer (#153), which costs
         nothing and only exists for a turn the bot was addressed in, and an
-        optional harvested slice of real topic history (#148). Both are
-        best-effort — a failed harvest is logged and dropped — and neither ever
-        reaches a slash command or a policy/rate-limit gate, which have already
-        been decided by the time this runs.
+        optional harvested slice of real topic history (#148). A normal harvest
+        is best-effort. A coordinated turn requires a fresh slice and checks
+        its result before admission. Neither block reaches a slash command
+        or a policy/rate-limit gate.
 
         ``report_out`` is an optional one-slot collector: when given, exactly one
         :class:`zulip.history.ContextReport` describing this turn is appended to
@@ -1929,13 +1998,19 @@ class ZulipAdapter(BasePlatformAdapter):
                     blocks.append(f"{history.OBSERVED_HISTORY_LABEL}\n{observed}")
                     observed_chars, observed_messages = history.measure_block(observed)
 
-            if self._history_mode != "off" and (
+            if require_fresh:
+                harvested, harvest = await self._harvest_history_block(
+                    stream_name, topic, require_fresh=True
+                )
+            elif self._history_mode != "off" and (
                 self._history_mode == "always" or history.history_intent_matches(content)
             ):
                 harvested, harvest = await self._harvest_history_block(stream_name, topic)
-                if harvested:
-                    blocks.append(f"{history.FETCHED_HISTORY_LABEL}\n{harvested}")
-                    history_chars, history_messages = history.measure_block(harvested)
+            else:
+                harvested = ""
+            if harvested:
+                blocks.append(f"{history.FETCHED_HISTORY_LABEL}\n{harvested}")
+                history_chars, history_messages = history.measure_block(harvested)
 
         if report_out is not None:
             report_out.append(
@@ -1952,7 +2027,9 @@ class ZulipAdapter(BasePlatformAdapter):
             return ""
         return "\n\n".join(blocks) + "\n\n"
 
-    async def _fetch_stream_history(self, stream_name: str, topic: str) -> list[dict]:
+    async def _fetch_stream_history(
+        self, stream_name: str, topic: str, *, require_fresh: bool = False
+    ) -> list[dict]:
         """Narrow ``[stream, topic]`` fetch of the newest topic messages (#148).
 
         The synchronous SDK call runs through ``_sdk_call`` so it is bounded
@@ -1960,7 +2037,7 @@ class ZulipAdapter(BasePlatformAdapter):
         list rather than an error.
         """
         narrow = [{"operator": "stream", "operand": stream_name}]
-        if topic:
+        if topic or require_fresh:
             narrow.append({"operator": "topic", "operand": topic})
         result = await self._sdk_call(
             self.client.get_messages,
@@ -1972,12 +2049,17 @@ class ZulipAdapter(BasePlatformAdapter):
             },
             timeout=history.HISTORY_FETCH_TIMEOUT,
         )
-        if not isinstance(result, dict) or result.get("result") != "success":
-            return []
-        messages = result.get("messages")
-        return messages if isinstance(messages, list) else []
+        if isinstance(result, dict) and result.get("result") == "success":
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                return messages
+        if require_fresh:
+            raise ValueError("Zulip did not return a topic history response")
+        return []
 
-    async def _harvest_history_block(self, stream_name: str, topic: str) -> tuple[str, str]:
+    async def _harvest_history_block(
+        self, stream_name: str, topic: str, *, require_fresh: bool = False
+    ) -> tuple[str, str]:
         """Best-effort quoted slice of the real topic history (#148).
 
         Returns ``(text, outcome)``. The outcome is what the status board needs
@@ -1991,10 +2073,11 @@ class ZulipAdapter(BasePlatformAdapter):
         delay a dispatch.
         """
         try:
-            messages = await asyncio.wait_for(
-                self._fetch_stream_history(stream_name, topic),
-                timeout=history.HISTORY_FETCH_TIMEOUT,
+            fetch = (
+                self._fetch_stream_history(stream_name, topic, require_fresh=True)
+                if require_fresh else self._fetch_stream_history(stream_name, topic)
             )
+            messages = await asyncio.wait_for(fetch, timeout=history.HISTORY_FETCH_TIMEOUT)
         except asyncio.TimeoutError:
             logger.warning(
                 "zulip history harvest timed out (dropped) [stream=%s topic=%s]",
