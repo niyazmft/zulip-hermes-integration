@@ -140,6 +140,9 @@ optional_env:
   - name: ZULIP_TOPIC_SESSIONS
     description: "Give each stream topic its own conversation session (default: false)"
     prompt: "Per-topic sessions"
+  - name: ZULIP_TOPIC_LOCK_DIR
+    description: "Shared local directory for serializing turns across bots in the same topic (default: disabled)"
+    prompt: "Shared topic lock directory"
   - name: ZULIP_ORIGIN_LABEL_REFRESH
     description: "Keep the stored session origin's topic/stream/display labels current so background results (reviews, delegations, process completions) still reach long-lived sessions on hosts that compare those labels as route identity (default: true)"
     prompt: "Origin label refresh"

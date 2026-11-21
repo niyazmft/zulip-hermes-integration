@@ -551,6 +551,42 @@ ZULIP_QUEUE_CAP=20        # how many may wait before a new one dispatches immedi
 
 Use separate topics for genuinely parallel work; use DMs for private work.
 
+## Coordinate Multiple Bots in a Topic
+
+If two Hermes bots reply in the same topic, each can start before the other
+has finished posting. To let each bot read the previous reply before starting
+its own turn, set these on every participating bot:
+
+```bash
+ZULIP_TOPIC_SESSIONS=true
+ZULIP_TOPIC_LOCK_DIR=/path/to/shared/topic-locks
+```
+
+Create a dedicated directory on a local filesystem that supports `flock`, and
+give the participating processes access as the same OS user. Containers on
+one host can mount the same directory. Use the same Zulip site URL for each
+bot. Leave `ZULIP_TOPIC_LOCK_DIR` unset to keep the default behavior.
+
+The lock covers a single realm, channel ID and case-insensitive topic name.
+After acquiring it, the bot fetches recent topic history from Zulip, even if
+`ZULIP_HISTORY_MODE=off`, and keeps the lock through reply delivery. The usual
+history limits still apply. If history cannot be read, the bot skips the turn
+and logs the failure. Other topics can proceed in parallel. If the bot exits,
+the OS releases the lock. Leave the empty lock files in place while the bots
+are running so they all continue to lock the same files.
+
+The lock has no hold-time limit or stale-holder takeover. If a live turn
+hangs, its topic's waiters stay queued until that turn finishes or the
+holder exits. The adapter does not publish a topic or digest warning for
+lock contention. Restart the stuck gateway if its turn cannot be stopped.
+
+This coordinates inbound stream turns on one host, including minutes
+generated as a reply to an in-topic mention. DMs, slash commands, sends to
+another topic, and bots without the setting are outside its scope. A cron
+delivery or other direct send does not acquire the lock and can post during
+a locked turn. Waiters have no guaranteed order. Wait until the topic is
+idle before renaming or moving it.
+
 ## Stream Watching
 
 > You want the bot to know what `#general` has been discussing without it

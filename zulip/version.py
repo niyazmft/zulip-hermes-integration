@@ -51,6 +51,7 @@ PLUGIN_FILES = [
     "session_queue.py",
     "settings.py",
     "text_utils.py",
+    "topic_lock.py",
     "tracing.py",
     "update.sh",
     "updater.py",
